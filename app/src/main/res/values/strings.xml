@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">JUSTFAN</string>
+    <string name="tagline">Trending Creator Content Gallery</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_categories">Categories</string>
+    <string name="tab_free">Free</string>
+    <string name="tab_trending">Trending</string>
+    <string name="tab_request">Request</string>
+    <string name="tab_favorites">Favorites</string>
+    <string name="tab_preferences">Settings</string>
+    <string name="search_placeholder">Search creator, tags, keywords…</string>
+    <string name="free_download">Free Download</string>
+    <string name="no_ads_download">No-Ads Download</string>
+    <string name="premium_download">Premium HD Download</string>
+    <string name="submit_request">Submit Request</string>
+    <string name="upgrade_pro">Upgrade to Pro</string>
+</resources>

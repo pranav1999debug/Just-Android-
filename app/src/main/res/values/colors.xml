@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary_cyan">#00E5FF</color>
+    <color name="primary_dark">#00B4D8</color>
+    <color name="accent_violet">#8B5CF6</color>
+    <color name="accent_pink">#EC4899</color>
+    <color name="bg_dark">#0A0D14</color>
+    <color name="surface_dark">#121622</color>
+    <color name="surface_variant_dark">#1A2030</color>
+</resources>

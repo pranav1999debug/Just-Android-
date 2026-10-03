@@ -1,0 +1,17 @@
+# JUSTFAN
+
+> JUSTFAN is a content gallery showcasing trending creator content, image collections, and creative showcases. Visitors can browse, favorite, request, and download content across multiple categories.
+
+## Pages
+
+- [Home](/): Latest and trending content feed.
+- [Categories](/categories): Browse content grouped by category and tag.
+- [Trending](/trending): Most-downloaded and most-viewed posts.
+- [Gallery](/gallery): Public archive of completed content requests.
+- [Request Content](/request): Submit a request for new content.
+- [Pricing](/pricing): Free, Pro, and Legendary subscription plans.
+- [Install App](/install): Install JUSTFAN as a Progressive Web App.
+
+## Optional
+
+- [Sign In](/auth): Account access for members.

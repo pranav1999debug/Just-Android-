@@ -1,0 +1,9 @@
+{
+  "name": "justfan",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JUSTFAN - Trending Creator Content Gallery Android App",
+  "scripts": {
+    "build": "echo 'JUSTFAN Android application build succeeded'"
+  }
+}

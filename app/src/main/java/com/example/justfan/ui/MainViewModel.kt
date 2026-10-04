@@ -39,8 +39,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activities: StateFlow<List<ActivityEntity>> = repository.allActivities
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val users: StateFlow<List<UserEntity>> = repository.allUsers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val preferences: StateFlow<UserPreferences> = repository.preferences
     val userProfile: StateFlow<UserProfile> = repository.userProfile
+
+    val isSyncing: StateFlow<Boolean> = repository.isSyncing
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun refreshFromSupabase() {
+        viewModelScope.launch {
+            repository.refreshPosts()
+        }
+    }
 
     fun getCommentsForPost(postId: String): Flow<List<CommentEntity>> =
         repository.getCommentsForPost(postId)
@@ -55,6 +67,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val isFav = favorites.value.any { it.postId == postId }
             repository.toggleFavorite(postId, isFav)
+        }
+    }
+
+    fun recordShare(postId: String) {
+        viewModelScope.launch {
+            repository.recordShare(postId)
         }
     }
 
@@ -127,5 +145,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updatePlan(plan: String) {
         repository.updatePlan(plan)
+    }
+
+    fun updateTier(tier: String) {
+        repository.updateTier(tier)
+    }
+
+    fun signInWithEmail(email: String, password: String): Result<UserProfile> =
+        repository.signInWithEmail(email, password)
+
+    fun signInWithGoogle(email: String = "reytherapper12@gmail.com", name: String = "Rey"): Result<UserProfile> =
+        repository.signInWithGoogle(email, name)
+
+    fun signInWithPasskey(name: String = "Device Passkey"): Result<UserProfile> =
+        repository.signInWithPasskey(name)
+
+    fun signOut() {
+        repository.signOut()
+    }
+
+    fun updateWallpaper(uri: String?, dim: Float = 0.65f) {
+        repository.updateWallpaper(uri, dim)
+    }
+
+    fun updatePost(post: PostEntity) {
+        viewModelScope.launch {
+            repository.updatePost(post)
+        }
+    }
+
+    fun updateUserTier(userId: String, newTier: String) {
+        viewModelScope.launch {
+            repository.updateUserTier(userId, newTier)
+        }
+    }
+
+    fun updateUserRequestsCount(userId: String, count: Int) {
+        viewModelScope.launch {
+            repository.updateUserRequestsCount(userId, count)
+        }
+    }
+
+    fun updateUserStatus(userId: String, status: String) {
+        viewModelScope.launch {
+            repository.updateUserStatus(userId, status)
+        }
+    }
+
+    fun deleteUser(userId: String) {
+        viewModelScope.launch {
+            repository.deleteUser(userId)
+        }
+    }
+
+    fun rejectRequest(id: String, reason: String) {
+        viewModelScope.launch {
+            repository.rejectRequest(id, reason)
+        }
+    }
+
+    fun fulfillRequest(id: String, downloadLink: String) {
+        viewModelScope.launch {
+            repository.fulfillRequest(id, downloadLink)
+        }
+    }
+
+    fun deleteRequest(id: String) {
+        viewModelScope.launch {
+            repository.deleteRequest(id)
+        }
     }
 }

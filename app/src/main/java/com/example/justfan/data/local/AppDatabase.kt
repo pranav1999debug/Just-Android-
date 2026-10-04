@@ -15,9 +15,10 @@ import com.example.justfan.data.model.*
         CollectionItemEntity::class,
         RequestEntity::class,
         CommentEntity::class,
-        ActivityEntity::class
+        ActivityEntity::class,
+        UserEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -28,6 +29,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun requestDao(): RequestDao
     abstract fun commentDao(): CommentDao
     abstract fun activityDao(): ActivityDao
+    abstract fun userDao(): UserDao
 
     companion object {
         @Volatile

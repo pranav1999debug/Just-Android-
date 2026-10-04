@@ -2,28 +2,33 @@ package com.example.justfan.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.example.justfan.data.model.CommentEntity
+import com.example.justfan.ui.components.AuthDialog
 import com.example.justfan.ui.screens.*
 import com.example.justfan.ui.theme.JustFanTheme
 
 enum class Screen(val title: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
-    CATEGORIES("Categories", Icons.Default.Category),
-    FREE("Free", Icons.Default.CardGiftcard),
     TRENDING("Trending", Icons.Default.Whatshot),
-    REQUEST("Request", Icons.Default.Send),
-    FAVORITES("Favorites", Icons.Default.Favorite),
+    REQUEST("Requests", Icons.AutoMirrored.Filled.Send),
+    FAVORITES("Saved", Icons.Default.Favorite),
     SETTINGS("Settings", Icons.Default.Settings)
 }
 
@@ -50,12 +55,16 @@ fun JustFanAppRoot(
     val requests by viewModel.requests.collectAsStateWithLifecycle()
     val deliveredRequests by viewModel.deliveredRequests.collectAsStateWithLifecycle()
     val activities by viewModel.activities.collectAsStateWithLifecycle()
+    val users by viewModel.users.collectAsStateWithLifecycle()
+    val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
 
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var currentSubScreen by remember { mutableStateOf(SubScreen.NONE) }
     var selectedPostId by remember { mutableStateOf<String?>(null) }
+    var isAuthDialogOpen by remember { mutableStateOf(false) }
 
     val favoritePostIds = remember(favorites) { favorites.map { it.postId }.toSet() }
+    val hasCustomWallpaper = !preferences.customWallpaperUri.isNullOrBlank()
 
     JustFanTheme(
         themeVariant = preferences.themeVariant,
@@ -64,10 +73,29 @@ fun JustFanAppRoot(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isWideScreen = maxWidth >= 600.dp
 
+            // Dynamic User Uploaded Background Wallpaper
+            if (hasCustomWallpaper) {
+                val wallpaperModel = remember(preferences.customWallpaperUri) {
+                    val uriStr = preferences.customWallpaperUri!!
+                    if (uriStr.startsWith("/")) java.io.File(uriStr) else uriStr
+                }
+                AsyncImage(
+                    model = wallpaperModel,
+                    contentDescription = "Background Wallpaper",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = preferences.wallpaperDim))
+                )
+            }
+
             Row(modifier = Modifier.fillMaxSize()) {
                 if (isWideScreen && currentSubScreen == SubScreen.NONE) {
                     NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surface,
+                        containerColor = if (hasCustomWallpaper) Color.Black.copy(alpha = 0.65f) else MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxHeight()
                     ) {
                         Screen.values().forEach { screen ->
@@ -83,10 +111,11 @@ fun JustFanAppRoot(
                 }
 
                 Scaffold(
+                    containerColor = if (hasCustomWallpaper) Color.Transparent else MaterialTheme.colorScheme.background,
                     bottomBar = {
                         if (!isWideScreen && currentSubScreen == SubScreen.NONE) {
                             NavigationBar(
-                                containerColor = MaterialTheme.colorScheme.surface,
+                                containerColor = if (hasCustomWallpaper) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surface,
                                 tonalElevation = 8.dp
                             ) {
                                 Screen.values().forEach { screen ->
@@ -94,7 +123,8 @@ fun JustFanAppRoot(
                                         selected = currentScreen == screen,
                                         onClick = { currentScreen = screen },
                                         icon = { Icon(screen.icon, contentDescription = screen.title) },
-                                        label = { Text(screen.title) },
+                                        label = { Text(screen.title, maxLines = 1, fontSize = 11.sp) },
+                                        alwaysShowLabel = true,
                                         modifier = Modifier.testTag("nav_bottom_${screen.name.lowercase()}")
                                     )
                                 }
@@ -113,11 +143,17 @@ fun JustFanAppRoot(
                                     }
                                     val comments by commentsFlow.collectAsStateWithLifecycle(emptyList())
 
+                                    val canDirectDownload = userProfile.isAdmin ||
+                                            userProfile.tier.equals("pro", ignoreCase = true) ||
+                                            userProfile.tier.equals("legendary", ignoreCase = true)
+
                                     PostDetailScreen(
                                         post = currentPost,
                                         allPosts = posts,
                                         comments = comments,
                                         isFavorite = favoritePostIds.contains(selectedPostId),
+                                        canAccessDirectLink = canDirectDownload,
+                                        onNavigateToPricing = { currentSubScreen = SubScreen.PRICING },
                                         onBack = { currentSubScreen = SubScreen.NONE },
                                         onToggleFavorite = {
                                             selectedPostId?.let { id -> viewModel.toggleFavorite(id) }
@@ -128,6 +164,9 @@ fun JustFanAppRoot(
                                         onSelectPost = { id ->
                                             selectedPostId = id
                                             viewModel.incrementClicks(id)
+                                        },
+                                        onShare = {
+                                            selectedPostId?.let { id -> viewModel.recordShare(id) }
                                         }
                                     )
                                 }
@@ -140,8 +179,9 @@ fun JustFanAppRoot(
                                 SubScreen.PRICING -> {
                                     BackHandler { currentSubScreen = SubScreen.NONE }
                                     PricingScreen(
-                                        currentPlan = userProfile.plan,
-                                        onSelectPlan = { plan -> viewModel.updatePlan(plan) }
+                                        currentPlan = userProfile.tier,
+                                        isAdmin = userProfile.isAdmin,
+                                        onSelectPlan = { plan -> viewModel.updateTier(plan) }
                                     )
                                 }
                                 SubScreen.NOTIFICATIONS -> {
@@ -149,8 +189,8 @@ fun JustFanAppRoot(
                                     NotificationsScreen(
                                         activities = activities,
                                         onSelectPost = { id ->
-                                            selectedPostId = id
-                                            currentSubScreen = SubScreen.POST_DETAIL
+                                             selectedPostId = id
+                                             currentSubScreen = SubScreen.POST_DETAIL
                                         }
                                     )
                                 }
@@ -159,13 +199,19 @@ fun JustFanAppRoot(
                                     AdminScreen(
                                         posts = posts,
                                         requests = requests,
+                                        users = users,
                                         onCreatePost = { title, desc, img, link, premLink, tags, isFree, isNsfw ->
                                             viewModel.createPost(title, desc, img, link, premLink, tags, isFree, isNsfw)
                                         },
+                                        onUpdatePost = { updated -> viewModel.updatePost(updated) },
                                         onDeletePost = { id -> viewModel.deletePost(id) },
-                                        onUpdateRequestStatus = { id, status, link ->
-                                            viewModel.updateRequestStatus(id, status, link)
-                                        },
+                                        onUpdateUserTier = { id, tier -> viewModel.updateUserTier(id, tier) },
+                                        onUpdateUserRequestsCount = { id, count -> viewModel.updateUserRequestsCount(id, count) },
+                                        onUpdateUserStatus = { id, status -> viewModel.updateUserStatus(id, status) },
+                                        onDeleteUser = { id -> viewModel.deleteUser(id) },
+                                        onFulfillRequest = { id, link -> viewModel.fulfillRequest(id, link) },
+                                        onRejectRequest = { id, reason -> viewModel.rejectRequest(id, reason) },
+                                        onDeleteRequest = { id -> viewModel.deleteRequest(id) },
                                         onBack = { currentSubScreen = SubScreen.NONE }
                                     )
                                 }
@@ -174,7 +220,7 @@ fun JustFanAppRoot(
                                         Screen.HOME -> HomeScreen(
                                             posts = posts,
                                             trendingPosts = trendingPosts,
-                                            deliveredRequests = deliveredRequests,
+                                            requests = requests,
                                             favoritePostIds = favoritePostIds,
                                             contentFilter = preferences.contentFilter,
                                             onPostClick = { id ->
@@ -187,26 +233,12 @@ fun JustFanAppRoot(
                                             onNotificationsClick = { currentSubScreen = SubScreen.NOTIFICATIONS },
                                             onAdminClick = { currentSubScreen = SubScreen.ADMIN },
                                             onPricingClick = { currentSubScreen = SubScreen.PRICING },
-                                            onViewGallery = { currentSubScreen = SubScreen.GALLERY }
-                                        )
-                                        Screen.CATEGORIES -> CategoriesScreen(
-                                            posts = posts,
-                                            onPostClick = { id ->
-                                                selectedPostId = id
-                                                viewModel.incrementClicks(id)
-                                                currentSubScreen = SubScreen.POST_DETAIL
-                                            }
-                                        )
-                                        Screen.FREE -> FreeScreen(
-                                            freePosts = freePosts,
-                                            favoritePostIds = favoritePostIds,
-                                            onPostClick = { id ->
-                                                selectedPostId = id
-                                                viewModel.incrementClicks(id)
-                                                currentSubScreen = SubScreen.POST_DETAIL
-                                            },
-                                            onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
-                                            onIncrementClicks = { id -> viewModel.incrementClicks(id) }
+                                            onViewGallery = { currentSubScreen = SubScreen.GALLERY },
+                                            isSyncing = isSyncing,
+                                            onSyncClick = { viewModel.refreshFromSupabase() },
+                                            userProfile = userProfile,
+                                            onAuthClick = { isAuthDialogOpen = true },
+                                            hasCustomWallpaper = hasCustomWallpaper
                                         )
                                         Screen.TRENDING -> TrendingScreen(
                                             trendingPosts = trendingPosts,
@@ -247,7 +279,11 @@ fun JustFanAppRoot(
                                             onUpdateContentFilter = { filter -> viewModel.updateContentFilter(filter) },
                                             onAddPreferredTag = { tag -> viewModel.addPreferredTag(tag) },
                                             onRemovePreferredTag = { tag -> viewModel.removePreferredTag(tag) },
-                                            onUpdatePlan = { plan -> viewModel.updatePlan(plan) }
+                                            onUpdatePlan = { plan -> viewModel.updateTier(plan) },
+                                            onUpdateWallpaper = { uri, dim -> viewModel.updateWallpaper(uri, dim) },
+                                            onOpenAuth = { isAuthDialogOpen = true },
+                                            onSignOut = { viewModel.signOut() },
+                                            onOpenAdmin = { currentSubScreen = SubScreen.ADMIN }
                                         )
                                     }
                                 }
@@ -256,6 +292,28 @@ fun JustFanAppRoot(
                     }
                 }
             }
+
+            // Global Authentication & Account Dialog
+            AuthDialog(
+                userProfile = userProfile,
+                isOpen = isAuthDialogOpen,
+                onDismiss = { isAuthDialogOpen = false },
+                onSignInWithGoogle = { email, name ->
+                    viewModel.signInWithGoogle(email, name)
+                },
+                onSignInWithPasskey = { name ->
+                    viewModel.signInWithPasskey(name)
+                },
+                onSignInWithEmail = { email, pass ->
+                    viewModel.signInWithEmail(email, pass)
+                },
+                onSignOut = {
+                    viewModel.signOut()
+                },
+                onUpgradeClick = {
+                    currentSubScreen = SubScreen.PRICING
+                }
+            )
         }
     }
 }

@@ -41,8 +41,10 @@ fun TrendingScreen(
     val context = LocalContext.current
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -156,7 +158,12 @@ fun TrendingScreen(
                         IconButton(
                             onClick = {
                                 val url = post.linkUrl.ifBlank { post.imageUrl }
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                com.example.justfan.util.DownloadHelper.enqueueDownload(
+                                    context = context,
+                                    url = url,
+                                    title = post.title,
+                                    isPremium = !post.isFree
+                                )
                             },
                             modifier = Modifier.testTag("trending_download_$rank")
                         ) {

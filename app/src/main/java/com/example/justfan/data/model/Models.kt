@@ -52,9 +52,22 @@ data class RequestEntity(
     val telegramUsername: String? = null,
     val message: String,
     val imageUrl: String? = null,
-    val status: String = "pending", // pending, in_progress, delivered
+    val status: String = "pending", // pending, in_progress, delivered, rejected
     val downloadLink: String? = null,
+    val rejectionReason: String? = null,
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "users")
+data class UserEntity(
+    @PrimaryKey val id: String,
+    val username: String,
+    val email: String,
+    val tier: String = "Free", // Free, Pro, Legendary
+    val requestsCount: Int = 0,
+    val isAdmin: Boolean = false,
+    val status: String = "Active", // Active, Suspended
+    val joinedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "comments")
@@ -80,14 +93,46 @@ data class UserPreferences(
     val themeVariant: String = "cyan",
     val isDarkMode: Boolean = true,
     val contentFilter: String = "nsfw", // sfw or nsfw
-    val preferredTags: List<String> = emptyList()
+    val preferredTags: List<String> = emptyList(),
+    val customWallpaperUri: String? = null,
+    val wallpaperDim: Float = 0.65f
 )
 
 data class UserProfile(
-    val id: String = "user_demo",
-    val username: String = "CreatorFan",
-    val email: String = "fan@justfan.vip",
-    val plan: String = "Free", // Free, Pro, Legendary
-    val weeklyRequestsUsed: Int = 1,
-    val isAdmin: Boolean = true
-)
+    val id: String = "guest_user",
+    val username: String = "Guest Fan",
+    val email: String = "",
+    val isSignedIn: Boolean = false,
+    val authMethod: String = "guest", // "google", "passkey", "password"
+    val tier: String = "Free", // Free, Pro, Legendary
+    val requestsCount: Int = 0,
+    val proExpiresAt: Long = 0L, // timestamp when 1-month Pro expires
+    val isAdmin: Boolean = false,
+    val customWallpaperUri: String? = null
+) {
+    // Backward compatibility getters
+    val plan: String get() = tier
+    val weeklyRequestsUsed: Int get() = requestsCount
+
+    val isProActive: Boolean
+        get() {
+            if (tier == "Legendary" || isAdmin) return true
+            if (tier == "Pro") {
+                return proExpiresAt == 0L || System.currentTimeMillis() <= proExpiresAt
+            }
+            return false
+        }
+
+    val maxRequestsAllowed: Int
+        get() = when {
+            isAdmin || tier == "Legendary" -> Int.MAX_VALUE
+            tier == "Pro" && isProActive -> Int.MAX_VALUE
+            else -> 3 // Free tier: strictly 3 requests
+        }
+
+    val remainingRequests: Int
+        get() = if (maxRequestsAllowed == Int.MAX_VALUE) 999 else (3 - requestsCount).coerceAtLeast(0)
+
+    val canMakeRequest: Boolean
+        get() = remainingRequests > 0
+}

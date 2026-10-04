@@ -2,12 +2,17 @@ package com.example.justfan.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,8 +29,10 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +45,7 @@ fun RequestScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) }
 
     var modelName by remember { mutableStateOf("") }
@@ -45,18 +53,54 @@ fun RequestScreen(
     var telegram by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
     var referenceImageUrl by remember { mutableStateOf("") }
+    var selectedLocalUri by remember { mutableStateOf<Uri?>(null) }
+    var isUploadingToImgchest by remember { mutableStateOf(false) }
+    var uploadError by remember { mutableStateOf<String?>(null) }
+    var showTokenDialog by remember { mutableStateOf(false) }
+    var imgchestTokenInput by remember { mutableStateOf(ImgchestUploader.getApiToken(context) ?: "") }
     var showSuccessSnackbar by remember { mutableStateOf(false) }
 
-    val isPro = userProfile.plan == "Pro" || userProfile.plan == "Legendary" || userProfile.isAdmin
-    val remainingRequests = if (isPro) 999 else (3 - userProfile.weeklyRequestsUsed).coerceAtLeast(0)
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedLocalUri = uri
+            isUploadingToImgchest = true
+            uploadError = null
+            coroutineScope.launch {
+                val result = ImgchestUploader.uploadImage(
+                    context = context,
+                    imageUri = uri,
+                    title = modelName.ifBlank { "JUSTFAN Request Reference" }
+                )
+                isUploadingToImgchest = false
+                if (result.isSuccess) {
+                    referenceImageUrl = result.getOrNull().orEmpty()
+                } else {
+                    val errMsg = result.exceptionOrNull()?.message ?: "Upload failed"
+                    uploadError = errMsg
+                    if (errMsg.contains("token") || errMsg.contains("API key")) {
+                        showTokenDialog = true
+                    }
+                }
+            }
+        }
+    }
+
+    val isLegendary = userProfile.tier == "Legendary" || userProfile.isAdmin
+    val isPro = userProfile.isProActive
+    val hasUnlimited = isLegendary || isPro
+    val remainingRequests = if (hasUnlimited) 999 else userProfile.remainingRequests
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.Send,
+                            imageVector = Icons.AutoMirrored.Filled.Send,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(24.dp)
@@ -94,34 +138,38 @@ fun RequestScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "Plan: ${userProfile.plan}",
+                                text = "Tier: ${userProfile.tier}${if (userProfile.isAdmin) " (Admin)" else ""}",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isPro) GoldAccent else MaterialTheme.colorScheme.onSurface
+                                color = if (isLegendary) GoldAccent else if (isPro) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             )
-                            if (isPro) {
+                            if (hasUnlimited) {
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Icon(Icons.Default.Verified, contentDescription = null, tint = GoldAccent, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Verified, contentDescription = null, tint = if (isLegendary) GoldAccent else MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                             }
                         }
                         Text(
-                            text = if (isPro) "Unlimited Weekly Requests" else "$remainingRequests of 3 requests remaining this week",
+                            text = when {
+                                isLegendary -> "Unlimited requests forever (Unlimited Time)"
+                                isPro -> "Unlimited requests for 1 month active"
+                                else -> "$remainingRequests of 3 requests remaining"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    if (!isPro) {
+                    if (!isLegendary) {
                         Button(
                             onClick = onUpgradeClick,
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isPro) GoldAccent else MaterialTheme.colorScheme.primary, contentColor = if (isPro) Color.Black else Color.White),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                         ) {
-                            Text("Upgrade", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(if (isPro) "Upgrade Legendary" else "Upgrade", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -198,18 +246,201 @@ fun RequestScreen(
                         )
                     }
 
+                    // Reference Photo: Gallery Picker with Imgchest API Upload
                     item {
-                        OutlinedTextField(
-                            value = referenceImageUrl,
-                            onValueChange = { referenceImageUrl = it },
-                            label = { Text("Reference Photo Image URL (Optional)") },
-                            placeholder = { Text("https://example.com/photo.jpg") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .testTag("request_input_image")
-                                .fillMaxWidth()
-                        )
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.AddPhotoAlternate,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Reference Photo (Imgchest API)",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+
+                                    TextButton(
+                                        onClick = { showTokenDialog = true },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("API Token", fontSize = 11.sp)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                if (selectedLocalUri != null || referenceImageUrl.isNotBlank()) {
+                                    // Preview of chosen image
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(80.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.Black.copy(alpha = 0.2f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            AsyncImage(
+                                                model = if (referenceImageUrl.isNotBlank()) referenceImageUrl else selectedLocalUri,
+                                                contentDescription = "Selected Reference",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            if (isUploadingToImgchest) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(Color.Black.copy(alpha = 0.6f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(28.dp),
+                                                        strokeWidth = 3.dp,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.width(12.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            if (isUploadingToImgchest) {
+                                                Text(
+                                                    text = "Uploading to Imgchest API...",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                                Text(
+                                                    text = "Generating direct link for Supabase...",
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            } else if (referenceImageUrl.isNotBlank()) {
+                                                Surface(
+                                                    color = SuccessGreen.copy(alpha = 0.2f),
+                                                    shape = RoundedCornerShape(4.dp)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.CheckCircle,
+                                                            contentDescription = null,
+                                                            tint = SuccessGreen,
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = "Uploaded to Imgchest ✓",
+                                                            color = SuccessGreen,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = referenceImageUrl,
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1
+                                                )
+                                            }
+
+                                            Spacer(modifier = Modifier.height(6.dp))
+
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        photoPickerLauncher.launch(
+                                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                                        )
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text("Change", fontSize = 11.sp)
+                                                }
+
+                                                TextButton(
+                                                    onClick = {
+                                                        selectedLocalUri = null
+                                                        referenceImageUrl = ""
+                                                        uploadError = null
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("Remove", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Empty state: Upload button
+                                    Button(
+                                        onClick = {
+                                            photoPickerLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.primary),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("btn_pick_imgchest_image")
+                                    ) {
+                                        Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Select Image from Gallery to Upload", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+
+                                if (uploadError != null) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = uploadError!!,
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontSize = 11.sp
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                OutlinedTextField(
+                                    value = referenceImageUrl,
+                                    onValueChange = { referenceImageUrl = it },
+                                    label = { Text("Direct Link (Imgchest or Image URL)") },
+                                    placeholder = { Text("https://cdn.imgchest.com/files/...") },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .testTag("request_input_image")
+                                        .fillMaxWidth()
+                                )
+                            }
+                        }
                     }
 
                     item {
@@ -250,6 +481,44 @@ fun RequestScreen(
                         }
                     }
 
+                    if (!hasUnlimited && remainingRequests <= 0) {
+                        item {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Request Limit Reached (3 / 3 Used)",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Free users get 3 requests total. Upgrade to Pro for 1 month of unlimited requests or Legendary for unlimited time.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Button(
+                                        onClick = onUpgradeClick,
+                                        colors = ButtonDefaults.buttonColors(containerColor = GoldAccent, contentColor = Color.Black),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Upgrade to Pro / Legendary", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     item {
                         Button(
                             onClick = {
@@ -267,7 +536,7 @@ fun RequestScreen(
                                     showSuccessSnackbar = true
                                 }
                             },
-                            enabled = modelName.isNotBlank() && notes.isNotBlank() && (isPro || remainingRequests > 0),
+                            enabled = modelName.isNotBlank() && notes.isNotBlank() && (hasUnlimited || remainingRequests > 0),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             modifier = Modifier
@@ -277,7 +546,10 @@ fun RequestScreen(
                         ) {
                             Icon(Icons.Default.Send, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Submit Request Now", fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (hasUnlimited || remainingRequests > 0) "Submit Request Now" else "Limit Reached (Upgrade for Unlimited)",
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -368,5 +640,44 @@ fun RequestScreen(
                 }
             }
         }
+    }
+
+    if (showTokenDialog) {
+        AlertDialog(
+            onDismissRequest = { showTokenDialog = false },
+            icon = { Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text("Imgchest API Token", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "To upload images to Imgchest, you can provide your personal access token from imgchest.com/settings/api (or leave blank if using default integration).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = imgchestTokenInput,
+                        onValueChange = { imgchestTokenInput = it },
+                        label = { Text("Imgchest Personal Access Token") },
+                        placeholder = { Text("Paste your Imgchest API token...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    ImgchestUploader.setApiToken(context, imgchestTokenInput)
+                    showTokenDialog = false
+                    uploadError = null
+                }) {
+                    Text("Save Token")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTokenDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

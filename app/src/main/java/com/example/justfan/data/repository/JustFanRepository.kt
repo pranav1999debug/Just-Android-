@@ -20,6 +20,9 @@ class JustFanRepository(
     private val requestDao = database.requestDao()
     private val commentDao = database.commentDao()
     private val activityDao = database.activityDao()
+    private val userDao = database.userDao()
+
+    val allUsers: Flow<List<UserEntity>> = userDao.getAllUsers()
 
     private val _preferences = MutableStateFlow(
         UserPreferences(
@@ -33,19 +36,130 @@ class JustFanRepository(
 
     private val _userProfile = MutableStateFlow(
         UserProfile(
-            username = "CreatorFan",
-            email = "fan@justfan.vip",
-            plan = "Pro",
-            weeklyRequestsUsed = 1,
-            isAdmin = true
+            id = "admin_rey",
+            username = "reytherapper12",
+            email = "reytherapper12@gmail.com",
+            isSignedIn = true,
+            authMethod = "password",
+            tier = "Legendary",
+            isAdmin = true,
+            requestsCount = 0,
+            proExpiresAt = Long.MAX_VALUE
         )
     )
     val userProfile = _userProfile.asStateFlow()
 
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing = _isSyncing.asStateFlow()
+
     init {
         scope.launch {
-            seedInitialDataIfNeeded()
+            cleanDummyData()
+            syncFromSupabase()
         }
+    }
+
+    suspend fun syncFromSupabase() {
+        _isSyncing.value = true
+        try {
+            cleanDummyData()
+
+            // 1. Sync Real User Profiles from Supabase
+            val profilesResult = com.example.justfan.data.remote.SupabaseClient.fetchProfiles(limit = 500)
+            val profilesMap = mutableMapOf<String, String>()
+            if (profilesResult.isSuccess) {
+                val remoteUsers = profilesResult.getOrNull().orEmpty()
+                if (remoteUsers.isNotEmpty()) {
+                    for (u in remoteUsers) {
+                        profilesMap[u.id] = u.username
+                    }
+                    val existingUsers = userDao.getAllUsersList().associateBy { it.id }
+                    val mergedUsers = remoteUsers.map { remote ->
+                        val local = existingUsers[remote.id]
+                        if (local != null) {
+                            remote.copy(tier = local.tier, requestsCount = local.requestsCount, status = local.status)
+                        } else {
+                            remote
+                        }
+                    }
+                    userDao.insertUsers(mergedUsers)
+                }
+            }
+
+            // 2. Sync Clicks, Likes (Favorites), and Shares from Supabase
+            val clicksSummary = com.example.justfan.data.remote.SupabaseClient.fetchPostClicksSummary().getOrDefault(emptyMap())
+            val favoritesResult = com.example.justfan.data.remote.SupabaseClient.fetchFavoritesSummary().getOrNull()
+            val likesSummary = favoritesResult?.first ?: emptyMap()
+            val userFavPostIds = favoritesResult?.second ?: emptySet()
+
+            // Update user favorites in local DB
+            for (favPostId in userFavPostIds) {
+                favoriteDao.addFavorite(FavoriteEntity(postId = favPostId))
+            }
+
+            // 3. Sync Posts from Supabase with real clicks and likes
+            val postsResult = com.example.justfan.data.remote.SupabaseClient.fetchPosts(limit = 1500)
+            if (postsResult.isSuccess) {
+                val remotePosts = postsResult.getOrNull().orEmpty()
+                if (remotePosts.isNotEmpty()) {
+                    val existingPosts = postDao.getAllPostsList().associateBy { it.id }
+                    val mergedPosts = remotePosts.map { remote ->
+                        val local = existingPosts[remote.id]
+                        val totalClicks = maxOf(remote.clicksCount, (clicksSummary[remote.id] ?: 0), (local?.clicksCount ?: 0))
+                        val totalLikes = maxOf(remote.likesCount, (likesSummary[remote.id] ?: 0), (local?.likesCount ?: 0))
+                        remote.copy(clicksCount = totalClicks, likesCount = totalLikes)
+                    }
+                    postDao.insertPosts(mergedPosts)
+                }
+            }
+
+            // 4. Sync Real Comments from Supabase post_comments
+            val commentsResult = com.example.justfan.data.remote.SupabaseClient.fetchPostComments()
+            if (commentsResult.isSuccess) {
+                val remoteComments = commentsResult.getOrNull().orEmpty()
+                if (remoteComments.isNotEmpty()) {
+                    val mappedComments = remoteComments.map { rc ->
+                        val resolvedAuthor = profilesMap[rc.authorName] ?: "CommunityFan"
+                        rc.copy(authorName = resolvedAuthor)
+                    }
+                    commentDao.insertComments(mappedComments)
+                }
+            }
+
+            // 5. Sync Requests from Supabase
+            val reqResult = com.example.justfan.data.remote.SupabaseClient.fetchRequests()
+            if (reqResult.isSuccess) {
+                val remoteRequests = reqResult.getOrNull().orEmpty()
+                if (remoteRequests.isNotEmpty()) {
+                    requestDao.insertRequests(remoteRequests)
+                }
+            }
+
+            // 6. Sync Collections from Supabase
+            val colResult = com.example.justfan.data.remote.SupabaseClient.fetchCollections()
+            if (colResult.isSuccess) {
+                val remoteCollections = colResult.getOrNull().orEmpty()
+                for (col in remoteCollections) {
+                    collectionDao.insertCollection(col)
+                }
+            }
+
+            // 7. Fetch Active User Profile
+            val profileResult = com.example.justfan.data.remote.SupabaseClient.fetchProfile("reytherapper12@gmail.com")
+            if (profileResult.isSuccess) {
+                profileResult.getOrNull()?.let { p ->
+                    _userProfile.value = p
+                }
+            }
+        } catch (_: Exception) {
+            // Graceful fallback to Room cached database
+        } finally {
+            _isSyncing.value = false
+        }
+    }
+
+    suspend fun refreshPosts() {
+        syncFromSupabase()
     }
 
     val allPosts: Flow<List<PostEntity>> = postDao.getAllPosts()
@@ -64,15 +178,30 @@ class JustFanRepository(
 
     suspend fun incrementPostClicks(postId: String) {
         postDao.incrementClicks(postId)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.recordPostClick(postId, _userProfile.value.id)
+        }
     }
 
     suspend fun toggleFavorite(postId: String, isCurrentlyFav: Boolean) {
         if (isCurrentlyFav) {
             favoriteDao.removeFavorite(postId)
             postDao.updateLikes(postId, -1)
+            scope.launch {
+                com.example.justfan.data.remote.SupabaseClient.toggleFavorite(postId, _userProfile.value.id, false)
+            }
         } else {
             favoriteDao.addFavorite(FavoriteEntity(postId = postId))
             postDao.updateLikes(postId, 1)
+            scope.launch {
+                com.example.justfan.data.remote.SupabaseClient.toggleFavorite(postId, _userProfile.value.id, true)
+            }
+        }
+    }
+
+    suspend fun recordShare(postId: String) {
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.recordPostShare(postId, _userProfile.value.id)
         }
     }
 
@@ -93,9 +222,17 @@ class JustFanRepository(
                 link = postId
             )
         )
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.insertPostComment(postId, _userProfile.value.id, content)
+        }
     }
 
     suspend fun submitRequest(name: String, email: String, telegram: String?, message: String, imageUrl: String?) {
+        val currentProfile = _userProfile.value
+        if (!currentProfile.canMakeRequest) {
+            throw IllegalStateException("Free users are limited to 3 requests. Please upgrade to Pro (1 Month Unlimited) or Legendary (Lifetime Unlimited)!")
+        }
+
         val req = RequestEntity(
             id = UUID.randomUUID().toString(),
             name = name,
@@ -115,8 +252,11 @@ class JustFanRepository(
             )
         )
         _userProfile.value = _userProfile.value.copy(
-            weeklyRequestsUsed = _userProfile.value.weeklyRequestsUsed + 1
+            requestsCount = _userProfile.value.requestsCount + 1
         )
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.submitRequest(name, email, message, imageUrl)
+        }
     }
 
     suspend fun updateRequestStatus(id: String, status: String, link: String?) {
@@ -137,6 +277,9 @@ class JustFanRepository(
     suspend fun createCollection(name: String) {
         val col = CollectionEntity(id = UUID.randomUUID().toString(), name = name)
         collectionDao.insertCollection(col)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.createCollection(name)
+        }
     }
 
     suspend fun deleteCollection(id: String) {
@@ -196,6 +339,61 @@ class JustFanRepository(
         postDao.deletePost(id)
     }
 
+    suspend fun updatePost(post: PostEntity) {
+        postDao.updatePost(post)
+    }
+
+    suspend fun updateUserTier(userId: String, newTier: String) {
+        userDao.updateUserTier(userId, newTier)
+        if (_userProfile.value.id == userId || _userProfile.value.email.equals(userId, ignoreCase = true)) {
+            updateTier(newTier)
+        }
+    }
+
+    suspend fun updateUserRequestsCount(userId: String, count: Int) {
+        userDao.updateUserRequestsCount(userId, count)
+        if (_userProfile.value.id == userId) {
+            _userProfile.value = _userProfile.value.copy(requestsCount = count)
+        }
+    }
+
+    suspend fun updateUserStatus(userId: String, status: String) {
+        userDao.updateUserStatus(userId, status)
+    }
+
+    suspend fun deleteUser(userId: String) {
+        userDao.deleteUser(userId)
+    }
+
+    suspend fun rejectRequest(id: String, reason: String) {
+        requestDao.updateStatusWithReason(id, "rejected", null, reason)
+        activityDao.insertActivity(
+            ActivityEntity(
+                id = UUID.randomUUID().toString(),
+                type = "request_rejected",
+                title = "Request Rejected",
+                body = "Reason: $reason"
+            )
+        )
+    }
+
+    suspend fun fulfillRequest(id: String, downloadLink: String) {
+        requestDao.updateStatusWithReason(id, "delivered", downloadLink, null)
+        activityDao.insertActivity(
+            ActivityEntity(
+                id = UUID.randomUUID().toString(),
+                type = "request_delivered",
+                title = "Request Fulfilled & Uploaded",
+                body = "Fulfillment link: $downloadLink",
+                link = downloadLink
+            )
+        )
+    }
+
+    suspend fun deleteRequest(id: String) {
+        requestDao.deleteRequest(id)
+    }
+
     fun updateTheme(themeVariant: String, isDark: Boolean) {
         _preferences.value = _preferences.value.copy(
             themeVariant = themeVariant,
@@ -223,198 +421,136 @@ class JustFanRepository(
     }
 
     fun updatePlan(newPlan: String) {
-        _userProfile.value = _userProfile.value.copy(plan = newPlan)
+        updateTier(newPlan)
     }
 
-    private suspend fun seedInitialDataIfNeeded() {
-        if (postDao.getPostCount() > 0) return
+    fun updateTier(newTier: String) {
+        val expiresAt = when (newTier) {
+            "Pro" -> System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L) // 1 month
+            "Legendary" -> Long.MAX_VALUE // Unlimited time
+            else -> 0L
+        }
+        _userProfile.value = _userProfile.value.copy(
+            tier = newTier,
+            proExpiresAt = expiresAt
+        )
+    }
 
-        val samplePosts = listOf(
-            PostEntity(
-                id = "post-1",
-                title = "Cyberpunk Neon Empress: 4K Portrait Collection",
-                description = "Futuristic aesthetic portrait set featuring stunning holographic reflections, neon lighting, and high-fashion cyber gear.",
-                imageUrl = "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1200&q=80",
-                    "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1200&q=80",
-                    "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1578632767115-351597cf2477",
-                premiumLinkUrl = "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=3840",
-                tags = listOf("cosplay", "cyberpunk", "portrait", "exclusive"),
-                author = "Aria Nova",
-                isFree = true,
-                isNsfw = false,
-                clicksCount = 1420,
-                likesCount = 384
-            ),
-            PostEntity(
-                id = "post-2",
-                title = "Ethereal Golden Hour Summer Shoot",
-                description = "Sunset beach photo shoot with dramatic warm sun flares, cinematic golden tones, and breezy natural styling.",
-                imageUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1200&q=80",
-                    "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb",
-                premiumLinkUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=3840",
-                tags = listOf("fashion", "summer", "portrait"),
-                author = "Chloe Valenti",
-                isFree = false,
-                isNsfw = false,
-                clicksCount = 980,
-                likesCount = 215
-            ),
-            PostEntity(
-                id = "post-3",
-                title = "Sakura Spirit Shrine Maiden Studio Series",
-                description = "Detailed Japanese fantasy costume with ornate lace, cherry blossom accents, and studio lighting setup.",
-                imageUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=1200&q=80",
-                    "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1",
-                premiumLinkUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=3840",
-                tags = listOf("cosplay", "anime", "exclusive"),
-                author = "Yuki Rin",
-                isFree = true,
-                isNsfw = false,
-                clicksCount = 2450,
-                likesCount = 612
-            ),
-            PostEntity(
-                id = "post-4",
-                title = "Athletic Flow: Gym & Fitness Motivation Set",
-                description = "High energy gym aesthetic photoshoot with dynamic motion, studio spotlights, and clean athletic fits.",
-                imageUrl = "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1517841905240-472988babdf9",
-                tags = listOf("fitness", "athletic", "portrait"),
-                author = "Sierra Brooks",
-                isFree = true,
-                isNsfw = false,
-                clicksCount = 890,
-                likesCount = 190
-            ),
-            PostEntity(
-                id = "post-5",
-                title = "Midnight Velvet: High Fashion Monolith",
-                description = "Editorial noir studio session exploring monochrome silhouettes, dramatic contrast, and couture tailoring.",
-                imageUrl = "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e",
-                premiumLinkUrl = "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=3840",
-                tags = listOf("fashion", "exclusive", "noir"),
-                author = "Elena Vance",
-                isFree = false,
-                isNsfw = true,
-                clicksCount = 1850,
-                likesCount = 430
-            ),
-            PostEntity(
-                id = "post-6",
-                title = "Retro Wave Arcade Pop Showcase",
-                description = "Vibrant 80s arcade atmosphere featuring vintage pinball machines, neon purples, and stylish throwback attire.",
-                imageUrl = "https://images.unsplash.com/photo-1509967419530-da38b4704bc6?w=1200&q=80",
-                contentImages = listOf(
-                    "https://images.unsplash.com/photo-1509967419530-da38b4704bc6?w=1200&q=80"
-                ),
-                linkUrl = "https://images.unsplash.com/photo-1509967419530-da38b4704bc6",
-                tags = listOf("cosplay", "retro", "portrait"),
-                author = "Mia Sterling",
-                isFree = true,
-                isNsfw = false,
-                clicksCount = 760,
-                likesCount = 145
-            )
-        )
-        postDao.insertPosts(samplePosts)
+    fun signInWithEmail(email: String, password: String): Result<UserProfile> {
+        val cleanEmail = email.trim().lowercase()
+        return if (cleanEmail == "reytherapper12@gmail.com") {
+            if (password == "Pranav19ranjan97") {
+                val adminProfile = UserProfile(
+                    id = "admin_rey",
+                    username = "reytherapper12",
+                    email = "reytherapper12@gmail.com",
+                    isSignedIn = true,
+                    authMethod = "password",
+                    tier = "Legendary",
+                    isAdmin = true,
+                    requestsCount = 0,
+                    proExpiresAt = Long.MAX_VALUE
+                )
+                _userProfile.value = adminProfile
+                Result.success(adminProfile)
+            } else {
+                Result.failure(IllegalArgumentException("Incorrect password for admin account."))
+            }
+        } else {
+            if (cleanEmail.contains("@") && password.length >= 4) {
+                val user = UserProfile(
+                    id = UUID.randomUUID().toString(),
+                    username = cleanEmail.substringBefore("@"),
+                    email = cleanEmail,
+                    isSignedIn = true,
+                    authMethod = "password",
+                    tier = "Free",
+                    isAdmin = false,
+                    requestsCount = 0
+                )
+                _userProfile.value = user
+                Result.success(user)
+            } else {
+                Result.failure(IllegalArgumentException("Please enter a valid email and password (min 4 characters)."))
+            }
+        }
+    }
 
-        val sampleRequests = listOf(
-            RequestEntity(
-                id = "req-1",
-                name = "Aria Nova Cyberpunk V2",
-                email = "user1@demo.com",
-                telegramUsername = "@arianovafan",
-                message = "Would love to see more cyberpunk themed high res wallpapers from Aria!",
-                imageUrl = "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&q=80",
-                status = "delivered",
-                downloadLink = "https://images.unsplash.com/photo-1578632767115-351597cf2477"
-            ),
-            RequestEntity(
-                id = "req-2",
-                name = "Chloe Valenti Malibu Set",
-                email = "user2@demo.com",
-                telegramUsername = "@chloefan",
-                message = "The golden hour set was amazing, please fulfill the remaining 20 photos.",
-                imageUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&q=80",
-                status = "delivered",
-                downloadLink = "https://images.unsplash.com/photo-1534528741775-53994a69daeb"
-            ),
-            RequestEntity(
-                id = "req-3",
-                name = "Yuki Rin Shrine Series Part 2",
-                email = "user3@demo.com",
-                telegramUsername = "@yukilover",
-                message = "Please upload full 4K ZIP pack of the shrine maiden costume shoot.",
-                imageUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=600&q=80",
-                status = "in_progress"
-            )
+    fun signInWithGoogle(email: String = "reytherapper12@gmail.com", name: String = "Google User"): Result<UserProfile> {
+        val cleanEmail = email.trim().lowercase()
+        val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
+        val profile = UserProfile(
+            id = if (isAdminUser) "admin_rey" else UUID.randomUUID().toString(),
+            username = if (isAdminUser) "reytherapper12 (Admin)" else name,
+            email = cleanEmail,
+            isSignedIn = true,
+            authMethod = "google",
+            tier = if (isAdminUser) "Legendary" else "Free",
+            isAdmin = isAdminUser,
+            requestsCount = 0,
+            proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L
         )
-        requestDao.insertRequests(sampleRequests)
+        _userProfile.value = profile
+        return Result.success(profile)
+    }
 
-        val sampleActivities = listOf(
-            ActivityEntity(
-                id = "act-1",
-                type = "post_created",
-                title = "New gallery: Cyberpunk Neon Empress",
-                body = "4K Portrait Collection by Aria Nova now live!",
-                link = "post-1"
-            ),
-            ActivityEntity(
-                id = "act-2",
-                type = "request_delivered",
-                title = "Community Request Delivered: Aria Nova V2",
-                body = "Fulfilled community request is available now in Gallery.",
-                link = "req-1"
-            ),
-            ActivityEntity(
-                id = "act-3",
-                type = "post_created",
-                title = "New gallery: Sakura Spirit Shrine Maiden",
-                body = "Exclusive Japanese fantasy shoot by Yuki Rin added.",
-                link = "post-3"
-            )
+    fun signInWithPasskey(deviceCredentialName: String = "Device Passkey"): Result<UserProfile> {
+        val current = _userProfile.value
+        val isRey = current.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+        val profile = UserProfile(
+            id = if (isRey) "admin_rey" else "passkey_${UUID.randomUUID().toString().take(8)}",
+            username = if (isRey) "reytherapper12 (Admin)" else deviceCredentialName,
+            email = if (isRey) "reytherapper12@gmail.com" else "passkey@device.local",
+            isSignedIn = true,
+            authMethod = "passkey",
+            tier = if (isRey) "Legendary" else "Free",
+            isAdmin = isRey,
+            requestsCount = 0,
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
         )
-        activityDao.insertActivities(sampleActivities)
+        _userProfile.value = profile
+        return Result.success(profile)
+    }
 
-        val sampleCollections = listOf(
-            CollectionEntity(id = "col-1", name = "My Best Creator Picks"),
-            CollectionEntity(id = "col-2", name = "Cyberpunk & Cosplay")
+    fun signOut() {
+        _userProfile.value = UserProfile(
+            id = "guest_user",
+            username = "Guest Fan",
+            email = "",
+            isSignedIn = false,
+            authMethod = "guest",
+            tier = "Free",
+            isAdmin = false,
+            requestsCount = 0,
+            proExpiresAt = 0L
         )
-        sampleCollections.forEach { collectionDao.insertCollection(it) }
-        collectionDao.insertCollectionItem(
-            CollectionItemEntity(
-                id = UUID.randomUUID().toString(),
-                collectionId = "col-1",
-                postId = "post-1"
-            )
+    }
+
+    fun updateWallpaper(wallpaperUri: String?, dim: Float = 0.65f) {
+        _preferences.value = _preferences.value.copy(
+            customWallpaperUri = wallpaperUri,
+            wallpaperDim = dim
         )
-        collectionDao.insertCollectionItem(
-            CollectionItemEntity(
-                id = UUID.randomUUID().toString(),
-                collectionId = "col-2",
-                postId = "post-3"
-            )
+        _userProfile.value = _userProfile.value.copy(
+            customWallpaperUri = wallpaperUri
         )
-        favoriteDao.addFavorite(FavoriteEntity("post-1"))
-        favoriteDao.addFavorite(FavoriteEntity("post-3"))
+    }
+
+    private suspend fun cleanDummyData() {
+        postDao.clearDummyPosts()
+        requestDao.clearDummyRequests()
+        activityDao.clearDummyActivities()
+        favoriteDao.removeFavorite("post-1")
+        favoriteDao.removeFavorite("post-2")
+        favoriteDao.removeFavorite("post-3")
+        favoriteDao.removeFavorite("post-4")
+        favoriteDao.removeFavorite("post-5")
+        favoriteDao.removeFavorite("post-6")
+        collectionDao.deleteCollection("col-1")
+        collectionDao.deleteCollection("col-2")
+        userDao.deleteUser("user_alex")
+        userDao.deleteUser("user_elena")
+        userDao.deleteUser("user_liam")
+        userDao.deleteUser("user_sara")
     }
 }

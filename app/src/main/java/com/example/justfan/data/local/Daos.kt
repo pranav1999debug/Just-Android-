@@ -33,8 +33,17 @@ interface PostDao {
     @Query("DELETE FROM posts WHERE id = :id")
     suspend fun deletePost(id: String)
 
+    @Update
+    suspend fun updatePost(post: PostEntity)
+
     @Query("SELECT COUNT(*) FROM posts")
     suspend fun getPostCount(): Int
+
+    @Query("SELECT * FROM posts")
+    suspend fun getAllPostsList(): List<PostEntity>
+
+    @Query("DELETE FROM posts WHERE id LIKE 'post-%' OR id LIKE 'sample-%'")
+    suspend fun clearDummyPosts()
 }
 
 @Dao
@@ -89,6 +98,42 @@ interface RequestDao {
 
     @Query("UPDATE requests SET status = :status, downloadLink = :link WHERE id = :id")
     suspend fun updateStatus(id: String, status: String, link: String?)
+
+    @Query("UPDATE requests SET status = :status, downloadLink = :link, rejectionReason = :reason WHERE id = :id")
+    suspend fun updateStatusWithReason(id: String, status: String, link: String?, reason: String? = null)
+
+    @Query("DELETE FROM requests WHERE id = :id")
+    suspend fun deleteRequest(id: String)
+
+    @Query("DELETE FROM requests WHERE id LIKE 'req-%' OR id LIKE 'sample-%'")
+    suspend fun clearDummyRequests()
+}
+
+@Dao
+interface UserDao {
+    @Query("SELECT * FROM users ORDER BY joinedAt DESC")
+    fun getAllUsers(): Flow<List<UserEntity>>
+
+    @Query("SELECT * FROM users")
+    suspend fun getAllUsersList(): List<UserEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertUser(user: UserEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertUsers(users: List<UserEntity>)
+
+    @Query("UPDATE users SET tier = :tier WHERE id = :id")
+    suspend fun updateUserTier(id: String, tier: String)
+
+    @Query("UPDATE users SET requestsCount = :count WHERE id = :id")
+    suspend fun updateUserRequestsCount(id: String, count: Int)
+
+    @Query("UPDATE users SET status = :status WHERE id = :id")
+    suspend fun updateUserStatus(id: String, status: String)
+
+    @Query("DELETE FROM users WHERE id = :id")
+    suspend fun deleteUser(id: String)
 }
 
 @Dao
@@ -98,6 +143,9 @@ interface CommentDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertComment(comment: CommentEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertComments(comments: List<CommentEntity>)
 }
 
 @Dao
@@ -110,4 +158,7 @@ interface ActivityDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertActivities(activities: List<ActivityEntity>)
+
+    @Query("DELETE FROM activities WHERE id LIKE 'act-%'")
+    suspend fun clearDummyActivities()
 }

@@ -1,3 +1,18 @@
+# Android & Gradle
+.gradle/
+build/
+app/build/
+.build-outputs/
+.kotlin/
+captures/
+*.apk
+*.aab
+*.ap_
+output-metadata.json
+local.properties
+.env
+debug.keystore
+
 # Logs
 logs
 *.log

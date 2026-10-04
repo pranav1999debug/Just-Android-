@@ -108,7 +108,12 @@ fun FreeScreen(
                         onDownloadClick = {
                             onIncrementClicks(post.id)
                             val target = post.linkUrl.ifBlank { post.imageUrl }
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
+                            com.example.justfan.util.DownloadHelper.enqueueDownload(
+                                context = context,
+                                url = target,
+                                title = post.title,
+                                isPremium = false
+                            )
                         }
                     )
                 }

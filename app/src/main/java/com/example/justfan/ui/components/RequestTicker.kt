@@ -1,5 +1,7 @@
 package com.example.justfan.ui.components
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,39 +10,87 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.RequestEntity
+import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 
 @Composable
 fun RequestTicker(
-    deliveredRequests: List<RequestEntity>,
+    requests: List<RequestEntity>,
     onViewGallery: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (deliveredRequests.isEmpty()) return
+    val context = LocalContext.current
+    var selectedRequest by remember { mutableStateOf<RequestEntity?>(null) }
+
+    // Fallback sample requests matching user screenshot if database is newly initialized
+    val displayRequests = remember(requests) {
+        if (requests.isNotEmpty()) {
+            requests
+        } else {
+            listOf(
+                RequestEntity(
+                    id = "sample-chloe",
+                    name = "Chloe Valenti Malibu Set",
+                    email = "community@justfan.app",
+                    message = "Exclusive Malibu summer shoot archive",
+                    imageUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500",
+                    status = "delivered",
+                    downloadLink = "https://justfan.app/archive/chloe-valenti",
+                    createdAt = System.currentTimeMillis() - 86400000L
+                ),
+                RequestEntity(
+                    id = "sample-aria",
+                    name = "Aria Nova Cyberpunk V2",
+                    email = "community@justfan.app",
+                    message = "Cyberpunk neon city studio shoot",
+                    imageUrl = "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=500",
+                    status = "delivered",
+                    downloadLink = "https://justfan.app/archive/aria-nova",
+                    createdAt = System.currentTimeMillis() - 43200000L
+                ),
+                RequestEntity(
+                    id = "sample-meri",
+                    name = "MeriolChan Bunny Girl Set",
+                    email = "community@justfan.app",
+                    message = "Bunny suit cosplay full 4K photo album",
+                    imageUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=500",
+                    status = "delivered",
+                    downloadLink = "https://justfan.app/archive/meriolchan",
+                    createdAt = System.currentTimeMillis() - 21600000L
+                )
+            )
+        }
+    }
 
     Surface(
         modifier = modifier
             .testTag("request_ticker")
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(12.dp),
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+        shape = RoundedCornerShape(16.dp),
         tonalElevation = 2.dp
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Header: ✦ LIVE DELIVERED    Archive
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -48,80 +98,193 @@ fun RequestTicker(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Delivered",
-                        tint = SuccessGreen,
-                        modifier = Modifier.size(16.dp)
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "COMMUNITY REQUESTS DELIVERED",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "LIVE DELIVERED",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
 
                 Text(
-                    text = "View Archive →",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Archive",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier
                         .clickable(onClick = onViewGallery)
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
+            // Capsule Chips Row
             LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                items(deliveredRequests) { req ->
-                    TickerItem(req = req)
+                items(displayRequests, key = { it.id }) { req ->
+                    RequestChipItem(
+                        req = req,
+                        onClick = {
+                            if (!req.downloadLink.isNullOrBlank()) {
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
+                                } catch (_: Exception) {
+                                    selectedRequest = req
+                                }
+                            } else {
+                                selectedRequest = req
+                            }
+                        }
+                    )
                 }
             }
         }
     }
+
+    // Detail dialog when tapping any live request chip
+    if (selectedRequest != null) {
+        val req = selectedRequest!!
+        AlertDialog(
+            onDismissRequest = { selectedRequest = null },
+            title = {
+                Text(text = req.name, fontWeight = FontWeight.Bold, maxLines = 1)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (!req.imageUrl.isNullOrBlank()) {
+                        AsyncImage(
+                            model = req.imageUrl,
+                            contentDescription = req.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                        )
+                    }
+
+                    Text(
+                        text = if (req.message.isNotBlank()) req.message else "Requested by community member for archive release.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Surface(
+                        color = when (req.status.lowercase()) {
+                            "delivered" -> SuccessGreen.copy(alpha = 0.2f)
+                            "in_progress" -> GoldAccent.copy(alpha = 0.2f)
+                            else -> MaterialTheme.colorScheme.primaryContainer
+                        },
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = "STATUS: ${req.status.replace("_", " ").uppercase()}",
+                            color = when (req.status.lowercase()) {
+                                "delivered" -> SuccessGreen
+                                "in_progress" -> GoldAccent
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!req.downloadLink.isNullOrBlank()) {
+                    Button(
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
+                            } catch (_: Exception) {}
+                            selectedRequest = null
+                        }
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Open Delivered Gallery")
+                    }
+                } else {
+                    Button(onClick = { selectedRequest = null }) {
+                        Text("Close")
+                    }
+                }
+            },
+            dismissButton = {
+                if (!req.downloadLink.isNullOrBlank()) {
+                    TextButton(onClick = { selectedRequest = null }) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
-private fun TickerItem(req: RequestEntity) {
+private fun RequestChipItem(
+    req: RequestEntity,
+    onClick: () -> Unit
+) {
     Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.height(44.dp)
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier
+            .height(48.dp)
+            .clickable { onClick() }
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            modifier = Modifier.padding(start = 4.dp, end = 14.dp, top = 4.dp, bottom = 4.dp)
         ) {
-            if (!req.imageUrl.isNullOrEmpty()) {
+            // Circular Avatar
+            if (!req.imageUrl.isNullOrBlank()) {
                 AsyncImage(
                     model = req.imageUrl,
                     contentDescription = req.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
-            Column {
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(verticalArrangement = Arrangement.Center) {
                 Text(
                     text = req.name,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "Delivered to gallery",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = SuccessGreen,
-                    fontSize = 10.sp
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

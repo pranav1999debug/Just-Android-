@@ -1,6 +1,7 @@
 package com.example.justfan.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +17,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.justfan.data.model.UserProfile
+import com.example.justfan.ui.theme.GoldAccent
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,6 +29,11 @@ fun TopHeader(
     onAdminClick: () -> Unit,
     onPricingClick: () -> Unit,
     unreadNotificationsCount: Int = 3,
+    isSyncing: Boolean = false,
+    onSyncClick: () -> Unit = {},
+    userProfile: UserProfile? = null,
+    onAuthClick: () -> Unit = {},
+    hasCustomWallpaper: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var searchVisible by remember { mutableStateOf(false) }
@@ -33,7 +41,8 @@ fun TopHeader(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .background(if (hasCustomWallpaper) Color.Black.copy(alpha = 0.55f) else MaterialTheme.colorScheme.background)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Row(
@@ -41,7 +50,7 @@ fun TopHeader(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Brand Logo
+            // Brand Logo & Subtitle
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -49,17 +58,17 @@ fun TopHeader(
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.primary,
-                        letterSpacing = 1.2.sp
+                        letterSpacing = 1.1.sp
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = if (userProfile?.tier == "Legendary") GoldAccent.copy(alpha = 0.25f) else MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            text = "VIP",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 10.sp,
+                            text = if (userProfile?.isAdmin == true) "ADMIN" else (userProfile?.tier?.uppercase() ?: "VIP"),
+                            color = if (userProfile?.tier == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
+                            fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                         )
@@ -73,87 +82,113 @@ fun TopHeader(
                 )
             }
 
-            // Action Icons
+            // Uncluttered, Elegant Action Icons (Max 3-4 items)
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Search toggle
+                // 1. Search toggle
                 IconButton(
                     onClick = { searchVisible = !searchVisible },
-                    modifier = Modifier.testTag("header_search_toggle")
+                    modifier = Modifier.size(36.dp).testTag("header_search_toggle")
                 ) {
                     Icon(
                         imageVector = if (searchVisible) Icons.Default.Close else Icons.Default.Search,
                         contentDescription = "Search",
-                        tint = MaterialTheme.colorScheme.onBackground
+                        tint = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
-                // Pricing CTA
-                IconButton(
-                    onClick = onPricingClick,
-                    modifier = Modifier.testTag("header_pricing_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Diamond,
-                        contentDescription = "Membership",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                // Notifications Bell with Badge
+                // 2. Notifications Bell with Badge
                 Box {
                     IconButton(
                         onClick = onNotificationsClick,
-                        modifier = Modifier.testTag("header_notifications_button")
+                        modifier = Modifier.size(36.dp).testTag("header_notifications_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Notifications,
                             contentDescription = "Notifications",
-                            tint = MaterialTheme.colorScheme.onBackground
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                     if (unreadNotificationsCount > 0) {
                         Badge(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(top = 4.dp, end = 4.dp),
+                                .padding(top = 2.dp, end = 2.dp),
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         ) {
-                            Text(text = "$unreadNotificationsCount", fontSize = 10.sp)
+                            Text(text = "$unreadNotificationsCount", fontSize = 9.sp)
                         }
                     }
                 }
 
-                // Admin button
-                IconButton(
-                    onClick = onAdminClick,
-                    modifier = Modifier.testTag("header_admin_button")
+                // 3. Admin Panel button (only shown if admin)
+                if (userProfile?.isAdmin == true) {
+                    IconButton(
+                        onClick = onAdminClick,
+                        modifier = Modifier.size(36.dp).testTag("header_admin_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AdminPanelSettings,
+                            contentDescription = "Admin Panel",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // 4. Account / Tier Avatar Pill
+                Surface(
+                    color = when (userProfile?.tier) {
+                        "Legendary" -> GoldAccent
+                        "Pro" -> MaterialTheme.colorScheme.primaryContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .clickable { onAuthClick() }
+                        .testTag("header_auth_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AdminPanelSettings,
-                        contentDescription = "Admin Panel",
-                        tint = MaterialTheme.colorScheme.onBackground
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (userProfile?.isSignedIn == true) Icons.Default.AccountCircle else Icons.Default.AccountCircle,
+                            contentDescription = "Account",
+                            tint = if (userProfile?.tier == "Legendary") Color.Black else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (userProfile?.isSignedIn == true) userProfile.tier.uppercase() else "SIGN IN",
+                            color = if (userProfile?.tier == "Legendary") Color.Black else MaterialTheme.colorScheme.onSurface,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
 
+        // Search Bar (Unfolds smoothly when Search icon tapped)
         if (searchVisible) {
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = onSearchChange,
-                placeholder = { Text("Search creator, model, hashtag, vibe…") },
+                placeholder = { Text("Search creator, model, hashtag, vibe…", fontSize = 13.sp) },
                 leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = null)
+                    Icon(imageVector = Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                 },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
                         IconButton(onClick = { onSearchChange("") }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear")
+                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
                         }
                     }
                 },

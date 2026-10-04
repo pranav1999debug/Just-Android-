@@ -88,7 +88,12 @@ fun GalleryScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     req.downloadLink?.let { link ->
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                                        com.example.justfan.util.DownloadHelper.enqueueDownload(
+                                            context = context,
+                                            url = link,
+                                            title = req.name,
+                                            isPremium = false
+                                        )
                                     }
                                 }
                         ) {

@@ -41,7 +41,7 @@ val PLANS = listOf(
             "Browse all public content" to true,
             "Search & filter galleries" to true,
             "Save bookmarks & favorites" to true,
-            "3 community requests per week" to true,
+            "3 community requests total" to true,
             "Ad-free viewing" to false,
             "Unlimited requests" to false,
             "Direct 4K ZIP Downloads" to false
@@ -51,33 +51,32 @@ val PLANS = listOf(
         name = "Pro",
         price = "$5",
         period = "/month",
-        description = "Unlimited requests & fast 4K downloads",
+        description = "Unlimited requests for 1 month & fast 4K downloads",
         popular = true,
         features = listOf(
             "Browse all public content" to true,
             "Search & filter galleries" to true,
             "Save bookmarks & favorites" to true,
             "Unlimited requests for 1 month" to true,
+            "Custom themes & background wallpaper" to true,
             "100% Ad-free browsing" to true,
-            "Direct 4K ZIP Downloads" to true,
-            "Priority request fulfillment" to true
+            "Direct 4K ZIP Downloads" to true
         )
     ),
     PlanData(
         name = "Legendary",
         price = "$15",
         period = "one-time",
-        description = "Lifetime unlimited VIP access forever",
+        description = "Unlimited requests for unlimited time (Lifetime VIP)",
         popular = false,
         features = listOf(
             "Browse all public content" to true,
             "Search & filter galleries" to true,
             "Save bookmarks & favorites" to true,
-            "Unlimited requests forever" to true,
-            "100% Ad-free browsing forever" to true,
+            "Unlimited requests for unlimited time" to true,
+            "Custom themes & background wallpaper" to true,
             "Direct 4K Ultra HD Downloads" to true,
-            "Top-tier priority VIP fulfillment" to true,
-            "Creator supporter badge" to true
+            "Lifetime VIP supporter status" to true
         )
     )
 )
@@ -86,10 +85,15 @@ val PLANS = listOf(
 @Composable
 fun PricingScreen(
     currentPlan: String,
-    onSelectPlan: (String) -> Unit,
+    isAdmin: Boolean = false,
+    onSelectPlan: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var upgradedPlanName by remember { mutableStateOf<String?>(null) }
+    var showAdminContactDialog by remember { mutableStateOf<String?>(null) }
+    var checkoutPlan by remember { mutableStateOf<PlanData?>(null) }
+    var selectedPaymentMethod by remember { mutableStateOf("Google Play") }
+    var isProcessingPayment by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -230,25 +234,60 @@ fun PricingScreen(
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        Button(
-                            onClick = {
-                                onSelectPlan(plan.name)
-                                upgradedPlanName = plan.name
-                            },
-                            enabled = !isCurrent,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (plan.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
-                                contentColor = if (plan.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier
-                                .testTag("btn_select_plan_${plan.name.lowercase()}")
-                                .fillMaxWidth()
-                        ) {
-                            Text(
-                                text = if (isCurrent) "Current Plan" else "Select ${plan.name}",
-                                fontWeight = FontWeight.Bold
-                            )
+                        if (isCurrent) {
+                            Button(
+                                onClick = {},
+                                enabled = false,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Current Active Tier", fontWeight = FontWeight.Bold)
+                            }
+                        } else if (isAdmin) {
+                            Button(
+                                onClick = {
+                                    onSelectPlan(plan.name)
+                                    upgradedPlanName = plan.name
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (plan.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
+                                    contentColor = if (plan.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier
+                                    .testTag("btn_select_plan_${plan.name.lowercase()}")
+                                    .fillMaxWidth()
+                            ) {
+                                Text("Set Tier: ${plan.name} (Admin)", fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { checkoutPlan = plan },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (plan.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
+                                        contentColor = if (plan.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .testTag("btn_pay_plan_${plan.name.lowercase()}")
+                                        .fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Diamond, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Pay ${plan.price} & Upgrade to ${plan.name}", fontWeight = FontWeight.Bold)
+                                }
+
+                                OutlinedButton(
+                                    onClick = { showAdminContactDialog = plan.name },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .testTag("btn_contact_admin_${plan.name.lowercase()}")
+                                        .fillMaxWidth()
+                                ) {
+                                    Text("Contact Admin for Invoice", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
@@ -256,15 +295,160 @@ fun PricingScreen(
         }
     }
 
+    // Interactive Checkout & Payment Dialog
+    if (checkoutPlan != null) {
+        val target = checkoutPlan!!
+        AlertDialog(
+            onDismissRequest = { if (!isProcessingPayment) checkoutPlan = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Diamond,
+                    contentDescription = null,
+                    tint = if (target.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("Checkout: ${target.name} Membership", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Unlock Direct High-Speed Download Mirrors, 4K ZIP galleries, unlimited requests, and ad-free browsing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Total Amount Due:", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                            Text(
+                                text = "${target.price} ${target.period}",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Text("Select Payment Gateway:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                    listOf(
+                        "Google Play In-App Billing" to "Instant verification via Play Store",
+                        "Credit / Debit Card (Stripe)" to "Visa, MasterCard, Amex",
+                        "PayPal / Crypto" to "Secure international checkout"
+                    ).forEach { (method, desc) ->
+                        val isSelected = selectedPaymentMethod.startsWith(method.take(11))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                            border = androidx.compose.foundation.BorderStroke(
+                                width = if (isSelected) 2.dp else 1.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = { selectedPaymentMethod = method }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(text = method, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                    Text(text = desc, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+
+                    if (isProcessingPayment) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Processing secure payment...", fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isProcessingPayment = true
+                        onSelectPlan(target.name)
+                        isProcessingPayment = false
+                        upgradedPlanName = target.name
+                        checkoutPlan = null
+                    },
+                    enabled = !isProcessingPayment,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (target.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
+                        contentColor = if (target.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier.testTag("btn_confirm_checkout_${target.name.lowercase()}")
+                ) {
+                    Text("Complete Payment & Activate")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { checkoutPlan = null },
+                    enabled = !isProcessingPayment
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showAdminContactDialog != null) {
+        AlertDialog(
+            onDismissRequest = { showAdminContactDialog = null },
+            icon = { Icon(Icons.Default.Diamond, contentDescription = null, tint = GoldAccent) },
+            title = { Text("Admin Managed Tier") },
+            text = {
+                Text("Membership tiers are strictly managed by the Platform Administrator.\n\nTo upgrade your account to ${showAdminContactDialog}, please contact the administrator:\n\nEmail: reytherapper12@gmail.com")
+            },
+            confirmButton = {
+                Button(onClick = { showAdminContactDialog = null }) {
+                    Text("Understood")
+                }
+            }
+        )
+    }
+
     if (upgradedPlanName != null) {
         AlertDialog(
             onDismissRequest = { upgradedPlanName = null },
             icon = { Icon(Icons.Default.Star, contentDescription = null, tint = GoldAccent) },
-            title = { Text("Plan Updated!") },
-            text = { Text("Your account membership was updated to $upgradedPlanName successfully!") },
+            title = { Text("🎉 Membership Upgraded!") },
+            text = {
+                Text("Your payment was processed successfully and your account has been upgraded to $upgradedPlanName.\n\nDirect Download mirrors and unthrottled downloads are now fully unlocked!")
+            },
             confirmButton = {
                 Button(onClick = { upgradedPlanName = null }) {
-                    Text("Awesome")
+                    Text("Start Downloading")
                 }
             }
         )

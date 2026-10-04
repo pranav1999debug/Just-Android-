@@ -35,7 +35,7 @@ import com.example.justfan.ui.components.TrendingCarousel
 fun HomeScreen(
     posts: List<PostEntity>,
     trendingPosts: List<PostEntity>,
-    deliveredRequests: List<RequestEntity>,
+    requests: List<RequestEntity>,
     favoritePostIds: Set<String>,
     contentFilter: String,
     onPostClick: (String) -> Unit,
@@ -45,6 +45,11 @@ fun HomeScreen(
     onAdminClick: () -> Unit,
     onPricingClick: () -> Unit,
     onViewGallery: () -> Unit,
+    isSyncing: Boolean = false,
+    onSyncClick: () -> Unit = {},
+    userProfile: com.example.justfan.data.model.UserProfile? = null,
+    onAuthClick: () -> Unit = {},
+    hasCustomWallpaper: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -52,7 +57,7 @@ fun HomeScreen(
     var selectedTag by remember { mutableStateOf("All") }
     var shuffleSeed by remember { mutableIntStateOf(0) }
 
-    val tagsList = listOf("All", "cosplay", "fashion", "portrait", "fitness", "anime", "exclusive")
+    val tagsList = listOf("All", "Free Only", "cosplay", "fashion", "portrait", "fitness", "anime", "exclusive")
 
     // Filter posts
     val filteredPosts = remember(posts, searchQuery, selectedTag, contentFilter, shuffleSeed) {
@@ -60,7 +65,9 @@ fun HomeScreen(
         if (contentFilter == "sfw") {
             result = result.filter { !it.isNsfw }
         }
-        if (selectedTag != "All") {
+        if (selectedTag == "Free Only") {
+            result = result.filter { it.isFree }
+        } else if (selectedTag != "All") {
             result = result.filter { post ->
                 post.tags.any { it.equals(selectedTag, ignoreCase = true) }
             }
@@ -80,14 +87,19 @@ fun HomeScreen(
         result
     }
 
-    Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(modifier = modifier.fillMaxSize()) {
         TopHeader(
             searchQuery = searchQuery,
             onSearchChange = { searchQuery = it },
             onNotificationsClick = onNotificationsClick,
             onAdminClick = onAdminClick,
             onPricingClick = onPricingClick,
-            unreadNotificationsCount = 3
+            unreadNotificationsCount = 3,
+            isSyncing = isSyncing,
+            onSyncClick = onSyncClick,
+            userProfile = userProfile,
+            onAuthClick = onAuthClick,
+            hasCustomWallpaper = hasCustomWallpaper
         )
 
         LazyVerticalGrid(
@@ -99,10 +111,10 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(horizontal = 12.dp)
         ) {
-            // Live Delivered Requests Ticker
+            // Live Delivered Requests Ticker (Top of Everything)
             item(span = { GridItemSpan(maxLineSpan) }) {
                 RequestTicker(
-                    deliveredRequests = deliveredRequests,
+                    requests = requests,
                     onViewGallery = onViewGallery
                 )
             }
@@ -206,10 +218,12 @@ fun HomeScreen(
                         onDownloadClick = {
                             onIncrementClicks(post.id)
                             val targetUrl = if (post.linkUrl.isNotBlank()) post.linkUrl else post.imageUrl
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
-                            try {
-                                context.startActivity(intent)
-                            } catch (_: Exception) {}
+                            com.example.justfan.util.DownloadHelper.enqueueDownload(
+                                context = context,
+                                url = targetUrl,
+                                title = post.title,
+                                isPremium = !post.isFree
+                            )
                         }
                     )
                 }

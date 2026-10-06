@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -102,12 +103,36 @@ private fun TrendingCardItem(
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
+            val isVideo = isVideoMediaUrl(post.imageUrl) ||
+                    post.contentImages.any { isVideoMediaUrl(it) } ||
+                    isVideoMediaUrl(post.directLinkUrl) ||
+                    isVideoMediaUrl(post.linkUrl)
+
             AsyncImage(
                 model = post.imageUrl,
                 contentDescription = post.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
+
+            if (isVideo) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.65f),
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .align(Alignment.Center)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Video",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
 
             // Rank Badge
             Surface(

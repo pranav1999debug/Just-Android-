@@ -28,7 +28,7 @@ fun TopHeader(
     onNotificationsClick: () -> Unit,
     onAdminClick: () -> Unit,
     onPricingClick: () -> Unit,
-    unreadNotificationsCount: Int = 3,
+    unreadNotificationsCount: Int = 0,
     isSyncing: Boolean = false,
     onSyncClick: () -> Unit = {},
     userProfile: UserProfile? = null,
@@ -82,25 +82,12 @@ fun TopHeader(
                 )
             }
 
-            // Uncluttered, Elegant Action Icons (Max 3-4 items)
+            // Right Action Icons (Notifications & Account Pill)
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 1. Search toggle
-                IconButton(
-                    onClick = { searchVisible = !searchVisible },
-                    modifier = Modifier.size(36.dp).testTag("header_search_toggle")
-                ) {
-                    Icon(
-                        imageVector = if (searchVisible) Icons.Default.Close else Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // 2. Notifications Bell with Badge
+                // 1. Notifications Bell with Badge
                 Box {
                     IconButton(
                         onClick = onNotificationsClick,
@@ -126,22 +113,7 @@ fun TopHeader(
                     }
                 }
 
-                // 3. Admin Panel button (only shown if admin)
-                if (userProfile?.isAdmin == true) {
-                    IconButton(
-                        onClick = onAdminClick,
-                        modifier = Modifier.size(36.dp).testTag("header_admin_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AdminPanelSettings,
-                            contentDescription = "Admin Panel",
-                            tint = Color(0xFFEF4444),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-
-                // 4. Account / Tier Avatar Pill
+                // 2. Account / Tier Avatar Pill
                 Surface(
                     color = when (userProfile?.tier) {
                         "Legendary" -> GoldAccent
@@ -155,10 +127,10 @@ fun TopHeader(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Icon(
-                            imageVector = if (userProfile?.isSignedIn == true) Icons.Default.AccountCircle else Icons.Default.AccountCircle,
+                            imageVector = Icons.Default.AccountCircle,
                             contentDescription = "Account",
                             tint = if (userProfile?.tier == "Legendary") Color.Black else MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(16.dp)
@@ -175,33 +147,40 @@ fun TopHeader(
             }
         }
 
-        // Search Bar (Unfolds smoothly when Search icon tapped)
-        if (searchVisible) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                placeholder = { Text("Search creator, model, hashtag, vibe…", fontSize = 13.sp) },
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchChange("") }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                        }
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // 2nd Line: Full-Width Search Bar to free up header space
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchChange,
+            placeholder = { Text("Search creator, tags, keywords…", fontSize = 13.sp) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onSearchChange("") }) {
+                        Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
                     }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
-                ),
-                modifier = Modifier
-                    .testTag("search_text_input")
-                    .fillMaxWidth()
-            )
-        }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier
+                .testTag("search_text_input")
+                .fillMaxWidth()
+                .height(50.dp)
+        )
     }
 }

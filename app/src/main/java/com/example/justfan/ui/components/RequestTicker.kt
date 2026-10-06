@@ -40,44 +40,13 @@ fun RequestTicker(
     val context = LocalContext.current
     var selectedRequest by remember { mutableStateOf<RequestEntity?>(null) }
 
-    // Fallback sample requests matching user screenshot if database is newly initialized
+    // Real delivered requests from database only (no fake sample data)
     val displayRequests = remember(requests) {
-        if (requests.isNotEmpty()) {
-            requests
-        } else {
-            listOf(
-                RequestEntity(
-                    id = "sample-chloe",
-                    name = "Chloe Valenti Malibu Set",
-                    email = "community@justfan.app",
-                    message = "Exclusive Malibu summer shoot archive",
-                    imageUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500",
-                    status = "delivered",
-                    downloadLink = "https://justfan.app/archive/chloe-valenti",
-                    createdAt = System.currentTimeMillis() - 86400000L
-                ),
-                RequestEntity(
-                    id = "sample-aria",
-                    name = "Aria Nova Cyberpunk V2",
-                    email = "community@justfan.app",
-                    message = "Cyberpunk neon city studio shoot",
-                    imageUrl = "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=500",
-                    status = "delivered",
-                    downloadLink = "https://justfan.app/archive/aria-nova",
-                    createdAt = System.currentTimeMillis() - 43200000L
-                ),
-                RequestEntity(
-                    id = "sample-meri",
-                    name = "MeriolChan Bunny Girl Set",
-                    email = "community@justfan.app",
-                    message = "Bunny suit cosplay full 4K photo album",
-                    imageUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=500",
-                    status = "delivered",
-                    downloadLink = "https://justfan.app/archive/meriolchan",
-                    createdAt = System.currentTimeMillis() - 21600000L
-                )
-            )
-        }
+        requests.filter { it.status == "delivered" }.ifEmpty { requests }
+    }
+
+    if (displayRequests.isEmpty()) {
+        return
     }
 
     Surface(

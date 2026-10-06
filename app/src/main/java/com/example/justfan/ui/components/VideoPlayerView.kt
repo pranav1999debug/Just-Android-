@@ -36,27 +36,30 @@ import com.example.justfan.R
 
 fun isVideoMediaUrl(url: String?): Boolean {
     if (url.isNullOrBlank()) return false
-    val clean = url.trim().lowercase().split("?").first()
+    val clean = url.trim().lowercase()
+    val pathOnly = clean.split("?").first().split("#").first()
+
     // Explicitly reject static image formats
-    if (clean.endsWith(".jpg") || clean.endsWith(".jpeg") || clean.endsWith(".png") ||
-        clean.endsWith(".webp") || clean.endsWith(".gif") || clean.endsWith(".svg") ||
-        clean.endsWith(".avif") || clean.endsWith(".bmp")
+    if (pathOnly.endsWith(".jpg") || pathOnly.endsWith(".jpeg") || pathOnly.endsWith(".png") ||
+        pathOnly.endsWith(".webp") || pathOnly.endsWith(".gif") || pathOnly.endsWith(".svg") ||
+        pathOnly.endsWith(".avif") || pathOnly.endsWith(".bmp")
     ) {
         return false
     }
     // Reject HTML/web pages
-    if (clean.endsWith(".html") || clean.endsWith(".htm") || clean.endsWith(".php")) {
+    if (pathOnly.endsWith(".html") || pathOnly.endsWith(".htm") || pathOnly.endsWith(".php")) {
         return false
     }
-    return clean.endsWith(".mp4") ||
-            clean.endsWith(".webm") ||
-            clean.endsWith(".mkv") ||
-            clean.endsWith(".mov") ||
-            clean.endsWith(".m4v") ||
-            clean.endsWith(".m3u8") ||
-            clean.endsWith(".mpd") ||
-            clean.endsWith(".avi") ||
-            clean.endsWith(".ts")
+
+    return pathOnly.endsWith(".mp4") || pathOnly.contains(".mp4") ||
+            pathOnly.endsWith(".webm") || pathOnly.contains(".webm") ||
+            pathOnly.endsWith(".mkv") || pathOnly.contains(".mkv") ||
+            pathOnly.endsWith(".mov") || pathOnly.contains(".mov") ||
+            pathOnly.endsWith(".m4v") || pathOnly.contains(".m4v") ||
+            pathOnly.endsWith(".m3u8") || pathOnly.contains(".m3u8") ||
+            pathOnly.endsWith(".mpd") ||
+            pathOnly.endsWith(".avi") ||
+            pathOnly.endsWith(".ts")
 }
 
 @OptIn(UnstableApi::class)
@@ -91,7 +94,7 @@ fun VideoPlayerView(
             .setDefaultRequestProperties(reqHeaders)
 
         val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
-            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
             .setEnableDecoderFallback(true)
 
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
@@ -144,18 +147,28 @@ fun VideoPlayerView(
                 isBuffering = false
                 isPlaying = false
                 val cause = error.cause
-                playbackError = if (cause is androidx.media3.exoplayer.source.UnrecognizedInputFormatException) {
+                playbackError = if (cause is androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException) {
+                    "Hardware decoder limit reached. Tap 'Open Direct' below to play in system player."
+                } else if (cause is androidx.media3.exoplayer.source.UnrecognizedInputFormatException) {
                     "Video stream format requires external player or direct download."
                 } else {
                     error.message ?: "Failed to stream video"
                 }
+                try {
+                    exoPlayer.stop()
+                    exoPlayer.clearMediaItems()
+                } catch (_: Exception) {}
             }
         }
         exoPlayer.addListener(listener)
 
         onDispose {
             exoPlayer.removeListener(listener)
-            exoPlayer.release()
+            try {
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
+                exoPlayer.release()
+            } catch (_: Exception) {}
         }
     }
 
@@ -209,11 +222,33 @@ fun VideoPlayerView(
                 shape = RoundedCornerShape(4.dp)
             ) {
                 Text(
-                    text = "HD VIDEO",
+                    text = "▶ AUTO-PLAYING",
                     color = Color.White,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+
+            var isMuted by remember { mutableStateOf(false) }
+
+            IconButton(
+                onClick = {
+                    isMuted = !isMuted
+                    exoPlayer.volume = if (isMuted) 0f else 1f
+                },
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.6f),
+                    contentColor = Color.White
+                ),
+                modifier = Modifier
+                    .size(32.dp)
+                    .testTag("btn_toggle_mute")
+            ) {
+                Icon(
+                    imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
+                    modifier = Modifier.size(16.dp)
                 )
             }
 

@@ -72,6 +72,12 @@ interface CollectionDao {
     @Query("DELETE FROM collections WHERE id = :id")
     suspend fun deleteCollection(id: String)
 
+    @Query("SELECT * FROM collections")
+    suspend fun getAllCollectionsList(): List<CollectionEntity>
+
+    @Query("DELETE FROM collections WHERE id LIKE 'col-%' OR id LIKE 'sample-%'")
+    suspend fun clearDummyCollections()
+
     @Query("SELECT * FROM collection_items WHERE collectionId = :colId ORDER BY addedAt DESC")
     fun getItemsForCollection(colId: String): Flow<List<CollectionItemEntity>>
 
@@ -107,6 +113,9 @@ interface RequestDao {
 
     @Query("DELETE FROM requests WHERE id LIKE 'req-%' OR id LIKE 'sample-%'")
     suspend fun clearDummyRequests()
+
+    @Query("SELECT * FROM requests")
+    suspend fun getAllRequestsList(): List<RequestEntity>
 }
 
 @Dao
@@ -116,6 +125,9 @@ interface UserDao {
 
     @Query("SELECT * FROM users")
     suspend fun getAllUsersList(): List<UserEntity>
+
+    @Query("DELETE FROM users WHERE id LIKE 'user_%' OR id LIKE 'sample-%'")
+    suspend fun clearDummyUsers()
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertUser(user: UserEntity)

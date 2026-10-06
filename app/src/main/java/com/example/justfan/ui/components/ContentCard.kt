@@ -38,6 +38,7 @@ fun ContentCard(
     onPostClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     onDownloadClick: () -> Unit,
+    autoPlay: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -57,30 +58,46 @@ fun ContentCard(
                     .fillMaxWidth()
                     .aspectRatio(1.1f)
             ) {
-                val isVideo = isVideoMediaUrl(post.imageUrl)
+                val videoUrl: String? = when {
+                    isVideoMediaUrl(post.imageUrl) -> post.imageUrl
+                    post.contentImages.any { isVideoMediaUrl(it) } -> post.contentImages.first { isVideoMediaUrl(it) }
+                    isVideoMediaUrl(post.directLinkUrl) -> post.directLinkUrl
+                    isVideoMediaUrl(post.linkUrl) -> post.linkUrl
+                    else -> null
+                }
+                val isVideo = videoUrl != null
 
-                AsyncImage(
-                    model = post.imageUrl,
-                    contentDescription = post.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+                if (isVideo && autoPlay) {
+                    InlineVideoPreview(
+                        videoUrl = videoUrl!!,
+                        thumbnailUrl = post.imageUrl,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    AsyncImage(
+                        model = post.imageUrl,
+                        contentDescription = post.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
 
-                // Video Center Play Indicator
-                if (isVideo) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(44.dp)
-                            .background(Color.Black.copy(alpha = 0.65f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Video",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
+                    if (isVideo) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.65f),
+                            shape = CircleShape,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .align(Alignment.Center)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Video",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                        }
                     }
                 }
 

@@ -83,6 +83,12 @@ class JustFanRepository(
                         }
                     }
                     userDao.insertUsers(mergedUsers)
+                    val remoteIds = remoteUsers.map { it.id }.toSet()
+                    for (u in existingUsers.values) {
+                        if (u.id !in remoteIds) {
+                            userDao.deleteUser(u.id)
+                        }
+                    }
                 }
             }
 
@@ -110,6 +116,12 @@ class JustFanRepository(
                         remote.copy(clicksCount = totalClicks, likesCount = totalLikes)
                     }
                     postDao.insertPosts(mergedPosts)
+                    val remoteIds = remotePosts.map { it.id }.toSet()
+                    for (p in existingPosts.values) {
+                        if (p.id !in remoteIds) {
+                            postDao.deletePost(p.id)
+                        }
+                    }
                 }
             }
 
@@ -130,6 +142,13 @@ class JustFanRepository(
             val reqResult = com.example.justfan.data.remote.SupabaseClient.fetchRequests()
             if (reqResult.isSuccess) {
                 val remoteRequests = reqResult.getOrNull().orEmpty()
+                val existingRequests = requestDao.getAllRequestsList()
+                val remoteReqIds = remoteRequests.map { it.id }.toSet()
+                for (r in existingRequests) {
+                    if (r.id !in remoteReqIds) {
+                        requestDao.deleteRequest(r.id)
+                    }
+                }
                 if (remoteRequests.isNotEmpty()) {
                     requestDao.insertRequests(remoteRequests)
                 }
@@ -139,6 +158,13 @@ class JustFanRepository(
             val colResult = com.example.justfan.data.remote.SupabaseClient.fetchCollections()
             if (colResult.isSuccess) {
                 val remoteCollections = colResult.getOrNull().orEmpty()
+                val existingCols = collectionDao.getAllCollectionsList()
+                val remoteColIds = remoteCollections.map { it.id }.toSet()
+                for (c in existingCols) {
+                    if (c.id !in remoteColIds) {
+                        collectionDao.deleteCollection(c.id)
+                    }
+                }
                 for (col in remoteCollections) {
                     collectionDao.insertCollection(col)
                 }
@@ -227,7 +253,31 @@ class JustFanRepository(
         }
     }
 
-    suspend fun submitRequest(name: String, email: String, telegram: String?, message: String, imageUrl: String?) {
+    suspend fun syncRequestsFromSupabase(): Result<List<RequestEntity>> {
+        val reqResult = com.example.justfan.data.remote.SupabaseClient.fetchRequests()
+        if (reqResult.isSuccess) {
+            val remoteRequests = reqResult.getOrNull().orEmpty()
+            val existingRequests = requestDao.getAllRequestsList()
+            val remoteReqIds = remoteRequests.map { it.id }.toSet()
+            for (r in existingRequests) {
+                if (r.id !in remoteReqIds) {
+                    requestDao.deleteRequest(r.id)
+                }
+            }
+            if (remoteRequests.isNotEmpty()) {
+                requestDao.insertRequests(remoteRequests)
+            }
+        }
+        return reqResult
+    }
+
+    suspend fun submitRequest(
+        name: String,
+        email: String,
+        telegram: String?,
+        message: String,
+        imageUrl: String?
+    ): Result<Boolean> {
         val currentProfile = _userProfile.value
         if (!currentProfile.canMakeRequest) {
             throw IllegalStateException("Free users are limited to 3 requests. Please upgrade to Pro (1 Month Unlimited) or Legendary (Lifetime Unlimited)!")
@@ -254,13 +304,24 @@ class JustFanRepository(
         _userProfile.value = _userProfile.value.copy(
             requestsCount = _userProfile.value.requestsCount + 1
         )
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.submitRequest(name, email, message, imageUrl)
-        }
+        // Push directly to live Supabase requests table
+        val remoteResult = com.example.justfan.data.remote.SupabaseClient.submitRequest(
+            name = name,
+            email = email,
+            message = message,
+            imageUrl = imageUrl,
+            userId = currentProfile.id
+        )
+        // Refresh live requests from Supabase
+        syncRequestsFromSupabase()
+        return remoteResult
     }
 
     suspend fun updateRequestStatus(id: String, status: String, link: String?) {
         requestDao.updateStatus(id, status, link)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.updateRequestStatusInSupabase(id, status)
+        }
         if (status == "delivered") {
             activityDao.insertActivity(
                 ActivityEntity(
@@ -284,6 +345,9 @@ class JustFanRepository(
 
     suspend fun deleteCollection(id: String) {
         collectionDao.deleteCollection(id)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.deleteCollection(id)
+        }
     }
 
     suspend fun addPostToCollection(collectionId: String, postId: String) {
@@ -333,20 +397,32 @@ class JustFanRepository(
                 link = post.id
             )
         )
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.insertPost(post)
+        }
     }
 
     suspend fun deletePost(id: String) {
         postDao.deletePost(id)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.deletePost(id)
+        }
     }
 
     suspend fun updatePost(post: PostEntity) {
         postDao.updatePost(post)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.updatePost(post)
+        }
     }
 
     suspend fun updateUserTier(userId: String, newTier: String) {
         userDao.updateUserTier(userId, newTier)
         if (_userProfile.value.id == userId || _userProfile.value.email.equals(userId, ignoreCase = true)) {
             updateTier(newTier)
+        }
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.updateUserTier(userId, newTier)
         }
     }
 
@@ -359,10 +435,16 @@ class JustFanRepository(
 
     suspend fun updateUserStatus(userId: String, status: String) {
         userDao.updateUserStatus(userId, status)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.updateUserStatus(userId, status)
+        }
     }
 
     suspend fun deleteUser(userId: String) {
         userDao.deleteUser(userId)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.deleteUser(userId)
+        }
     }
 
     suspend fun rejectRequest(id: String, reason: String) {
@@ -375,6 +457,9 @@ class JustFanRepository(
                 body = "Reason: $reason"
             )
         )
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.rejectRequestInSupabase(id, reason)
+        }
     }
 
     suspend fun fulfillRequest(id: String, downloadLink: String) {
@@ -388,10 +473,16 @@ class JustFanRepository(
                 link = downloadLink
             )
         )
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.fulfillRequestInSupabase(id, downloadLink)
+        }
     }
 
     suspend fun deleteRequest(id: String) {
         requestDao.deleteRequest(id)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.deleteRequestFromSupabase(id)
+        }
     }
 
     fun updateTheme(themeVariant: String, isDark: Boolean) {
@@ -540,6 +631,8 @@ class JustFanRepository(
         postDao.clearDummyPosts()
         requestDao.clearDummyRequests()
         activityDao.clearDummyActivities()
+        collectionDao.clearDummyCollections()
+        userDao.clearDummyUsers()
         favoriteDao.removeFavorite("post-1")
         favoriteDao.removeFavorite("post-2")
         favoriteDao.removeFavorite("post-3")

@@ -5,11 +5,13 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -33,6 +35,9 @@ import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,6 +47,8 @@ fun RequestScreen(
     onSubmitRequest: (name: String, email: String, telegram: String?, message: String, imageUrl: String?) -> Unit,
     onViewGallery: () -> Unit,
     onUpgradeClick: () -> Unit,
+    isSyncing: Boolean = false,
+    onSyncRequests: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -59,6 +66,7 @@ fun RequestScreen(
     var showTokenDialog by remember { mutableStateOf(false) }
     var imgchestTokenInput by remember { mutableStateOf(ImgchestUploader.getApiToken(context) ?: "") }
     var showSuccessSnackbar by remember { mutableStateOf(false) }
+    var previewImageUrl by remember { mutableStateOf<String?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -175,6 +183,92 @@ fun RequestScreen(
                 }
             }
 
+            // Supabase Live Database Connection Banner
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(SuccessGreen)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Supabase Live Database",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "requests TABLE",
+                                        color = SuccessGreen,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "zlboyxbqppoimhhbvrax.supabase.co • ${requests.size} Requests Connected",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 10.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    FilledTonalButton(
+                        onClick = onSyncRequests,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("btn_sync_requests_supabase")
+                    ) {
+                        if (isSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Syncing...", fontSize = 11.sp)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Sync",
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Sync", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // Tabs
             TabRow(
                 selectedTabIndex = selectedTab,
@@ -190,7 +284,7 @@ fun RequestScreen(
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("My Requests (${requests.size})", fontWeight = FontWeight.SemiBold) },
+                    text = { Text("Live Requests (${requests.size})", fontWeight = FontWeight.SemiBold) },
                     modifier = Modifier.testTag("tab_my_requests")
                 )
             }
@@ -544,93 +638,226 @@ fun RequestScreen(
                                 .fillMaxWidth()
                                 .height(50.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = null)
+                            Icon(Icons.Default.CloudUpload, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (hasUnlimited || remainingRequests > 0) "Submit Request Now" else "Limit Reached (Upgrade for Unlimited)",
+                                text = if (hasUnlimited || remainingRequests > 0) "Submit to Supabase Database" else "Limit Reached (Upgrade for Unlimited)",
                                 fontWeight = FontWeight.Bold
                             )
                         }
                     }
                 }
             } else {
-                // My Requests List
+                // Live Supabase Requests List
                 if (requests.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("You haven't submitted any requests yet.")
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = 80.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Inbox,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(64.dp)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "No requests found yet",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Pull live records directly from the Supabase requests table or submit a new request.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(onClick = onSyncRequests) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Sync from Supabase")
+                                }
+                                OutlinedButton(onClick = { selectedTab = 0 }) {
+                                    Text("Submit New Request")
+                                }
+                            }
+                        }
                     }
                 } else {
                     LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(bottom = 80.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Connected Supabase Records (${requests.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                TextButton(onClick = onSyncRequests) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Refresh", fontSize = 12.sp)
+                                }
+                            }
+                        }
+
                         items(requests, key = { it.id }) { req ->
                             Card(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(14.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                                 modifier = Modifier
                                     .testTag("request_item_${req.id}")
                                     .fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (!req.imageUrl.isNullOrEmpty()) {
-                                        AsyncImage(
-                                            model = req.imageUrl,
-                                            contentDescription = req.name,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .size(60.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                        )
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                    }
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = req.name,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            if (req.email.isNotBlank()) {
+                                                Text(
+                                                    text = "By: ${req.email}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                        }
 
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = req.name,
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = req.message,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 2
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
                                         Surface(
-                                            color = when (req.status) {
+                                            color = when (req.status.lowercase()) {
                                                 "delivered" -> SuccessGreen.copy(alpha = 0.2f)
                                                 "in_progress" -> GoldAccent.copy(alpha = 0.2f)
+                                                "rejected" -> MaterialTheme.colorScheme.errorContainer
                                                 else -> MaterialTheme.colorScheme.primaryContainer
                                             },
-                                            shape = RoundedCornerShape(4.dp)
+                                            shape = RoundedCornerShape(6.dp)
                                         ) {
                                             Text(
                                                 text = req.status.replace("_", " ").uppercase(),
-                                                color = when (req.status) {
+                                                color = when (req.status.lowercase()) {
                                                     "delivered" -> SuccessGreen
                                                     "in_progress" -> GoldAccent
+                                                    "rejected" -> MaterialTheme.colorScheme.error
                                                     else -> MaterialTheme.colorScheme.primary
                                                 },
                                                 fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                fontWeight = FontWeight.Black,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                             )
                                         }
                                     }
 
-                                    if (req.status == "delivered" && !req.downloadLink.isNullOrEmpty()) {
-                                        IconButton(onClick = {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
-                                        }) {
-                                            Icon(Icons.Default.Download, contentDescription = "Download", tint = SuccessGreen)
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    if (!req.message.isBlank()) {
+                                        Text(
+                                            text = req.message,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+
+                                    // Imgchest Reference Image Preview
+                                    if (!req.imageUrl.isNullOrBlank()) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.Black.copy(alpha = 0.15f))
+                                                .clickable { previewImageUrl = req.imageUrl }
+                                                .padding(6.dp)
+                                        ) {
+                                            AsyncImage(
+                                                model = req.imageUrl,
+                                                contentDescription = "Imgchest Reference",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .size(54.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Imgchest Photo Reference", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                                }
+                                                Text(
+                                                    text = req.imageUrl,
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                            Icon(Icons.Default.ZoomIn, contentDescription = "View Photo", modifier = Modifier.size(20.dp))
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+
+                                    // Footer with date and actions
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val dateStr = remember(req.createdAt) {
+                                            try {
+                                                SimpleDateFormat("MMM dd, yyyy • HH:mm", Locale.getDefault()).format(Date(req.createdAt))
+                                            } catch (_: Exception) {
+                                                ""
+                                            }
+                                        }
+                                        Text(
+                                            text = if (dateStr.isNotBlank()) dateStr else "ID: ${req.id.take(8)}",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+
+                                        if (req.status == "delivered" && !req.downloadLink.isNullOrEmpty()) {
+                                            Button(
+                                                onClick = {
+                                                    try {
+                                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
+                                                    } catch (_: Exception) {}
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("View Delivery", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
                                         }
                                     }
                                 }
@@ -640,6 +867,34 @@ fun RequestScreen(
                 }
             }
         }
+    }
+
+    // Image lightbox preview dialog
+    if (previewImageUrl != null) {
+        AlertDialog(
+            onDismissRequest = { previewImageUrl = null },
+            title = { Text("Reference Image", fontWeight = FontWeight.Bold) },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                ) {
+                    AsyncImage(
+                        model = previewImageUrl,
+                        contentDescription = "Full Preview",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { previewImageUrl = null }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 
     if (showTokenDialog) {

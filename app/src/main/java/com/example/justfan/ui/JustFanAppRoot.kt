@@ -21,14 +21,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.ui.components.AuthDialog
+import com.example.justfan.ui.components.MoreBottomSheet
 import com.example.justfan.ui.screens.*
 import com.example.justfan.ui.theme.JustFanTheme
 
 enum class Screen(val title: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     TRENDING("Trending", Icons.Default.Whatshot),
-    REQUEST("Requests", Icons.AutoMirrored.Filled.Send),
-    FAVORITES("Saved", Icons.Default.Favorite),
+    FREE("Free", Icons.Default.CardGiftcard),
+    MORE("More", Icons.Default.Menu),
+    REQUEST("Request", Icons.AutoMirrored.Filled.Send),
+    FAVORITES("Favorites", Icons.Default.Favorite),
     SETTINGS("Settings", Icons.Default.Settings)
 }
 
@@ -92,16 +95,35 @@ fun JustFanAppRoot(
                 )
             }
 
+            val footerTabs = remember {
+                listOf(Screen.HOME, Screen.TRENDING, Screen.FREE, Screen.MORE)
+            }
+            var isMoreSheetOpen by remember { mutableStateOf(false) }
+
             Row(modifier = Modifier.fillMaxSize()) {
                 if (isWideScreen && currentSubScreen == SubScreen.NONE) {
                     NavigationRail(
                         containerColor = if (hasCustomWallpaper) Color.Black.copy(alpha = 0.65f) else MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxHeight()
                     ) {
-                        Screen.values().forEach { screen ->
+                        footerTabs.forEach { screen ->
+                            val isSelected = when (screen) {
+                                Screen.HOME -> currentScreen == Screen.HOME && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                Screen.TRENDING -> currentScreen == Screen.TRENDING && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                Screen.FREE -> currentScreen == Screen.FREE && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                Screen.MORE -> isMoreSheetOpen || currentScreen in listOf(Screen.REQUEST, Screen.FAVORITES, Screen.SETTINGS) || currentSubScreen in listOf(SubScreen.GALLERY, SubScreen.PRICING, SubScreen.NOTIFICATIONS, SubScreen.ADMIN)
+                                else -> false
+                            }
                             NavigationRailItem(
-                                selected = currentScreen == screen,
-                                onClick = { currentScreen = screen },
+                                selected = isSelected,
+                                onClick = {
+                                    if (screen == Screen.MORE) {
+                                        isMoreSheetOpen = true
+                                    } else {
+                                        currentScreen = screen
+                                        currentSubScreen = SubScreen.NONE
+                                    }
+                                },
                                 icon = { Icon(screen.icon, contentDescription = screen.title) },
                                 label = { Text(screen.title) },
                                 modifier = Modifier.testTag("nav_rail_${screen.name.lowercase()}")
@@ -118,10 +140,24 @@ fun JustFanAppRoot(
                                 containerColor = if (hasCustomWallpaper) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surface,
                                 tonalElevation = 8.dp
                             ) {
-                                Screen.values().forEach { screen ->
+                                footerTabs.forEach { screen ->
+                                    val isSelected = when (screen) {
+                                        Screen.HOME -> currentScreen == Screen.HOME && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                        Screen.TRENDING -> currentScreen == Screen.TRENDING && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                        Screen.FREE -> currentScreen == Screen.FREE && currentSubScreen == SubScreen.NONE && !isMoreSheetOpen
+                                        Screen.MORE -> isMoreSheetOpen || currentScreen in listOf(Screen.REQUEST, Screen.FAVORITES, Screen.SETTINGS) || currentSubScreen in listOf(SubScreen.GALLERY, SubScreen.PRICING, SubScreen.NOTIFICATIONS, SubScreen.ADMIN)
+                                        else -> false
+                                    }
                                     NavigationBarItem(
-                                        selected = currentScreen == screen,
-                                        onClick = { currentScreen = screen },
+                                        selected = isSelected,
+                                        onClick = {
+                                            if (screen == Screen.MORE) {
+                                                isMoreSheetOpen = true
+                                            } else {
+                                                currentScreen = screen
+                                                currentSubScreen = SubScreen.NONE
+                                            }
+                                        },
                                         icon = { Icon(screen.icon, contentDescription = screen.title) },
                                         label = { Text(screen.title, maxLines = 1, fontSize = 11.sp) },
                                         alwaysShowLabel = true,
@@ -238,7 +274,8 @@ fun JustFanAppRoot(
                                             onSyncClick = { viewModel.refreshFromSupabase() },
                                             userProfile = userProfile,
                                             onAuthClick = { isAuthDialogOpen = true },
-                                            hasCustomWallpaper = hasCustomWallpaper
+                                            hasCustomWallpaper = hasCustomWallpaper,
+                                            isScreenActive = (currentSubScreen == SubScreen.NONE && currentScreen == Screen.HOME)
                                         )
                                         Screen.TRENDING -> TrendingScreen(
                                             trendingPosts = trendingPosts,
@@ -248,16 +285,36 @@ fun JustFanAppRoot(
                                                 currentSubScreen = SubScreen.POST_DETAIL
                                             }
                                         )
-                                        Screen.REQUEST -> RequestScreen(
-                                            userProfile = userProfile,
-                                            requests = requests,
-                                            onSubmitRequest = { name, email, telegram, message, imageUrl ->
-                                                viewModel.submitRequest(name, email, telegram, message, imageUrl)
-                                            },
-                                            onViewGallery = { currentSubScreen = SubScreen.GALLERY },
-                                            onUpgradeClick = { currentSubScreen = SubScreen.PRICING }
-                                        )
+                                        Screen.FREE -> {
+                                            BackHandler { currentScreen = Screen.HOME }
+                                            FreeScreen(
+                                                freePosts = freePosts,
+                                                favoritePostIds = favoritePostIds,
+                                                onPostClick = { id ->
+                                                    selectedPostId = id
+                                                    viewModel.incrementClicks(id)
+                                                    currentSubScreen = SubScreen.POST_DETAIL
+                                                },
+                                                onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
+                                                onIncrementClicks = { id -> viewModel.incrementClicks(id) }
+                                            )
+                                        }
+                                        Screen.REQUEST -> {
+                                            BackHandler { currentScreen = Screen.HOME }
+                                            RequestScreen(
+                                                userProfile = userProfile,
+                                                requests = requests,
+                                                onSubmitRequest = { name, email, telegram, message, imageUrl ->
+                                                    viewModel.submitRequest(name, email, telegram, message, imageUrl)
+                                                },
+                                                onViewGallery = { currentSubScreen = SubScreen.GALLERY },
+                                                onUpgradeClick = { currentSubScreen = SubScreen.PRICING },
+                                                isSyncing = isSyncing,
+                                                onSyncRequests = { viewModel.refreshRequestsFromSupabase() }
+                                            )
+                                        }
                                         Screen.FAVORITES -> {
+                                            BackHandler { currentScreen = Screen.HOME }
                                             val favPosts = posts.filter { favoritePostIds.contains(it.id) }
                                             FavoritesScreen(
                                                 favoritePosts = favPosts,
@@ -272,25 +329,91 @@ fun JustFanAppRoot(
                                                 onDeleteCollection = { id -> viewModel.deleteCollection(id) }
                                             )
                                         }
-                                        Screen.SETTINGS -> PreferencesScreen(
-                                            preferences = preferences,
-                                            userProfile = userProfile,
-                                            onUpdateTheme = { theme, dark -> viewModel.updateTheme(theme, dark) },
-                                            onUpdateContentFilter = { filter -> viewModel.updateContentFilter(filter) },
-                                            onAddPreferredTag = { tag -> viewModel.addPreferredTag(tag) },
-                                            onRemovePreferredTag = { tag -> viewModel.removePreferredTag(tag) },
-                                            onUpdatePlan = { plan -> viewModel.updateTier(plan) },
-                                            onUpdateWallpaper = { uri, dim -> viewModel.updateWallpaper(uri, dim) },
-                                            onOpenAuth = { isAuthDialogOpen = true },
-                                            onSignOut = { viewModel.signOut() },
-                                            onOpenAdmin = { currentSubScreen = SubScreen.ADMIN }
-                                        )
+                                        Screen.SETTINGS -> {
+                                            BackHandler { currentScreen = Screen.HOME }
+                                            PreferencesScreen(
+                                                preferences = preferences,
+                                                userProfile = userProfile,
+                                                onUpdateTheme = { theme, dark -> viewModel.updateTheme(theme, dark) },
+                                                onUpdateContentFilter = { filter -> viewModel.updateContentFilter(filter) },
+                                                onAddPreferredTag = { tag -> viewModel.addPreferredTag(tag) },
+                                                onRemovePreferredTag = { tag -> viewModel.removePreferredTag(tag) },
+                                                onUpdatePlan = { plan -> viewModel.updateTier(plan) },
+                                                onUpdateWallpaper = { uri, dim -> viewModel.updateWallpaper(uri, dim) },
+                                                onOpenAuth = { isAuthDialogOpen = true },
+                                                onSignOut = { viewModel.signOut() },
+                                                onOpenAdmin = { currentSubScreen = SubScreen.ADMIN }
+                                            )
+                                        }
+                                        Screen.MORE -> {
+                                            HomeScreen(
+                                                posts = posts,
+                                                trendingPosts = trendingPosts,
+                                                requests = requests,
+                                                favoritePostIds = favoritePostIds,
+                                                contentFilter = preferences.contentFilter,
+                                                onPostClick = { id ->
+                                                    selectedPostId = id
+                                                    viewModel.incrementClicks(id)
+                                                    currentSubScreen = SubScreen.POST_DETAIL
+                                                },
+                                                onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
+                                                onIncrementClicks = { id -> viewModel.incrementClicks(id) },
+                                                onNotificationsClick = { currentSubScreen = SubScreen.NOTIFICATIONS },
+                                                onAdminClick = { currentSubScreen = SubScreen.ADMIN },
+                                                onPricingClick = { currentSubScreen = SubScreen.PRICING },
+                                                onViewGallery = { currentSubScreen = SubScreen.GALLERY },
+                                                isSyncing = isSyncing,
+                                                onSyncClick = { viewModel.refreshFromSupabase() },
+                                                userProfile = userProfile,
+                                                onAuthClick = { isAuthDialogOpen = true },
+                                                hasCustomWallpaper = hasCustomWallpaper
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            // More Bottom Sheet Dialog (matching user screenshot)
+            if (isMoreSheetOpen) {
+                MoreBottomSheet(
+                    onDismissRequest = { isMoreSheetOpen = false },
+                    onRequestClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.NONE
+                        currentScreen = Screen.REQUEST
+                    },
+                    onFavoritesClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.NONE
+                        currentScreen = Screen.FAVORITES
+                    },
+                    onGalleryClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.GALLERY
+                    },
+                    onMembershipClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.PRICING
+                    },
+                    onActivityClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.NOTIFICATIONS
+                    },
+                    onAdminClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.ADMIN
+                    },
+                    onSettingsClick = {
+                        isMoreSheetOpen = false
+                        currentSubScreen = SubScreen.NONE
+                        currentScreen = Screen.SETTINGS
+                    }
+                )
             }
 
             // Global Authentication & Account Dialog

@@ -168,7 +168,13 @@ object SupabaseClient {
         }
     }
 
-    suspend fun submitRequest(name: String, email: String, message: String, imageUrl: String?): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun submitRequest(
+        name: String,
+        email: String,
+        message: String,
+        imageUrl: String?,
+        userId: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "requests"
             val conn = openConnection(endpoint, "POST")
@@ -182,6 +188,8 @@ object SupabaseClient {
                     put("image_url", imageUrl)
                 }
                 put("status", "pending")
+                val uid = if (!userId.isNullOrBlank() && userId.length > 10) userId else "fe335770-80a9-4125-9c15-d47f385579fb"
+                put("user_id", uid)
             }
 
             val writer = OutputStreamWriter(conn.outputStream)
@@ -190,14 +198,54 @@ object SupabaseClient {
             writer.close()
 
             val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                conn.inputStream?.bufferedReader()?.readText() ?: ""
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
+            }
             conn.disconnect()
+            Log.d(TAG, "submitRequest to Supabase ($code): $responseBody")
             if (code in 200..299) {
                 Result.success(true)
             } else {
-                Result.failure(Exception("Failed to insert request: HTTP $code"))
+                Result.failure(Exception("Supabase insert request ($code): $responseBody"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "submitRequest error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateRequestStatusInSupabase(id: String, status: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "requests?id=eq.$id"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+            val payload = JSONObject().apply {
+                put("status", status)
+            }
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "updateRequestStatusInSupabase error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteRequestFromSupabase(id: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "requests?id=eq.$id"
+            val conn = openConnection(endpoint, "DELETE")
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteRequestFromSupabase error", e)
             Result.failure(e)
         }
     }
@@ -629,6 +677,207 @@ object SupabaseClient {
                 Result.success(code in 200..299)
             }
         } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun insertPost(post: PostEntity): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "posts"
+            val conn = openConnection(endpoint, "POST")
+            conn.doOutput = true
+
+            val payload = JSONObject().apply {
+                put("id", post.id)
+                put("title", post.title)
+                put("description", post.description)
+                put("image_url", post.imageUrl)
+                put("link_url", post.linkUrl)
+                if (!post.premiumLinkUrl.isNullOrBlank()) {
+                    put("premium_link_url", post.premiumLinkUrl)
+                }
+                if (!post.directLinkUrl.isNullOrBlank()) {
+                    put("direct_link_url", post.directLinkUrl)
+                }
+                put("content_images", JSONArray(post.contentImages))
+                put("tags", JSONArray(post.tags))
+                put("is_free", post.isFree)
+                put("is_nsfw", post.isNsfw)
+                put("section", post.section)
+            }
+
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "insertPost error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updatePost(post: PostEntity): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "posts?id=eq.${post.id}"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+
+            val payload = JSONObject().apply {
+                put("title", post.title)
+                put("description", post.description)
+                put("image_url", post.imageUrl)
+                put("link_url", post.linkUrl)
+                if (!post.premiumLinkUrl.isNullOrBlank()) {
+                    put("premium_link_url", post.premiumLinkUrl)
+                }
+                if (!post.directLinkUrl.isNullOrBlank()) {
+                    put("direct_link_url", post.directLinkUrl)
+                }
+                put("content_images", JSONArray(post.contentImages))
+                put("tags", JSONArray(post.tags))
+                put("is_free", post.isFree)
+                put("is_nsfw", post.isNsfw)
+            }
+
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "updatePost error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePost(postId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "posts?id=eq.$postId"
+            val conn = openConnection(endpoint, "DELETE")
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "deletePost error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteCollection(collectionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "collections?id=eq.$collectionId"
+            val conn = openConnection(endpoint, "DELETE")
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteCollection error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateUserTier(userId: String, tier: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "profiles?id=eq.$userId"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+            val payload = JSONObject().apply {
+                put("tier", tier)
+            }
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "updateUserTier error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateUserStatus(userId: String, status: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "profiles?id=eq.$userId"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+            val payload = JSONObject().apply {
+                put("status", status)
+            }
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "updateUserStatus error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteUser(userId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "profiles?id=eq.$userId"
+            val conn = openConnection(endpoint, "DELETE")
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteUser error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fulfillRequestInSupabase(id: String, downloadLink: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "requests?id=eq.$id"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+            val payload = JSONObject().apply {
+                put("status", "delivered")
+                put("download_link", downloadLink)
+            }
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "fulfillRequestInSupabase error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun rejectRequestInSupabase(id: String, reason: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "requests?id=eq.$id"
+            val conn = openConnection(endpoint, "PATCH")
+            conn.doOutput = true
+            val payload = JSONObject().apply {
+                put("status", "rejected")
+                put("rejection_reason", reason)
+            }
+            val writer = OutputStreamWriter(conn.outputStream)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+            val code = conn.responseCode
+            conn.disconnect()
+            Result.success(code in 200..299)
+        } catch (e: Exception) {
+            Log.e(TAG, "rejectRequestInSupabase error", e)
             Result.failure(e)
         }
     }

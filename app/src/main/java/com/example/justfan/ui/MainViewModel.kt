@@ -82,9 +82,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun submitRequest(name: String, email: String, telegram: String?, message: String, imageUrl: String?) {
+    fun submitRequest(
+        name: String,
+        email: String,
+        telegram: String?,
+        message: String,
+        imageUrl: String?,
+        onComplete: ((Boolean, String?) -> Unit)? = null
+    ) {
         viewModelScope.launch {
-            repository.submitRequest(name, email, telegram, message, imageUrl)
+            try {
+                val res = repository.submitRequest(name, email, telegram, message, imageUrl)
+                onComplete?.invoke(res.isSuccess, res.exceptionOrNull()?.message)
+            } catch (e: Exception) {
+                onComplete?.invoke(false, e.message)
+            }
+        }
+    }
+
+    fun refreshRequestsFromSupabase(onComplete: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            repository.syncRequestsFromSupabase()
+            onComplete?.invoke()
         }
     }
 

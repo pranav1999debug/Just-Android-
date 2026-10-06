@@ -50,6 +50,7 @@ fun HomeScreen(
     userProfile: com.example.justfan.data.model.UserProfile? = null,
     onAuthClick: () -> Unit = {},
     hasCustomWallpaper: Boolean = false,
+    isScreenActive: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -57,7 +58,15 @@ fun HomeScreen(
     var selectedTag by remember { mutableStateOf("All") }
     var shuffleSeed by remember { mutableIntStateOf(0) }
 
-    val tagsList = listOf("All", "Free Only", "cosplay", "fashion", "portrait", "fitness", "anime", "exclusive")
+    val tagsList = remember(posts) {
+        val dynamicTags = posts
+            .flatMap { it.tags }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(20)
+        listOf("All", "Free Only") + dynamicTags
+    }
 
     // Filter posts
     val filteredPosts = remember(posts, searchQuery, selectedTag, contentFilter, shuffleSeed) {
@@ -87,6 +96,18 @@ fun HomeScreen(
         result
     }
 
+    val activeAutoPlayPostId = remember(filteredPosts, isScreenActive) {
+        if (!isScreenActive) null
+        else {
+            filteredPosts.firstOrNull {
+                com.example.justfan.ui.components.isVideoMediaUrl(it.imageUrl) ||
+                        it.contentImages.any { img -> com.example.justfan.ui.components.isVideoMediaUrl(img) } ||
+                        com.example.justfan.ui.components.isVideoMediaUrl(it.directLinkUrl) ||
+                        com.example.justfan.ui.components.isVideoMediaUrl(it.linkUrl)
+            }?.id
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         TopHeader(
             searchQuery = searchQuery,
@@ -94,7 +115,7 @@ fun HomeScreen(
             onNotificationsClick = onNotificationsClick,
             onAdminClick = onAdminClick,
             onPricingClick = onPricingClick,
-            unreadNotificationsCount = 3,
+            unreadNotificationsCount = 0,
             isSyncing = isSyncing,
             onSyncClick = onSyncClick,
             userProfile = userProfile,
@@ -111,12 +132,14 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(horizontal = 12.dp)
         ) {
-            // Live Delivered Requests Ticker (Top of Everything)
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                RequestTicker(
-                    requests = requests,
-                    onViewGallery = onViewGallery
-                )
+            // Live Delivered Requests Ticker (Top of Everything, only if real delivered requests exist)
+            if (requests.any { it.status == "delivered" }) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    RequestTicker(
+                        requests = requests,
+                        onViewGallery = onViewGallery
+                    )
+                }
             }
 
             // Trending Carousel
@@ -215,6 +238,7 @@ fun HomeScreen(
                         isFavorite = isFav,
                         onPostClick = { onPostClick(post.id) },
                         onToggleFavorite = { onToggleFavorite(post.id) },
+                        autoPlay = post.id == activeAutoPlayPostId,
                         onDownloadClick = {
                             onIncrementClicks(post.id)
                             val targetUrl = if (post.linkUrl.isNotBlank()) post.linkUrl else post.imageUrl

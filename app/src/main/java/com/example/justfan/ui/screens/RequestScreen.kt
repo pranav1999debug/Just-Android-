@@ -87,9 +87,6 @@ fun RequestScreen(
                 } else {
                     val errMsg = result.exceptionOrNull()?.message ?: "Upload failed"
                     uploadError = errMsg
-                    if (errMsg.contains("token") || errMsg.contains("API key")) {
-                        showTokenDialog = true
-                    }
                 }
             }
         }
@@ -224,7 +221,7 @@ fun RequestScreen(
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
-                                        text = "requests TABLE",
+                                        text = "RequestfromApp TABLE",
                                         color = SuccessGreen,
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Black,

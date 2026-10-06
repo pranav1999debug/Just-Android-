@@ -130,7 +130,7 @@ object SupabaseClient {
 
     suspend fun fetchRequests(): Result<List<RequestEntity>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests?select=*&order=created_at.desc"
+            val endpoint = "RequestfromApp?select=*&order=created_at.desc&limit=1000"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
 
@@ -142,17 +142,32 @@ object SupabaseClient {
                 val list = mutableListOf<RequestEntity>()
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
+                    val id = obj.optString("id", UUID.randomUUID().toString())
+                    val rawName = if (obj.has("name") && !obj.isNull("name")) obj.optString("name", "").trim() else ""
+                    val rawMsg = if (obj.has("message") && !obj.isNull("message")) obj.optString("message", "").trim() else ""
+                    val resolvedName = when {
+                        rawName.isNotBlank() && rawName != "null" -> rawName
+                        rawMsg.isNotBlank() && rawMsg != "null" -> rawMsg.take(50)
+                        else -> "Community Request #${id.take(8)}"
+                    }
+
+                    val email = if (obj.has("email") && !obj.isNull("email")) obj.optString("email", "").trim() else ""
+                    val telegram = if (obj.has("telegram_username") && !obj.isNull("telegram_username")) obj.optString("telegram_username", "").trim() else null
+                    val imageUrl = if (obj.has("image_url") && !obj.isNull("image_url")) obj.optString("image_url").trim().ifBlank { null } else null
+                    val status = obj.optString("status", "pending")
+                    val createdAtStr = obj.optString("created_at", "")
+
                     list.add(
                         RequestEntity(
-                            id = obj.optString("id", UUID.randomUUID().toString()),
-                            name = obj.optString("name", "Creator Request"),
-                            email = obj.optString("email", ""),
-                            telegramUsername = null,
-                            message = obj.optString("message", ""),
-                            imageUrl = if (obj.has("image_url") && !obj.isNull("image_url")) obj.optString("image_url") else null,
-                            status = obj.optString("status", "pending"),
+                            id = id,
+                            name = resolvedName,
+                            email = email,
+                            telegramUsername = telegram,
+                            message = rawMsg,
+                            imageUrl = imageUrl,
+                            status = status,
                             downloadLink = null,
-                            createdAt = parseIsoToMillis(obj.optString("created_at", ""))
+                            createdAt = parseIsoToMillis(createdAtStr)
                         )
                     )
                 }
@@ -176,11 +191,12 @@ object SupabaseClient {
         userId: String? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests"
+            val endpoint = "RequestfromApp"
             val conn = openConnection(endpoint, "POST")
             conn.doOutput = true
 
             val payload = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
                 put("name", name)
                 put("email", email)
                 put("message", message)
@@ -218,7 +234,7 @@ object SupabaseClient {
 
     suspend fun updateRequestStatusInSupabase(id: String, status: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests?id=eq.$id"
+            val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
             val payload = JSONObject().apply {
@@ -239,7 +255,7 @@ object SupabaseClient {
 
     suspend fun deleteRequestFromSupabase(id: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests?id=eq.$id"
+            val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "DELETE")
             val code = conn.responseCode
             conn.disconnect()
@@ -840,7 +856,7 @@ object SupabaseClient {
 
     suspend fun fulfillRequestInSupabase(id: String, downloadLink: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests?id=eq.$id"
+            val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
             val payload = JSONObject().apply {
@@ -862,7 +878,7 @@ object SupabaseClient {
 
     suspend fun rejectRequestInSupabase(id: String, reason: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "requests?id=eq.$id"
+            val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
             val payload = JSONObject().apply {

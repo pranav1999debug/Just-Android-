@@ -58,6 +58,21 @@ data class RequestEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "RequestfromApp")
+data class RequestfromAppEntity(
+    @PrimaryKey val id: String,
+    val userId: String? = null,
+    val name: String = "",
+    val email: String = "",
+    val telegramUsername: String? = null,
+    val message: String = "",
+    val imageUrl: String? = null,
+    val status: String = "pending",
+    val downloadLink: String? = null,
+    val rejectionReason: String? = null,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "users")
 data class UserEntity(
     @PrimaryKey val id: String,

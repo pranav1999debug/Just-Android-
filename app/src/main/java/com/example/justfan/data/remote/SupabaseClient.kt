@@ -514,7 +514,7 @@ object SupabaseClient {
 
     suspend fun fetchPostClicksSummary(): Result<Map<String, Int>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "post_clicks?select=post_id,count"
+            val endpoint = "post_clicks?select=*&limit=10000"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
 
@@ -543,7 +543,7 @@ object SupabaseClient {
         }
     }
 
-    suspend fun recordPostClick(postId: String, userId: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun recordPostClick(postId: String, userId: String? = null, clickType: String = "download"): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "post_clicks"
             val conn = openConnection(endpoint, "POST")
@@ -563,9 +563,16 @@ object SupabaseClient {
             writer.close()
 
             val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                conn.inputStream?.bufferedReader()?.readText() ?: ""
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
+            }
             conn.disconnect()
+            Log.d(TAG, "recordPostClick to Supabase ($code): $responseBody")
             Result.success(code in 200..299)
         } catch (e: Exception) {
+            Log.e(TAG, "recordPostClick error", e)
             Result.failure(e)
         }
     }

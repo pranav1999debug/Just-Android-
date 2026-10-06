@@ -203,6 +203,9 @@ fun JustFanAppRoot(
                                         },
                                         onShare = {
                                             selectedPostId?.let { id -> viewModel.recordShare(id) }
+                                        },
+                                        onDownloadClick = { id, downloadType ->
+                                            viewModel.recordDownloadClick(id, downloadType)
                                         }
                                     )
                                 }

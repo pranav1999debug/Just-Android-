@@ -63,6 +63,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun recordDownloadClick(postId: String, downloadType: String = "download") {
+        viewModelScope.launch {
+            repository.recordDownloadClick(postId, downloadType)
+        }
+    }
+
     fun toggleFavorite(postId: String) {
         viewModelScope.launch {
             val isFav = favorites.value.any { it.postId == postId }

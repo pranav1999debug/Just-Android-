@@ -209,6 +209,13 @@ class JustFanRepository(
         }
     }
 
+    suspend fun recordDownloadClick(postId: String, downloadType: String = "download") {
+        postDao.incrementClicks(postId)
+        scope.launch {
+            com.example.justfan.data.remote.SupabaseClient.recordPostClick(postId, _userProfile.value.id, downloadType)
+        }
+    }
+
     suspend fun toggleFavorite(postId: String, isCurrentlyFav: Boolean) {
         if (isCurrentlyFav) {
             favoriteDao.removeFavorite(postId)

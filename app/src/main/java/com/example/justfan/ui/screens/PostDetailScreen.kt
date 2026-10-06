@@ -55,6 +55,7 @@ fun PostDetailScreen(
     onAddComment: (String) -> Unit,
     onSelectPost: (String) -> Unit,
     onShare: () -> Unit = {},
+    onDownloadClick: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     BackHandler { onBack() }
@@ -426,9 +427,11 @@ fun PostDetailScreen(
                             badge = "FREE",
                             testTag = "detail_download_ads_button",
                             onClick = {
+                                onDownloadClick(post.id, "ads")
                                 openDownloadUrl(context, adsUrl, "Download (Ads)")
                             },
                             onCopy = {
+                                onDownloadClick(post.id, "ads_copy")
                                 copyToClipboard(context, adsUrl, "Ad Download link copied to clipboard")
                             }
                         )
@@ -444,9 +447,11 @@ fun PostDetailScreen(
                             badge = "VIP",
                             testTag = "detail_download_premium_button",
                             onClick = {
+                                onDownloadClick(post.id, "premium")
                                 openDownloadUrl(context, premiumUrl, "Premium")
                             },
                             onCopy = {
+                                onDownloadClick(post.id, "premium_copy")
                                 copyToClipboard(context, premiumUrl, "Premium link copied to clipboard")
                             }
                         )
@@ -463,9 +468,11 @@ fun PostDetailScreen(
                                 badge = "PRO / ADMIN",
                                 testTag = "detail_download_direct_button",
                                 onClick = {
+                                    onDownloadClick(post.id, "direct")
                                     openDownloadUrl(context, directUrl, "Direct Download")
                                 },
                                 onCopy = {
+                                    onDownloadClick(post.id, "direct_copy")
                                     copyToClipboard(context, directUrl, "Direct link copied to clipboard")
                                 }
                             )

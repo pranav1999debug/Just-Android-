@@ -36,6 +36,7 @@ import com.example.justfan.ui.theme.GoldAccent
 fun TrendingScreen(
     trendingPosts: List<PostEntity>,
     onPostClick: (String) -> Unit,
+    onDownloadClick: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -145,7 +146,7 @@ fun TrendingScreen(
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(Icons.Default.Download, contentDescription = "Downloads", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text("${post.clicksCount}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -157,6 +158,7 @@ fun TrendingScreen(
 
                         IconButton(
                             onClick = {
+                                onDownloadClick(post.id)
                                 val url = post.linkUrl.ifBlank { post.imageUrl }
                                 com.example.justfan.util.DownloadHelper.enqueueDownload(
                                     context = context,

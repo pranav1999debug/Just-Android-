@@ -21,6 +21,7 @@ class JustFanRepository(
     private val commentDao = database.commentDao()
     private val activityDao = database.activityDao()
     private val userDao = database.userDao()
+    private val postClickDao = database.postClickDao()
 
     val allUsers: Flow<List<UserEntity>> = userDao.getAllUsers()
 
@@ -94,6 +95,7 @@ class JustFanRepository(
 
             // 2. Sync Clicks, Likes (Favorites), and Shares from Supabase
             val clicksSummary = com.example.justfan.data.remote.SupabaseClient.fetchPostClicksSummary().getOrDefault(emptyMap())
+            val localClicksSummary = postClickDao.getClicksSummary().associate { it.postId to it.clickCount }
             val favoritesResult = com.example.justfan.data.remote.SupabaseClient.fetchFavoritesSummary().getOrNull()
             val likesSummary = favoritesResult?.first ?: emptyMap()
             val userFavPostIds = favoritesResult?.second ?: emptySet()
@@ -111,7 +113,9 @@ class JustFanRepository(
                     val existingPosts = postDao.getAllPostsList().associateBy { it.id }
                     val mergedPosts = remotePosts.map { remote ->
                         val local = existingPosts[remote.id]
-                        val totalClicks = maxOf(remote.clicksCount, (clicksSummary[remote.id] ?: 0), (local?.clicksCount ?: 0))
+                        val remoteClicks = clicksSummary[remote.id] ?: 0
+                        val localClicks = localClicksSummary[remote.id] ?: 0
+                        val totalClicks = maxOf(remote.clicksCount, remoteClicks, (local?.clicksCount ?: 0), localClicks)
                         val totalLikes = maxOf(remote.likesCount, (likesSummary[remote.id] ?: 0), (local?.likesCount ?: 0))
                         remote.copy(clicksCount = totalClicks, likesCount = totalLikes)
                     }
@@ -202,17 +206,50 @@ class JustFanRepository(
     fun getCommentsForPost(postId: String): Flow<List<CommentEntity>> = commentDao.getCommentsForPost(postId)
     fun getItemsForCollection(colId: String): Flow<List<CollectionItemEntity>> = collectionDao.getItemsForCollection(colId)
 
+    private fun getValidUuidOrNull(userId: String?): String? {
+        if (userId.isNullOrBlank()) return null
+        return if (userId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"))) {
+            userId
+        } else if (userId == "admin_rey" || _userProfile.value.email.equals("reytherapper12@gmail.com", ignoreCase = true)) {
+            "fe335770-80a9-4125-9c15-d47f385579fb"
+        } else {
+            null
+        }
+    }
+
     suspend fun incrementPostClicks(postId: String) {
         postDao.incrementClicks(postId)
+        postClickDao.insertClick(
+            PostClickEntity(
+                postId = postId,
+                userId = getValidUuidOrNull(_userProfile.value.id),
+                downloadType = "view"
+            )
+        )
         scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.recordPostClick(postId, _userProfile.value.id)
+            com.example.justfan.data.remote.SupabaseClient.recordPostClick(
+                postId = postId,
+                userId = getValidUuidOrNull(_userProfile.value.id),
+                clickType = "view"
+            )
         }
     }
 
     suspend fun recordDownloadClick(postId: String, downloadType: String = "download") {
         postDao.incrementClicks(postId)
+        postClickDao.insertClick(
+            PostClickEntity(
+                postId = postId,
+                userId = getValidUuidOrNull(_userProfile.value.id),
+                downloadType = downloadType
+            )
+        )
         scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.recordPostClick(postId, _userProfile.value.id, downloadType)
+            com.example.justfan.data.remote.SupabaseClient.recordPostClick(
+                postId = postId,
+                userId = getValidUuidOrNull(_userProfile.value.id),
+                clickType = downloadType
+            )
         }
     }
 

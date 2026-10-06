@@ -286,6 +286,9 @@ fun JustFanAppRoot(
                                                 selectedPostId = id
                                                 viewModel.incrementClicks(id)
                                                 currentSubScreen = SubScreen.POST_DETAIL
+                                            },
+                                            onDownloadClick = { id ->
+                                                viewModel.recordDownloadClick(id, "trending_download")
                                             }
                                         )
                                         Screen.FREE -> {

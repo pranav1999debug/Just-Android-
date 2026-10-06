@@ -176,7 +176,7 @@ private fun TrendingCardItem(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "${post.clicksCount} views",
+                        text = "${post.clicksCount} downloads",
                         color = MaterialTheme.colorScheme.primary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium

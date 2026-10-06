@@ -346,9 +346,9 @@ fun PostDetailScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Visibility, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.Download, contentDescription = "Downloads", tint = MaterialTheme.colorScheme.primary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("${post.clicksCount} Views", fontWeight = FontWeight.SemiBold)
+                            Text("${post.clicksCount} Downloads", fontWeight = FontWeight.SemiBold)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Favorite, contentDescription = null, tint = DangerRed)

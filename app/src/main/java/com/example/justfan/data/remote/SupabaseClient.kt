@@ -266,29 +266,6 @@ object SupabaseClient {
         }
     }
 
-    suspend fun recordPostClick(postId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "post_clicks"
-            val conn = openConnection(endpoint, "POST")
-            conn.doOutput = true
-
-            val payload = JSONObject().apply {
-                put("post_id", postId)
-            }
-
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
     suspend fun fetchCollections(): Result<List<CollectionEntity>> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "collections?select=*&order=created_at.desc"
@@ -514,7 +491,7 @@ object SupabaseClient {
 
     suspend fun fetchPostClicksSummary(): Result<Map<String, Int>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "post_clicks?select=*&limit=10000"
+            val endpoint = "post_clicks?select=id,post_id,clicked_at&limit=10000"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
 
@@ -528,33 +505,44 @@ object SupabaseClient {
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val postId = obj.optString("post_id", "")
-                    val count = obj.optInt("count", 1)
                     if (postId.isNotBlank()) {
-                        summary[postId] = (summary[postId] ?: 0) + (if (count > 0) count else 1)
+                        val count = if (obj.has("count")) obj.optInt("count", 1) else 1
+                        summary[postId] = (summary[postId] ?: 0) + maxOf(1, count)
                     }
                 }
+                Log.d(TAG, "fetchPostClicksSummary: fetched ${jsonArray.length()} clicks across ${summary.size} posts")
                 Result.success(summary)
             } else {
+                val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
                 conn.disconnect()
-                Result.failure(Exception("HTTP $code"))
+                Log.w(TAG, "fetchPostClicksSummary failed ($code): $err")
+                Result.failure(Exception("HTTP $code: $err"))
             }
         } catch (e: Exception) {
+            Log.e(TAG, "fetchPostClicksSummary error", e)
             Result.failure(e)
         }
     }
 
     suspend fun recordPostClick(postId: String, userId: String? = null, clickType: String = "download"): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            // Validate UUID for post_id
+            val isUuid = postId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"))
+            if (!isUuid) {
+                Log.w(TAG, "recordPostClick skipped: postId is not a UUID: $postId")
+                return@withContext Result.failure(IllegalArgumentException("postId is not a UUID"))
+            }
+
             val endpoint = "post_clicks"
             val conn = openConnection(endpoint, "POST")
             conn.doOutput = true
 
             val payload = JSONObject().apply {
                 put("post_id", postId)
-                if (!userId.isNullOrBlank() && userId.length > 10) {
+                // PostgreSQL post_clicks.user_id requires uuid type; only pass if valid UUID
+                if (!userId.isNullOrBlank() && userId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"))) {
                     put("user_id", userId)
                 }
-                put("count", 1)
             }
 
             val writer = OutputStreamWriter(conn.outputStream)

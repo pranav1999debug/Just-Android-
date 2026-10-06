@@ -15,11 +15,12 @@ import com.example.justfan.data.model.*
         CollectionItemEntity::class,
         RequestEntity::class,
         RequestfromAppEntity::class,
+        PostClickEntity::class,
         CommentEntity::class,
         ActivityEntity::class,
         UserEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -29,6 +30,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun collectionDao(): CollectionDao
     abstract fun requestDao(): RequestDao
     abstract fun requestfromAppDao(): RequestfromAppDao
+    abstract fun postClickDao(): PostClickDao
     abstract fun commentDao(): CommentDao
     abstract fun activityDao(): ActivityDao
     abstract fun userDao(): UserDao

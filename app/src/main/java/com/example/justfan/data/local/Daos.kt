@@ -15,7 +15,7 @@ interface PostDao {
     @Query("SELECT * FROM posts WHERE isFree = 1 ORDER BY createdAt DESC")
     fun getFreePosts(): Flow<List<PostEntity>>
 
-    @Query("SELECT * FROM posts ORDER BY clicksCount DESC, createdAt DESC")
+    @Query("SELECT * FROM posts ORDER BY clicksCount DESC, likesCount DESC, createdAt DESC")
     fun getTrendingPosts(): Flow<List<PostEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -26,6 +26,9 @@ interface PostDao {
 
     @Query("UPDATE posts SET clicksCount = clicksCount + 1 WHERE id = :id")
     suspend fun incrementClicks(id: String)
+
+    @Query("UPDATE posts SET clicksCount = :count WHERE id = :id")
+    suspend fun updateClicksCount(id: String, count: Int)
 
     @Query("UPDATE posts SET likesCount = likesCount + :delta WHERE id = :id")
     suspend fun updateLikes(id: String, delta: Int)
@@ -174,3 +177,29 @@ interface ActivityDao {
     @Query("DELETE FROM activities WHERE id LIKE 'act-%'")
     suspend fun clearDummyActivities()
 }
+
+@Dao
+interface PostClickDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertClick(click: PostClickEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertClicks(clicks: List<PostClickEntity>)
+
+    @Query("SELECT COUNT(*) FROM post_clicks WHERE postId = :postId")
+    suspend fun getClicksCountForPost(postId: String): Int
+
+    @Query("SELECT postId, COUNT(*) as clickCount FROM post_clicks GROUP BY postId")
+    suspend fun getClicksSummary(): List<PostClickSummary>
+
+    @Query("SELECT * FROM post_clicks ORDER BY clickedAt DESC LIMIT :limit")
+    fun getRecentClicks(limit: Int = 100): Flow<List<PostClickEntity>>
+
+    @Query("SELECT COUNT(*) FROM post_clicks")
+    suspend fun getTotalClicksCount(): Int
+}
+
+data class PostClickSummary(
+    val postId: String,
+    val clickCount: Int
+)

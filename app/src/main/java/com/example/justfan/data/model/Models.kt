@@ -73,6 +73,15 @@ data class RequestfromAppEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "post_clicks")
+data class PostClickEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val postId: String,
+    val userId: String? = null,
+    val downloadType: String = "download",
+    val clickedAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "users")
 data class UserEntity(
     @PrimaryKey val id: String,

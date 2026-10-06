@@ -234,4 +234,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.deleteRequest(id)
         }
     }
+
+    fun handleGoogleOAuthUri(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                val fragment = uri.fragment ?: ""
+                val query = uri.query ?: ""
+                val rawParams = if (fragment.isNotBlank()) fragment else query
+                val params = rawParams.split("&").associate { pair ->
+                    val parts = pair.split("=", limit = 2)
+                    if (parts.size == 2) parts[0] to java.net.URLDecoder.decode(parts[1], "UTF-8") else parts[0] to ""
+                }
+                val accessToken = params["access_token"]
+                if (!accessToken.isNullOrBlank()) {
+                    val parts = accessToken.split(".")
+                    if (parts.size >= 2) {
+                        val decodedBytes = android.util.Base64.decode(
+                            parts[1],
+                            android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP
+                        )
+                        val payloadJson = String(decodedBytes, Charsets.UTF_8)
+                        val json = org.json.JSONObject(payloadJson)
+                        val email = json.optString("email", "")
+                        val userMetadata = json.optJSONObject("user_metadata")
+                        val name = userMetadata?.optString("full_name")?.ifBlank { null }
+                            ?: userMetadata?.optString("name")?.ifBlank { null }
+                            ?: email.substringBefore("@")
+                        if (email.isNotBlank()) {
+                            repository.signInWithGoogle(email, name)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Error parsing Google OAuth callback", e)
+            }
+        }
+    }
 }

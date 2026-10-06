@@ -1,5 +1,11 @@
 package com.example.justfan.ui.components
 
+import android.accounts.AccountManager
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -383,71 +389,156 @@ private fun SignInFormView(
                 var isCustomInputVisible by remember { mutableStateOf(false) }
                 val context = androidx.compose.ui.platform.LocalContext.current
 
+                val accountPickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                        val accountName = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+                        if (!accountName.isNullOrBlank()) {
+                            val name = accountName.substringBefore("@").replaceFirstChar { it.uppercase() }
+                            onSignInWithGoogle(accountName, name)
+                        }
+                    }
+                }
+
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Sign in with your Google account to unlock theme settings, custom uploaded background wallpapers, and requests.",
+                        text = "Sign in with your Google account to unlock theme settings, cloud synced favorites, and unlimited requests.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    Surface(
-                        color = Color.White,
+                    // 1. Official Google OAuth Browser Flow
+                    Button(
+                        onClick = {
+                            val oauthUrl = "https://zlboyxbqppoimhhbvrax.supabase.co/auth/v1/authorize?provider=google&redirect_to=justfan://auth"
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(oauthUrl))
+                            context.startActivity(intent)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = Color.Black
+                        ),
                         shape = RoundedCornerShape(12.dp),
-                        shadowElevation = 2.dp,
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("btn_google_oauth_signin")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Google",
+                            tint = Color(0xFF4285F4),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Sign in with Google (OAuth)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // 2. Device Google Account Picker (Native Android)
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                val intent = AccountManager.newChooseAccountIntent(
+                                    null,
+                                    null,
+                                    arrayOf("com.google"),
+                                    null,
+                                    null,
+                                    null,
+                                    null
+                                )
+                                accountPickerLauncher.launch(intent)
+                            } catch (_: Exception) {
+                                isCustomInputVisible = true
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("btn_google_device_picker")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PhoneAndroid,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Choose Google Account on Device", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // 3. Quick One-Tap Admin
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
                                 onSignInWithGoogle("reytherapper12@gmail.com", "Rey (Admin)")
                             }
-                            .testTag("btn_google_signin")
+                            .testTag("btn_google_signin_quick")
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
+                                .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.AccountCircle,
-                                contentDescription = "Google",
-                                tint = Color(0xFF4285F4),
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "Continue as reytherapper12@gmail.com",
-                                    color = Color.Black,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = SuccessGreen,
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Text(
-                                    text = "Platform Administrator • Legendary Tier",
-                                    color = Color(0xFF16A34A),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "reytherapper12@gmail.com",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = "Quick One-Tap • Legendary Admin",
+                                        color = SuccessGreen,
+                                        fontSize = 10.sp
+                                    )
+                                }
                             }
+                            Text(
+                                text = "Sign In →",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     if (!isCustomInputVisible) {
-                        OutlinedButton(
+                        TextButton(
                             onClick = { isCustomInputVisible = true },
-                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.Mail, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Sign In with Another Google Email")
+                            Text("Type Another Gmail Address Manually", fontSize = 12.sp)
                         }
                     } else {
                         OutlinedTextField(
@@ -476,24 +567,6 @@ private fun SignInFormView(
                         ) {
                             Text("Sign In as $customGoogleEmail", fontWeight = FontWeight.Bold)
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedButton(
-                        onClick = {
-                            try {
-                                val oauthUrl = "https://zlboyxbqppoimhhbvrax.supabase.co/auth/v1/authorize?provider=google&redirect_to=justfan://auth"
-                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(oauthUrl))
-                                context.startActivity(intent)
-                            } catch (_: Exception) {}
-                        },
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Open Supabase Google OAuth (Browser)")
                     }
                 }
             }

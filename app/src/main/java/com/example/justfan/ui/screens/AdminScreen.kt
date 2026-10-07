@@ -239,14 +239,15 @@ fun AdminScreen(
                     )
                 }
                 3 -> {
-                    // TAB 3: Requests Workflow Management (Uploaded, Rejected, Stats)
+                    // TAB 3: Requests Workflow Management (Uploaded, Rejected, Payment Proofs, Stats)
                     RequestsManagementTab(
                         requests = requests,
                         statusFilter = requestStatusFilter,
                         onStatusFilterChange = { requestStatusFilter = it },
                         onFulfill = { fulfillingRequest = it },
                         onReject = { rejectingRequest = it },
-                        onDeleteRequest = onDeleteRequest
+                        onDeleteRequest = onDeleteRequest,
+                        onUpgradeUserTier = onUpdateUserTier
                     )
                 }
             }
@@ -972,7 +973,7 @@ private fun PostsCrudTab(
 }
 
 // ----------------------------------------------------------------------------
-// TAB 3: Requests Workflow Management (Uploaded, Rejected, Pending, Actions)
+// TAB 3: Requests Workflow Management (Uploaded, Rejected, Pending, Payment Proofs, Actions)
 // ----------------------------------------------------------------------------
 @Composable
 private fun RequestsManagementTab(
@@ -981,18 +982,27 @@ private fun RequestsManagementTab(
     onStatusFilterChange: (String) -> Unit,
     onFulfill: (RequestEntity) -> Unit,
     onReject: (RequestEntity) -> Unit,
-    onDeleteRequest: (String) -> Unit
+    onDeleteRequest: (String) -> Unit,
+    onUpgradeUserTier: (userId: String, newTier: String) -> Unit = { _, _ -> }
 ) {
+    val paymentProofCount = remember(requests) {
+        requests.count { it.name.contains("PAYMENT", ignoreCase = true) || it.message.contains("[PAYMENT_PROOF]", ignoreCase = true) }
+    }
+
     val filteredRequests = remember(requests, statusFilter) {
-        if (statusFilter == "All") requests
-        else requests.filter { it.status.equals(statusFilter, ignoreCase = true) }
+        when (statusFilter) {
+            "All" -> requests
+            "payments" -> requests.filter { it.name.contains("PAYMENT", ignoreCase = true) || it.message.contains("[PAYMENT_PROOF]", ignoreCase = true) }
+            else -> requests.filter { it.status.equals(statusFilter, ignoreCase = true) }
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Status filter bar
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(listOf("All", "pending", "delivered", "rejected")) { opt ->
+            items(listOf("All", "payments", "pending", "delivered", "rejected")) { opt ->
                 val label = when (opt) {
+                    "payments" -> "💳 Payments ($paymentProofCount)"
                     "pending" -> "Pending"
                     "delivered" -> "Uploaded / Delivered"
                     "rejected" -> "Rejected"
@@ -1001,7 +1011,7 @@ private fun RequestsManagementTab(
                 FilterChip(
                     selected = statusFilter == opt,
                     onClick = { onStatusFilterChange(opt) },
-                    label = { Text(label) }
+                    label = { Text(label, fontWeight = if (opt == "payments") FontWeight.Bold else FontWeight.Normal) }
                 )
             }
         }
@@ -1023,7 +1033,8 @@ private fun RequestsManagementTab(
                         request = req,
                         onFulfill = { onFulfill(req) },
                         onReject = { onReject(req) },
-                        onDelete = { onDeleteRequest(req.id) }
+                        onDelete = { onDeleteRequest(req.id) },
+                        onUpgradeUserTier = onUpgradeUserTier
                     )
                 }
             }
@@ -1036,11 +1047,19 @@ private fun RequestAdminCard(
     request: RequestEntity,
     onFulfill: () -> Unit,
     onReject: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onUpgradeUserTier: (userId: String, newTier: String) -> Unit = { _, _ -> }
 ) {
+    val isPaymentProof = request.name.contains("PAYMENT", ignoreCase = true) || request.message.contains("[PAYMENT_PROOF]", ignoreCase = true)
+    var upgradedSuccessMessage by remember { mutableStateOf<String?>(null) }
+
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isPaymentProof) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+            else MaterialTheme.colorScheme.surfaceVariant
+        ),
+        border = if (isPaymentProof) androidx.compose.foundation.BorderStroke(1.5.dp, SuccessGreen) else null,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
@@ -1049,7 +1068,24 @@ private fun RequestAdminCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(request.name, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isPaymentProof) {
+                        Surface(
+                            color = SuccessGreen,
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            Text(
+                                text = "GOOGLE PAY PROOF",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(request.name, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
 
                 // Status chip
                 val statusColor = when (request.status) {
@@ -1064,7 +1100,7 @@ private fun RequestAdminCard(
                 ) {
                     Text(
                         text = when (request.status) {
-                            "delivered" -> "UPLOADED"
+                            "delivered" -> "UPLOADED / APPROVED"
                             "rejected" -> "REJECTED"
                             else -> request.status.uppercase()
                         },
@@ -1085,6 +1121,116 @@ private fun RequestAdminCard(
 
             Spacer(modifier = Modifier.height(6.dp))
             Text(text = request.message, style = MaterialTheme.typography.bodyMedium)
+
+            // Payment proof screenshot image preview (Imgchest)
+            if (!request.imageUrl.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Uploaded Screenshot (Imgchest):", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Text(
+                                text = "Tap to enlarge",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        AsyncImage(
+                            model = request.imageUrl,
+                            contentDescription = "Payment Proof Screenshot",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                    }
+                }
+            }
+
+            // Quick Admin Action: Upgrade User Account Directly from Payment Proof
+            if (isPaymentProof) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = "⚡ Admin Tier Upgrade Action:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = SuccessGreen
+                        )
+                        Text(
+                            text = "Approve payment and upgrade ${request.email} to:",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Button(
+                                onClick = {
+                                    onUpgradeUserTier(request.email, "Pro")
+                                    onFulfill()
+                                    upgradedSuccessMessage = "Account ${request.email} upgraded to PRO!"
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Upgrade to Pro (Rs 150)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    onUpgradeUserTier(request.email, "Legendary")
+                                    onFulfill()
+                                    upgradedSuccessMessage = "Account ${request.email} upgraded to LEGENDARY!"
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = GoldAccent, contentColor = Color.Black),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Upgrade to Legendary (Rs 500)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        upgradedSuccessMessage?.let { msg ->
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = msg,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = SuccessGreen
+                            )
+                        }
+                    }
+                }
+            }
 
             // Rejection reason notice if rejected
             if (request.status == "rejected" && !request.rejectionReason.isNullOrBlank()) {
@@ -1150,7 +1296,7 @@ private fun RequestAdminCard(
                     ) {
                         Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Upload / Deliver", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(if (isPaymentProof) "Approve Payment" else "Upload / Deliver", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 

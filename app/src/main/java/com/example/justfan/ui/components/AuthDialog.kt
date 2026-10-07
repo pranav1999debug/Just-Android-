@@ -483,62 +483,14 @@ private fun SignInFormView(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // 3. Quick One-Tap Admin
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onSignInWithGoogle("reytherapper12@gmail.com", "Rey (Admin)")
-                            }
-                            .testTag("btn_google_signin_quick")
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = SuccessGreen,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(
-                                        text = "reytherapper12@gmail.com",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Quick One-Tap • Legendary Admin",
-                                        color = SuccessGreen,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                            Text(
-                                text = "Sign In →",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
                     if (!isCustomInputVisible) {
                         TextButton(
                             onClick = { isCustomInputVisible = true },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("btn_toggle_custom_email")
                         ) {
-                            Text("Type Another Gmail Address Manually", fontSize = 12.sp)
+                            Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Enter Another Gmail / Google Account Manually", fontSize = 12.sp)
                         }
                     } else {
                         OutlinedTextField(
@@ -550,7 +502,7 @@ private fun SignInFormView(
                             leadingIcon = {
                                 Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF4285F4))
                             },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("input_custom_google_email")
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
@@ -563,9 +515,9 @@ private fun SignInFormView(
                             },
                             enabled = customGoogleEmail.trim().contains("@"),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("btn_submit_custom_google_email")
                         ) {
-                            Text("Sign In as $customGoogleEmail", fontWeight = FontWeight.Bold)
+                            Text("Sign In With Google", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

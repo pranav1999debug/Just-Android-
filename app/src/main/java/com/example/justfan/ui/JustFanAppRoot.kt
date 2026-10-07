@@ -223,8 +223,21 @@ fun JustFanAppRoot(
                                     BackHandler { currentSubScreen = SubScreen.NONE }
                                     PricingScreen(
                                         currentPlan = userProfile.tier,
-                                        isAdmin = userProfile.isAdmin,
-                                        onSelectPlan = { plan -> viewModel.updateTier(plan) }
+                                        isAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true),
+                                        userProfile = userProfile,
+                                        onSelectPlan = { plan -> viewModel.updateTier(plan) },
+                                        onSubmitPaymentProof = { tier, method, amount, proofUrl, note ->
+                                            val proofName = "PAYMENT: $tier ($amount)"
+                                            val proofMessage = "[PAYMENT_PROOF] Tier: $tier | Method: $method | Amount: $amount | User Note: ${note.ifBlank { "None" }}"
+                                            val userEmail = userProfile.email.ifBlank { "guest_user@justfan.app" }
+                                            viewModel.submitRequest(
+                                                name = proofName,
+                                                email = userEmail,
+                                                telegram = null,
+                                                message = proofMessage,
+                                                imageUrl = proofUrl
+                                            )
+                                        }
                                     )
                                 }
                                 SubScreen.NOTIFICATIONS -> {

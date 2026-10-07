@@ -31,7 +31,9 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserProfile
-import com.example.justfan.data.remote.ImgchestUploader
+import com.example.justfan.data.remote.BufferChannel
+import com.example.justfan.data.remote.MediaUploadClient
+import com.example.justfan.ui.components.SocialPostingBottomSheet
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 import kotlinx.coroutines.launch
@@ -61,34 +63,86 @@ fun RequestScreen(
     var notes by remember { mutableStateOf("") }
     var referenceImageUrl by remember { mutableStateOf("") }
     var selectedLocalUri by remember { mutableStateOf<Uri?>(null) }
-    var isUploadingToImgchest by remember { mutableStateOf(false) }
+    var isUploadingMedia by remember { mutableStateOf(false) }
+    var uploadStatusText by remember { mutableStateOf("Uploading media...") }
     var uploadError by remember { mutableStateOf<String?>(null) }
-    var showTokenDialog by remember { mutableStateOf(false) }
-    var imgchestTokenInput by remember { mutableStateOf(ImgchestUploader.getApiToken(context) ?: "") }
     var showSuccessSnackbar by remember { mutableStateOf(false) }
     var previewImageUrl by remember { mutableStateOf<String?>(null) }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            selectedLocalUri = uri
-            isUploadingToImgchest = true
-            uploadError = null
-            coroutineScope.launch {
-                val result = ImgchestUploader.uploadImage(
-                    context = context,
-                    imageUri = uri,
-                    title = modelName.ifBlank { "JUSTFAN Request Reference" }
-                )
-                isUploadingToImgchest = false
-                if (result.isSuccess) {
-                    referenceImageUrl = result.getOrNull().orEmpty()
-                } else {
-                    val errMsg = result.exceptionOrNull()?.message ?: "Upload failed"
-                    uploadError = errMsg
-                }
+    // Smart Media Routing & Social Posting State
+    var pendingMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var showSocialPromptDialog by remember { mutableStateOf(false) }
+    var showSocialPostingSheet by remember { mutableStateOf(false) }
+    var bufferChannels by remember { mutableStateOf<List<BufferChannel>>(emptyList()) }
+    var isLoadingChannels by remember { mutableStateOf(false) }
+    var channelLoadError by remember { mutableStateOf<String?>(null) }
+    var isGeneratingCaption by remember { mutableStateOf(false) }
+    var isSubmittingSocial by remember { mutableStateOf(false) }
+
+    fun loadChannels() {
+        isLoadingChannels = true
+        channelLoadError = null
+        coroutineScope.launch {
+            val res = MediaUploadClient.listBufferChannels()
+            isLoadingChannels = false
+            if (res.isSuccess) {
+                bufferChannels = res.getOrNull().orEmpty()
+            } else {
+                channelLoadError = res.exceptionOrNull()?.message ?: "Failed to load channels"
             }
+        }
+    }
+
+    fun executeUpload(
+        uris: List<Uri>,
+        title: String? = null,
+        description: String? = null,
+        hashtags: String? = null,
+        channelId: String? = null,
+        mode: String = "addToQueue",
+        shareToSocial: Boolean = false
+    ) {
+        if (uris.isEmpty()) return
+        isUploadingMedia = true
+        uploadStatusText = if (shareToSocial) "Uploading & cross-posting to Buffer..." else "Uploading & routing media..."
+        uploadError = null
+
+        coroutineScope.launch {
+            val result = MediaUploadClient.uploadMedia(
+                context = context,
+                uris = uris,
+                title = title ?: modelName.ifBlank { "JUSTFAN Content" },
+                description = description,
+                hashtags = hashtags,
+                channelId = channelId,
+                mode = mode,
+                shareToSocial = shareToSocial,
+                userId = userProfile.id
+            )
+            isUploadingMedia = false
+            isSubmittingSocial = false
+
+            if (result.isSuccess) {
+                val resp = result.getOrNull()
+                val allUrls = resp?.groups?.flatMap { it.urls } ?: emptyList()
+                if (allUrls.isNotEmpty()) {
+                    referenceImageUrl = allUrls.first()
+                }
+                showSuccessSnackbar = true
+            } else {
+                uploadError = result.exceptionOrNull()?.message ?: "Upload failed"
+            }
+        }
+    }
+
+    val mediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            pendingMediaUris = uris
+            selectedLocalUri = uris.firstOrNull()
+            // Prompt user: "Also post this to social media?"
+            showSocialPromptDialog = true
         }
     }
 
@@ -359,19 +413,23 @@ fun RequestScreen(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Reference Photo (Imgchest API)",
+                                            text = "Media Upload & Routing (Imgchest / Catbox)",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 14.sp
                                         )
                                     }
 
-                                    TextButton(
-                                        onClick = { showTokenDialog = true },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        shape = RoundedCornerShape(6.dp)
                                     ) {
-                                        Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("API Token", fontSize = 11.sp)
+                                        Text(
+                                            text = "Auto-Routing",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
                                     }
                                 }
 
@@ -396,7 +454,7 @@ fun RequestScreen(
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier.fillMaxSize()
                                             )
-                                            if (isUploadingToImgchest) {
+                                            if (isUploadingMedia) {
                                                 Box(
                                                     modifier = Modifier
                                                         .fillMaxSize()
@@ -415,19 +473,20 @@ fun RequestScreen(
                                         Spacer(modifier = Modifier.width(12.dp))
 
                                         Column(modifier = Modifier.weight(1f)) {
-                                            if (isUploadingToImgchest) {
+                                            if (isUploadingMedia) {
                                                 Text(
-                                                    text = "Uploading to Imgchest API...",
+                                                    text = uploadStatusText,
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 12.sp,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
                                                 Text(
-                                                    text = "Generating direct link for Supabase...",
+                                                    text = "Routing images to Imgchest & videos to Catbox...",
                                                     fontSize = 11.sp,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             } else if (referenceImageUrl.isNotBlank()) {
+                                                val hostLabel = if (referenceImageUrl.contains("catbox")) "Uploaded to Catbox ✓" else "Uploaded to Imgchest ✓"
                                                 Surface(
                                                     color = SuccessGreen.copy(alpha = 0.2f),
                                                     shape = RoundedCornerShape(4.dp)
@@ -444,7 +503,7 @@ fun RequestScreen(
                                                         )
                                                         Spacer(modifier = Modifier.width(4.dp))
                                                         Text(
-                                                            text = "Uploaded to Imgchest ✓",
+                                                            text = hostLabel,
                                                             color = SuccessGreen,
                                                             fontSize = 10.sp,
                                                             fontWeight = FontWeight.Bold
@@ -465,8 +524,8 @@ fun RequestScreen(
                                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                 OutlinedButton(
                                                     onClick = {
-                                                        photoPickerLauncher.launch(
-                                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                                        mediaPickerLauncher.launch(
+                                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                                         )
                                                     },
                                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -479,6 +538,7 @@ fun RequestScreen(
                                                     onClick = {
                                                         selectedLocalUri = null
                                                         referenceImageUrl = ""
+                                                        pendingMediaUris = emptyList()
                                                         uploadError = null
                                                     },
                                                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
@@ -492,8 +552,8 @@ fun RequestScreen(
                                     // Empty state: Upload button
                                     Button(
                                         onClick = {
-                                            photoPickerLauncher.launch(
-                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                            mediaPickerLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                             )
                                         },
                                         shape = RoundedCornerShape(8.dp),
@@ -502,9 +562,9 @@ fun RequestScreen(
                                             .fillMaxWidth()
                                             .testTag("btn_pick_imgchest_image")
                                     ) {
-                                        Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Select Image from Gallery to Upload", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text("Select Images or Videos to Upload", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
                                 }
 
@@ -894,42 +954,101 @@ fun RequestScreen(
         )
     }
 
-    if (showTokenDialog) {
+    // Social Posting Confirmation Prompt Dialog
+    if (showSocialPromptDialog) {
         AlertDialog(
-            onDismissRequest = { showTokenDialog = false },
-            icon = { Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-            title = { Text("Imgchest API Token", fontWeight = FontWeight.Bold) },
+            onDismissRequest = {
+                showSocialPromptDialog = false
+                pendingMediaUris = emptyList()
+            },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text(
+                    text = "Also post this to social media?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "To upload images to Imgchest, you can provide your personal access token from imgchest.com/settings/api (or leave blank if using default integration).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = imgchestTokenInput,
-                        onValueChange = { imgchestTokenInput = it },
-                        label = { Text("Imgchest Personal Access Token") },
-                        placeholder = { Text("Paste your Imgchest API token...") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                Text(
+                    text = "Would you like to cross-post this media to your connected Buffer social accounts with an optional AI-generated caption?"
+                )
             },
             confirmButton = {
-                Button(onClick = {
-                    ImgchestUploader.setApiToken(context, imgchestTokenInput)
-                    showTokenDialog = false
-                    uploadError = null
-                }) {
-                    Text("Save Token")
+                Button(
+                    onClick = {
+                        showSocialPromptDialog = false
+                        showSocialPostingSheet = true
+                        loadChannels()
+                    },
+                    modifier = Modifier.testTag("prompt_social_yes")
+                ) {
+                    Text("Yes")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showTokenDialog = false }) {
-                    Text("Cancel")
+                OutlinedButton(
+                    onClick = {
+                        showSocialPromptDialog = false
+                        executeUpload(pendingMediaUris, shareToSocial = false)
+                    },
+                    modifier = Modifier.testTag("prompt_social_no")
+                ) {
+                    Text("No, just upload")
                 }
             }
+        )
+    }
+
+    // Social Posting Bottom Sheet
+    if (showSocialPostingSheet) {
+        SocialPostingBottomSheet(
+            channels = bufferChannels,
+            isLoadingChannels = isLoadingChannels,
+            channelLoadError = channelLoadError,
+            onReloadChannels = { loadChannels() },
+            onDismissRequest = {
+                showSocialPostingSheet = false
+                // If user dismisses sheet, still complete upload without social posting
+                if (!isUploadingMedia && referenceImageUrl.isBlank()) {
+                    executeUpload(pendingMediaUris, shareToSocial = false)
+                }
+            },
+            onGenerateCaption = { captionTitle, onResult ->
+                isGeneratingCaption = true
+                coroutineScope.launch {
+                    val capRes = MediaUploadClient.generateCaption(captionTitle)
+                    isGeneratingCaption = false
+                    if (capRes.isSuccess) {
+                        val cap = capRes.getOrNull()
+                        if (cap != null) {
+                            onResult(cap.description, cap.hashtags.joinToString(" "))
+                        }
+                    } else {
+                        uploadError = capRes.exceptionOrNull()?.message ?: "Failed to generate caption"
+                    }
+                }
+            },
+            isGeneratingCaption = isGeneratingCaption,
+            onSubmit = { postTitle, postDesc, postTags, postChannelId, postMode ->
+                isSubmittingSocial = true
+                showSocialPostingSheet = false
+                executeUpload(
+                    uris = pendingMediaUris,
+                    title = postTitle,
+                    description = postDesc,
+                    hashtags = postTags,
+                    channelId = postChannelId,
+                    mode = postMode,
+                    shareToSocial = true
+                )
+            },
+            isSubmitting = isSubmittingSocial
         )
     }
 }

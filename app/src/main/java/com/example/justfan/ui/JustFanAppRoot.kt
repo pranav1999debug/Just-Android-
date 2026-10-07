@@ -9,7 +9,10 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -23,6 +26,7 @@ import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.ui.components.AuthDialog
 import com.example.justfan.ui.components.MoreBottomSheet
 import com.example.justfan.ui.screens.*
+import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.JustFanTheme
 
 enum class Screen(val title: String, val icon: ImageVector) {
@@ -235,24 +239,75 @@ fun JustFanAppRoot(
                                 }
                                 SubScreen.ADMIN -> {
                                     BackHandler { currentSubScreen = SubScreen.NONE }
-                                    AdminScreen(
-                                        posts = posts,
-                                        requests = requests,
-                                        users = users,
-                                        onCreatePost = { title, desc, img, link, premLink, tags, isFree, isNsfw ->
-                                            viewModel.createPost(title, desc, img, link, premLink, tags, isFree, isNsfw)
-                                        },
-                                        onUpdatePost = { updated -> viewModel.updatePost(updated) },
-                                        onDeletePost = { id -> viewModel.deletePost(id) },
-                                        onUpdateUserTier = { id, tier -> viewModel.updateUserTier(id, tier) },
-                                        onUpdateUserRequestsCount = { id, count -> viewModel.updateUserRequestsCount(id, count) },
-                                        onUpdateUserStatus = { id, status -> viewModel.updateUserStatus(id, status) },
-                                        onDeleteUser = { id -> viewModel.deleteUser(id) },
-                                        onFulfillRequest = { id, link -> viewModel.fulfillRequest(id, link) },
-                                        onRejectRequest = { id, reason -> viewModel.rejectRequest(id, reason) },
-                                        onDeleteRequest = { id -> viewModel.deleteRequest(id) },
-                                        onBack = { currentSubScreen = SubScreen.NONE }
-                                    )
+                                    val isAuthorized = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                                    if (!isAuthorized) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(24.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Card(
+                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                                shape = RoundedCornerShape(16.dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(16.dp)
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(24.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Shield,
+                                                        contentDescription = null,
+                                                        tint = DangerRed,
+                                                        modifier = Modifier.size(48.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.height(16.dp))
+                                                    Text(
+                                                        text = "Admin Access Restricted",
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text(
+                                                        text = "The Executive Dashboard is strictly reserved for the platform administrator (reytherapper12@gmail.com).\n\nYour account (${userProfile.email.ifBlank { "Guest" }}) does not have administrative rights.",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                                    )
+                                                    Spacer(modifier = Modifier.height(20.dp))
+                                                    Button(
+                                                        onClick = { currentSubScreen = SubScreen.NONE },
+                                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                                    ) {
+                                                        Text("Return to Feed")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        AdminScreen(
+                                            posts = posts,
+                                            requests = requests,
+                                            users = users,
+                                            onCreatePost = { title, desc, img, link, premLink, tags, isFree, isNsfw ->
+                                                viewModel.createPost(title, desc, img, link, premLink, tags, isFree, isNsfw)
+                                            },
+                                            onUpdatePost = { updated -> viewModel.updatePost(updated) },
+                                            onDeletePost = { id -> viewModel.deletePost(id) },
+                                            onUpdateUserTier = { id, tier -> viewModel.updateUserTier(id, tier) },
+                                            onUpdateUserRequestsCount = { id, count -> viewModel.updateUserRequestsCount(id, count) },
+                                            onUpdateUserStatus = { id, status -> viewModel.updateUserStatus(id, status) },
+                                            onDeleteUser = { id -> viewModel.deleteUser(id) },
+                                            onFulfillRequest = { id, link -> viewModel.fulfillRequest(id, link) },
+                                            onRejectRequest = { id, reason -> viewModel.rejectRequest(id, reason) },
+                                            onDeleteRequest = { id -> viewModel.deleteRequest(id) },
+                                            onBack = { currentSubScreen = SubScreen.NONE },
+                                            userProfile = userProfile
+                                        )
+                                    }
                                 }
                                 SubScreen.NONE -> {
                                     when (currentScreen) {
@@ -348,7 +403,11 @@ fun JustFanAppRoot(
                                                 onUpdateWallpaper = { uri, dim -> viewModel.updateWallpaper(uri, dim) },
                                                 onOpenAuth = { isAuthDialogOpen = true },
                                                 onSignOut = { viewModel.signOut() },
-                                                onOpenAdmin = { currentSubScreen = SubScreen.ADMIN }
+                                                onOpenAdmin = {
+                                                    if (userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)) {
+                                                        currentSubScreen = SubScreen.ADMIN
+                                                    }
+                                                }
                                             )
                                         }
                                         Screen.MORE -> {
@@ -366,7 +425,11 @@ fun JustFanAppRoot(
                                                 onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
                                                 onIncrementClicks = { id -> viewModel.incrementClicks(id) },
                                                 onNotificationsClick = { currentSubScreen = SubScreen.NOTIFICATIONS },
-                                                onAdminClick = { currentSubScreen = SubScreen.ADMIN },
+                                                onAdminClick = {
+                                                 if (userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)) {
+                                                     currentSubScreen = SubScreen.ADMIN
+                                                 }
+                                             },
                                                 onPricingClick = { currentSubScreen = SubScreen.PRICING },
                                                 onViewGallery = { currentSubScreen = SubScreen.GALLERY },
                                                 isSyncing = isSyncing,
@@ -410,9 +473,12 @@ fun JustFanAppRoot(
                         isMoreSheetOpen = false
                         currentSubScreen = SubScreen.NOTIFICATIONS
                     },
+                    isAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true),
                     onAdminClick = {
                         isMoreSheetOpen = false
-                        currentSubScreen = SubScreen.ADMIN
+                        if (userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)) {
+                            currentSubScreen = SubScreen.ADMIN
+                        }
                     },
                     onSettingsClick = {
                         isMoreSheetOpen = false

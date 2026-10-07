@@ -28,6 +28,7 @@ fun MoreBottomSheet(
     onActivityClick: () -> Unit,
     onAdminClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    isAdmin: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     ModalBottomSheet(
@@ -115,13 +116,15 @@ fun MoreBottomSheet(
                 onClick = onActivityClick
             )
 
-            // 6. Admin
-            MoreMenuItem(
-                icon = Icons.Default.Shield,
-                title = "Admin",
-                testTag = "more_item_admin",
-                onClick = onAdminClick
-            )
+            // 6. Admin (Only displayed for platform administrator)
+            if (isAdmin) {
+                MoreMenuItem(
+                    icon = Icons.Default.Shield,
+                    title = "Admin",
+                    testTag = "more_item_admin",
+                    onClick = onAdminClick
+                )
+            }
 
             // 7. Settings
             MoreMenuItem(

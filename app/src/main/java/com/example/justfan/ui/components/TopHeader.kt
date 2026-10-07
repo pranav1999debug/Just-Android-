@@ -65,8 +65,9 @@ fun TopHeader(
                         color = if (userProfile?.tier == "Legendary") GoldAccent.copy(alpha = 0.25f) else MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(4.dp)
                     ) {
+                        val isRealAdmin = userProfile?.isAdmin == true && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
                         Text(
-                            text = if (userProfile?.isAdmin == true) "ADMIN" else (userProfile?.tier?.uppercase() ?: "VIP"),
+                            text = if (isRealAdmin) "ADMIN" else (userProfile?.tier?.uppercase() ?: "VIP"),
                             color = if (userProfile?.tier == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,

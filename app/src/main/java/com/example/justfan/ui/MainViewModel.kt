@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = JustFanRepository(
         database = AppDatabase.getDatabase(application),
+        context = application.applicationContext,
         scope = viewModelScope
     )
 
@@ -179,7 +180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun signInWithEmail(email: String, password: String): Result<UserProfile> =
         repository.signInWithEmail(email, password)
 
-    fun signInWithGoogle(email: String = "reytherapper12@gmail.com", name: String = "Rey"): Result<UserProfile> =
+    fun signInWithGoogle(email: String, name: String = "Google User"): Result<UserProfile> =
         repository.signInWithGoogle(email, name)
 
     fun signInWithPasskey(name: String = "Device Passkey"): Result<UserProfile> =

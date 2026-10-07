@@ -43,85 +43,105 @@ object SupabaseClient {
         return connection
     }
 
-    suspend fun fetchPosts(limit: Int = 1500, offset: Int = 0): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
+    suspend fun fetchPosts(limit: Int = 1000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "posts?select=*&order=created_at.desc&limit=$limit&offset=$offset"
-            val conn = openConnection(endpoint, "GET")
-            val code = conn.responseCode
+            val allPosts = mutableListOf<PostEntity>()
+            var offset = 0
+            val batchSize = 1000
+            var hasMore = true
 
-            if (code in 200..299) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                val response = reader.readText()
-                reader.close()
-                conn.disconnect()
+            while (hasMore) {
+                val endpoint = "posts?select=*&order=created_at.desc&limit=$batchSize&offset=$offset"
+                val conn = openConnection(endpoint, "GET")
+                val code = conn.responseCode
 
-                val jsonArray = JSONArray(response)
-                val posts = mutableListOf<PostEntity>()
+                if (code in 200..299) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    val response = reader.readText()
+                    reader.close()
+                    conn.disconnect()
 
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val id = obj.optString("id", UUID.randomUUID().toString())
-                    val title = obj.optString("title", "Untitled Gallery")
-                    val description = obj.optString("description", "")
-                    val imageUrl = obj.optString("image_url", "")
-                    val linkUrl = obj.optString("link_url", "")
-                    val directLinkUrl = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
-                    val premiumLinkUrl = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
-
-                    val contentImages = mutableListOf<String>()
-                    if (obj.has("content_images") && !obj.isNull("content_images")) {
-                        val arr = obj.optJSONArray("content_images")
-                        if (arr != null) {
-                            for (j in 0 until arr.length()) {
-                                contentImages.add(arr.optString(j))
-                            }
-                        }
+                    val jsonArray = JSONArray(response)
+                    if (jsonArray.length() == 0) {
+                        hasMore = false
+                        break
                     }
 
-                    val tags = mutableListOf<String>()
-                    if (obj.has("tags") && !obj.isNull("tags")) {
-                        val arr = obj.optJSONArray("tags")
-                        if (arr != null) {
-                            for (j in 0 until arr.length()) {
-                                tags.add(arr.optString(j))
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val id = obj.optString("id", UUID.randomUUID().toString())
+                        val title = obj.optString("title", "Untitled Gallery")
+                        val description = obj.optString("description", "")
+                        val imageUrl = obj.optString("image_url", "")
+                        val linkUrl = obj.optString("link_url", "")
+                        val directLinkUrl = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
+                        val premiumLinkUrl = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
+
+                        val contentImages = mutableListOf<String>()
+                        if (obj.has("content_images") && !obj.isNull("content_images")) {
+                            val arr = obj.optJSONArray("content_images")
+                            if (arr != null) {
+                                for (j in 0 until arr.length()) {
+                                    contentImages.add(arr.optString(j))
+                                }
                             }
                         }
-                    }
 
-                    val isFree = obj.optBoolean("is_free", false)
-                    val isNsfw = obj.optBoolean("is_nsfw", false)
-                    val section = obj.optString("section", "home")
-                    val createdAtStr = obj.optString("created_at", "")
-                    val createdAtMillis = parseIsoToMillis(createdAtStr)
+                        val tags = mutableListOf<String>()
+                        if (obj.has("tags") && !obj.isNull("tags")) {
+                            val arr = obj.optJSONArray("tags")
+                            if (arr != null) {
+                                for (j in 0 until arr.length()) {
+                                    tags.add(arr.optString(j))
+                                }
+                            }
+                        }
 
-                    posts.add(
-                        PostEntity(
-                            id = id,
-                            title = title,
-                            description = description,
-                            imageUrl = imageUrl,
-                            contentImages = contentImages,
-                            linkUrl = linkUrl,
-                            premiumLinkUrl = premiumLinkUrl,
-                            directLinkUrl = directLinkUrl,
-                            tags = tags,
-                            author = "Creator",
-                            isFree = isFree,
-                            isNsfw = isNsfw,
-                            section = section,
-                            clicksCount = 0,
-                            likesCount = 0,
-                            createdAt = createdAtMillis
+                        val isFree = obj.optBoolean("is_free", false)
+                        val isNsfw = obj.optBoolean("is_nsfw", false)
+                        val section = obj.optString("section", "home")
+                        val createdAtStr = obj.optString("created_at", "")
+                        val createdAtMillis = parseIsoToMillis(createdAtStr)
+
+                        allPosts.add(
+                            PostEntity(
+                                id = id,
+                                title = title,
+                                description = description,
+                                imageUrl = imageUrl,
+                                contentImages = contentImages,
+                                linkUrl = linkUrl,
+                                premiumLinkUrl = premiumLinkUrl,
+                                directLinkUrl = directLinkUrl,
+                                tags = tags,
+                                author = "Creator",
+                                isFree = isFree,
+                                isNsfw = isNsfw,
+                                section = section,
+                                clicksCount = 0,
+                                likesCount = 0,
+                                createdAt = createdAtMillis
+                            )
                         )
-                    )
-                }
+                    }
 
-                Result.success(posts)
-            } else {
-                val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
-                conn.disconnect()
-                Result.failure(Exception("Supabase fetchPosts failed: $err"))
+                    if (jsonArray.length() < batchSize) {
+                        hasMore = false
+                    } else {
+                        offset += jsonArray.length()
+                    }
+                } else {
+                    val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
+                    conn.disconnect()
+                    if (allPosts.isNotEmpty()) {
+                        // Return what we fetched so far rather than failing completely
+                        break
+                    }
+                    return@withContext Result.failure(Exception("Supabase fetchPosts failed: $err"))
+                }
             }
+
+            Result.success(allPosts)
         } catch (e: Exception) {
             Log.e(TAG, "fetchPosts error", e)
             Result.failure(e)
@@ -491,7 +511,8 @@ object SupabaseClient {
 
     suspend fun fetchPostClicksSummary(): Result<Map<String, Int>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "post_clicks?select=id,post_id,clicked_at&limit=10000"
+            // First attempt: fetch from aggregate view/table post_click_counts
+            val endpoint = "post_click_counts?select=post_id,count&limit=1500"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
 
@@ -505,18 +526,36 @@ object SupabaseClient {
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val postId = obj.optString("post_id", "")
-                    if (postId.isNotBlank()) {
-                        val count = if (obj.has("count")) obj.optInt("count", 1) else 1
-                        summary[postId] = (summary[postId] ?: 0) + maxOf(1, count)
+                    val count = obj.optInt("count", 0)
+                    if (postId.isNotBlank() && count > 0) {
+                        summary[postId] = count
                     }
                 }
-                Log.d(TAG, "fetchPostClicksSummary: fetched ${jsonArray.length()} clicks across ${summary.size} posts")
+                Log.d(TAG, "fetchPostClicksSummary: fetched ${summary.size} posts from post_click_counts")
                 Result.success(summary)
             } else {
-                val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
                 conn.disconnect()
-                Log.w(TAG, "fetchPostClicksSummary failed ($code): $err")
-                Result.failure(Exception("HTTP $code: $err"))
+                // Fallback: fetch from post_clicks table if post_click_counts is unavailable
+                val fallbackConn = openConnection("post_clicks?select=post_id&limit=10000", "GET")
+                val fallbackCode = fallbackConn.responseCode
+                if (fallbackCode in 200..299) {
+                    val response = fallbackConn.inputStream.bufferedReader().readText()
+                    fallbackConn.disconnect()
+                    val jsonArray = JSONArray(response)
+                    val summary = mutableMapOf<String, Int>()
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val postId = obj.optString("post_id", "")
+                        if (postId.isNotBlank()) {
+                            summary[postId] = (summary[postId] ?: 0) + 1
+                        }
+                    }
+                    Result.success(summary)
+                } else {
+                    val err = fallbackConn.errorStream?.bufferedReader()?.readText() ?: "HTTP $fallbackCode"
+                    fallbackConn.disconnect()
+                    Result.failure(Exception("fetchPostClicksSummary failed ($fallbackCode): $err"))
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "fetchPostClicksSummary error", e)
@@ -625,6 +664,30 @@ object SupabaseClient {
 
     suspend fun fetchFavoritesSummary(): Result<Pair<Map<String, Int>, Set<String>>> = withContext(Dispatchers.IO) {
         try {
+            val likesCountMap = mutableMapOf<String, Int>()
+            val userFavPostIds = mutableSetOf<String>()
+
+            // 1. Fetch from post_like_counts view/table if available
+            try {
+                val likeCountsConn = openConnection("post_like_counts?select=post_id,count&limit=1500", "GET")
+                val likeCountsCode = likeCountsConn.responseCode
+                if (likeCountsCode in 200..299) {
+                    val response = likeCountsConn.inputStream.bufferedReader().readText()
+                    likeCountsConn.disconnect()
+                    val jsonArray = JSONArray(response)
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val postId = obj.optString("post_id", "")
+                        val count = obj.optInt("count", 0)
+                        if (postId.isNotBlank() && count > 0) {
+                            likesCountMap[postId] = count
+                        }
+                    }
+                } else {
+                    likeCountsConn.disconnect()
+                }
+            } catch (_: Exception) {}
+
             val endpoint = "favorites?select=post_id,user_id"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
@@ -634,15 +697,13 @@ object SupabaseClient {
                 conn.disconnect()
 
                 val jsonArray = JSONArray(response)
-                val likesCountMap = mutableMapOf<String, Int>()
-                val userFavPostIds = mutableSetOf<String>()
 
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val postId = obj.optString("post_id", "")
                     val userId = obj.optString("user_id", "")
                     if (postId.isNotBlank()) {
-                        likesCountMap[postId] = (likesCountMap[postId] ?: 0) + 1
+                        likesCountMap[postId] = maxOf(likesCountMap[postId] ?: 0, (likesCountMap[postId] ?: 0) + 1)
                         if (userId.isNotBlank()) {
                             userFavPostIds.add(postId)
                         }
@@ -651,7 +712,7 @@ object SupabaseClient {
                 Result.success(Pair(likesCountMap, userFavPostIds))
             } else {
                 conn.disconnect()
-                Result.failure(Exception("HTTP $code"))
+                Result.success(Pair(likesCountMap, userFavPostIds))
             }
         } catch (e: Exception) {
             Result.failure(e)

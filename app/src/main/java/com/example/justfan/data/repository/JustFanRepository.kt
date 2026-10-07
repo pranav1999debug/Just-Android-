@@ -12,6 +12,7 @@ import java.util.UUID
 
 class JustFanRepository(
     private val database: AppDatabase,
+    private val context: android.content.Context? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
     private val postDao = database.postDao()
@@ -35,19 +36,60 @@ class JustFanRepository(
     )
     val preferences = _preferences.asStateFlow()
 
-    private val _userProfile = MutableStateFlow(
-        UserProfile(
-            id = "admin_rey",
-            username = "reytherapper12",
-            email = "reytherapper12@gmail.com",
-            isSignedIn = true,
-            authMethod = "password",
-            tier = "Legendary",
-            isAdmin = true,
+    private fun loadInitialProfile(): UserProfile {
+        try {
+            val sp = context?.getSharedPreferences("justfan_auth_prefs", android.content.Context.MODE_PRIVATE)
+            if (sp != null && sp.getBoolean("is_signed_in", false)) {
+                val email = sp.getString("email", "") ?: ""
+                val isRey = email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                return UserProfile(
+                    id = sp.getString("id", if (isRey) "admin_rey" else UUID.randomUUID().toString()) ?: "guest_user",
+                    username = sp.getString("username", if (isRey) "reytherapper12" else "User") ?: "User",
+                    email = email,
+                    isSignedIn = true,
+                    authMethod = sp.getString("auth_method", "google") ?: "google",
+                    tier = sp.getString("tier", if (isRey) "Legendary" else "Free") ?: "Free",
+                    isAdmin = isRey,
+                    requestsCount = sp.getInt("requests_count", 0),
+                    proExpiresAt = sp.getLong("pro_expires_at", if (isRey) Long.MAX_VALUE else 0L),
+                    customWallpaperUri = sp.getString("custom_wallpaper_uri", null)
+                )
+            }
+        } catch (_: Exception) {}
+        return UserProfile(
+            id = "guest_user",
+            username = "Guest Fan",
+            email = "",
+            isSignedIn = false,
+            authMethod = "guest",
+            tier = "Free",
+            isAdmin = false,
             requestsCount = 0,
-            proExpiresAt = Long.MAX_VALUE
+            proExpiresAt = 0L
         )
-    )
+    }
+
+    private fun saveProfileToPrefs(profile: UserProfile) {
+        try {
+            val sp = context?.getSharedPreferences("justfan_auth_prefs", android.content.Context.MODE_PRIVATE) ?: return
+            val isStrictAdmin = profile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+            sp.edit().apply {
+                putBoolean("is_signed_in", profile.isSignedIn)
+                putString("id", profile.id)
+                putString("username", profile.username)
+                putString("email", profile.email)
+                putString("auth_method", profile.authMethod)
+                putString("tier", if (isStrictAdmin) "Legendary" else profile.tier)
+                putBoolean("is_admin", isStrictAdmin)
+                putInt("requests_count", profile.requestsCount)
+                putLong("pro_expires_at", profile.proExpiresAt)
+                putString("custom_wallpaper_uri", profile.customWallpaperUri)
+                apply()
+            }
+        } catch (_: Exception) {}
+    }
+
+    private val _userProfile = MutableStateFlow(loadInitialProfile())
     val userProfile = _userProfile.asStateFlow()
 
     private val _isSyncing = MutableStateFlow(false)
@@ -174,11 +216,20 @@ class JustFanRepository(
                 }
             }
 
-            // 7. Fetch Active User Profile
-            val profileResult = com.example.justfan.data.remote.SupabaseClient.fetchProfile("reytherapper12@gmail.com")
-            if (profileResult.isSuccess) {
-                profileResult.getOrNull()?.let { p ->
-                    _userProfile.value = p
+            // 7. Fetch Active User Profile (only if signed in, strictly refresh the logged-in user's profile)
+            val currentEmail = _userProfile.value.email
+            if (_userProfile.value.isSignedIn && currentEmail.isNotBlank()) {
+                val profileResult = com.example.justfan.data.remote.SupabaseClient.fetchProfile(currentEmail)
+                if (profileResult.isSuccess) {
+                    profileResult.getOrNull()?.let { p ->
+                        val isStrictAdmin = p.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                        val updated = p.copy(
+                            isAdmin = isStrictAdmin,
+                            tier = if (isStrictAdmin) "Legendary" else p.tier
+                        )
+                        _userProfile.value = updated
+                        saveProfileToPrefs(updated)
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -560,15 +611,19 @@ class JustFanRepository(
     }
 
     fun updateTier(newTier: String) {
+        val isRey = _userProfile.value.email.equals("reytherapper12@gmail.com", ignoreCase = true)
         val expiresAt = when (newTier) {
             "Pro" -> System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L) // 1 month
             "Legendary" -> Long.MAX_VALUE // Unlimited time
             else -> 0L
         }
-        _userProfile.value = _userProfile.value.copy(
+        val updated = _userProfile.value.copy(
             tier = newTier,
+            isAdmin = isRey,
             proExpiresAt = expiresAt
         )
+        _userProfile.value = updated
+        saveProfileToPrefs(updated)
     }
 
     fun signInWithEmail(email: String, password: String): Result<UserProfile> {
@@ -587,6 +642,7 @@ class JustFanRepository(
                     proExpiresAt = Long.MAX_VALUE
                 )
                 _userProfile.value = adminProfile
+                saveProfileToPrefs(adminProfile)
                 Result.success(adminProfile)
             } else {
                 Result.failure(IllegalArgumentException("Incorrect password for admin account."))
@@ -604,6 +660,7 @@ class JustFanRepository(
                     requestsCount = 0
                 )
                 _userProfile.value = user
+                saveProfileToPrefs(user)
                 Result.success(user)
             } else {
                 Result.failure(IllegalArgumentException("Please enter a valid email and password (min 4 characters)."))
@@ -611,7 +668,7 @@ class JustFanRepository(
         }
     }
 
-    fun signInWithGoogle(email: String = "reytherapper12@gmail.com", name: String = "Google User"): Result<UserProfile> {
+    fun signInWithGoogle(email: String, name: String = "Google User"): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
         val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
         val profile = UserProfile(
@@ -626,6 +683,23 @@ class JustFanRepository(
             proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L
         )
         _userProfile.value = profile
+        saveProfileToPrefs(profile)
+        // Background sync user's specific tier if they exist on Supabase
+        scope.launch {
+            try {
+                val res = com.example.justfan.data.remote.SupabaseClient.fetchProfile(cleanEmail)
+                if (res.isSuccess) {
+                    res.getOrNull()?.let { remoteProfile ->
+                        val updated = remoteProfile.copy(
+                            isAdmin = isAdminUser,
+                            tier = if (isAdminUser) "Legendary" else remoteProfile.tier
+                        )
+                        _userProfile.value = updated
+                        saveProfileToPrefs(updated)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
         return Result.success(profile)
     }
 
@@ -644,11 +718,12 @@ class JustFanRepository(
             proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
         )
         _userProfile.value = profile
+        saveProfileToPrefs(profile)
         return Result.success(profile)
     }
 
     fun signOut() {
-        _userProfile.value = UserProfile(
+        val guest = UserProfile(
             id = "guest_user",
             username = "Guest Fan",
             email = "",
@@ -659,6 +734,8 @@ class JustFanRepository(
             requestsCount = 0,
             proExpiresAt = 0L
         )
+        _userProfile.value = guest
+        saveProfileToPrefs(guest)
     }
 
     fun updateWallpaper(wallpaperUri: String?, dim: Float = 0.65f) {

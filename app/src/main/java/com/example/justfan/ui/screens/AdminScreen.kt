@@ -53,8 +53,60 @@ fun AdminScreen(
     onRejectRequest: (requestId: String, reason: String) -> Unit,
     onDeleteRequest: (requestId: String) -> Unit,
     onBack: () -> Unit,
+    userProfile: com.example.justfan.data.model.UserProfile? = null,
     modifier: Modifier = Modifier
 ) {
+    val isAuthorized = userProfile != null && userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+    if (!isAuthorized) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = DangerRed,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Admin Access Restricted",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "The Executive Dashboard is strictly reserved for the platform administrator (reytherapper12@gmail.com).\n\nYour account (${userProfile?.email?.ifBlank { "Guest" } ?: "Guest"}) does not have administrative rights.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Button(
+                        onClick = onBack,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Return to Feed")
+                    }
+                }
+            }
+        }
+        return
+    }
+
     var adminTab by remember { mutableIntStateOf(0) } // 0: Stats, 1: Users, 2: Posts, 3: Requests
 
     // Modals

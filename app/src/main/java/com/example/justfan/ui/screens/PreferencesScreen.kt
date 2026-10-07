@@ -480,7 +480,8 @@ fun PreferencesScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Membership & Tiers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             }
-                            if (userProfile.isAdmin) {
+                            val isStrictAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                            if (isStrictAdmin) {
                                 Surface(
                                     color = Color(0xFFEF4444),
                                     shape = RoundedCornerShape(4.dp)
@@ -546,7 +547,8 @@ fun PreferencesScreen(
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        if (userProfile.isAdmin) {
+                        val isStrictAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                        if (isStrictAdmin) {
                             Text("Admin User Tier Management:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                             Spacer(modifier = Modifier.height(6.dp))
 

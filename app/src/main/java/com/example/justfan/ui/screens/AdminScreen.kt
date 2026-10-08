@@ -34,7 +34,7 @@ import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserEntity
 import com.example.justfan.data.remote.GeminiAiHelper
-import com.example.justfan.data.remote.ImgchestUploader
+import com.example.justfan.data.remote.MediaUploadClient
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
@@ -1364,6 +1364,7 @@ private fun PostFormDialog(
     // Content media multi-upload state
     var isUploadingContent by remember { mutableStateOf(false) }
     var contentUploadStatus by remember { mutableStateOf<String?>(null) }
+    var contentUploadError by remember { mutableStateOf<String?>(null) }
     var manualContentUrl by remember { mutableStateOf("") }
     var showManualUrlInput by remember { mutableStateOf(false) }
 
@@ -1379,7 +1380,11 @@ private fun PostFormDialog(
             coroutineScope.launch {
                 isUploadingCover = true
                 coverUploadError = null
-                val result = ImgchestUploader.uploadImage(context, uri)
+                val result = MediaUploadClient.uploadSingleMedia(
+                    context = context,
+                    uri = uri,
+                    title = postTitle.ifBlank { "Cover Image" }
+                )
                 if (result.isSuccess) {
                     postImg = result.getOrNull() ?: ""
                 } else {
@@ -1396,13 +1401,21 @@ private fun PostFormDialog(
         if (!uris.isNullOrEmpty()) {
             coroutineScope.launch {
                 isUploadingContent = true
+                contentUploadError = null
                 val total = uris.size
                 val uploadedUrls = mutableListOf<String>()
                 for ((idx, u) in uris.withIndex()) {
                     contentUploadStatus = "Uploading ${idx + 1} of $total..."
-                    val res = ImgchestUploader.uploadImage(context, u)
+                    val res = MediaUploadClient.uploadSingleMedia(
+                        context = context,
+                        uri = u,
+                        title = postTitle.ifBlank { "Content Media ${idx + 1}" }
+                    )
                     if (res.isSuccess) {
                         res.getOrNull()?.let { uploadedUrls.add(it) }
+                    } else {
+                        val errText = res.exceptionOrNull()?.message ?: "Upload failed"
+                        contentUploadError = errText
                     }
                 }
                 if (uploadedUrls.isNotEmpty()) {
@@ -1636,6 +1649,10 @@ private fun PostFormDialog(
                             if (isUploadingContent) {
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 Text(contentUploadStatus ?: "Uploading media...", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                            }
+
+                            if (contentUploadError != null) {
+                                Text(contentUploadError!!, color = DangerRed, fontSize = 11.sp)
                             }
 
                             // Manual URL input toggle

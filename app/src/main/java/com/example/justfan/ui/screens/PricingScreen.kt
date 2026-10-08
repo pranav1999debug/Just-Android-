@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.UserProfile
-import com.example.justfan.data.remote.ImgchestUploader
+import com.example.justfan.data.remote.MediaUploadClient
 import com.example.justfan.data.remote.PayPalClient
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
@@ -151,18 +151,18 @@ fun PricingScreen(
             uploadErrorMessage = null
             isUploadingToImgchest = true
             coroutineScope.launch {
-                val uploadResult = ImgchestUploader.uploadImage(
+                val uploadResult = MediaUploadClient.uploadSingleMedia(
                     context = context,
-                    imageUri = uri,
+                    uri = uri,
                     title = "JUSTFAN Payment Proof - ${showGooglePayDialog?.name ?: "Plan"}"
                 )
                 isUploadingToImgchest = false
                 if (uploadResult.isSuccess) {
                     uploadedImgchestUrl = uploadResult.getOrNull()
-                    Toast.makeText(context, "Screenshot uploaded to Imgchest!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Screenshot uploaded successfully!", Toast.LENGTH_SHORT).show()
                 } else {
-                    uploadErrorMessage = uploadResult.exceptionOrNull()?.message ?: "Failed to upload to Imgchest"
-                    Toast.makeText(context, "Imgchest upload failed: $uploadErrorMessage", Toast.LENGTH_LONG).show()
+                    uploadErrorMessage = uploadResult.exceptionOrNull()?.message ?: "Upload failed"
+                    Toast.makeText(context, "Upload failed: $uploadErrorMessage", Toast.LENGTH_LONG).show()
                 }
             }
         }

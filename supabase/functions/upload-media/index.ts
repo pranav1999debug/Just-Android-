@@ -3,7 +3,24 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { getAppSecret, getServiceSupabase } from "../_shared/secrets.ts";
 import { executeBufferPost } from "../_shared/buffer.ts";
 
-const MAX_CATBOX_BYTES = 200 * 1024 * 1024; // 200MB limit for Catbox.moe
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB video limit to respect edge memory
+
+function getMediaType(file: File): "image" | "video" {
+  const mime = (file.type || "").toLowerCase().trim();
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+
+  const name = (file.name || "").toLowerCase();
+  const ext = name.split(".").pop() || "";
+  if (["jpg", "jpeg", "png", "webp", "gif", "heic", "bmp", "avif"].includes(ext)) {
+    return "image";
+  }
+  if (["mp4", "mov", "webm", "mkv", "m4v", "avi", "ts"].includes(ext)) {
+    return "video";
+  }
+  // Safe default fallback
+  return "image";
+}
 
 async function uploadToImgchest(
   files: File[],
@@ -35,7 +52,7 @@ async function uploadToImgchest(
 
       if (!res.ok) {
         const errText = await res.text();
-        throw new Error(`Imgchest upload failed (${res.status}): ${errText}`);
+        throw new Error(`Imgchest error (HTTP ${res.status}): ${errText}`);
       }
 
       const resJson = await res.json();
@@ -59,12 +76,14 @@ async function uploadToImgchest(
             },
             body: addFormData,
           });
-          if (addRes.ok) {
-            const addJson = await addRes.json();
-            const addedImages = addJson.data?.images ?? [];
-            for (const img of addedImages) {
-              if (img.link) urls.push(img.link);
-            }
+          if (!addRes.ok) {
+            const errText = await addRes.text();
+            throw new Error(`Imgchest add error (HTTP ${addRes.status}): ${errText}`);
+          }
+          const addJson = await addRes.json();
+          const addedImages = addJson.data?.images ?? [];
+          for (const img of addedImages) {
+            if (img.link) urls.push(img.link);
           }
         }
         break;
@@ -73,7 +92,7 @@ async function uploadToImgchest(
   }
 
   if (urls.length === 0) {
-    throw new Error("No image URLs returned from Imgchest");
+    throw new Error("Imgchest error: No image URLs returned from host");
   }
 
   return urls;
@@ -86,12 +105,8 @@ async function uploadToCatbox(
   const urls: string[] = [];
 
   for (const f of files) {
-    if (f.size > MAX_CATBOX_BYTES) {
-      throw new Error(
-        `File '${f.name}' exceeds Catbox 200MB size limit (${Math.round(
-          f.size / (1024 * 1024)
-        )}MB)`
-      );
+    if (f.size > MAX_VIDEO_BYTES) {
+      throw new Error("Video too large, max 50MB");
     }
 
     const formData = new FormData();
@@ -101,17 +116,20 @@ async function uploadToCatbox(
 
     const res = await fetch("https://catbox.moe/user/api.php", {
       method: "POST",
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
       body: formData,
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Catbox upload failed (${res.status}): ${errText}`);
+      throw new Error(`Catbox error (HTTP ${res.status}): ${errText}`);
     }
 
     const urlText = (await res.text()).trim();
-    if (!urlText.startsWith("https://")) {
-      throw new Error(`Invalid response from Catbox: ${urlText}`);
+    if (!urlText.startsWith("http://") && !urlText.startsWith("https://")) {
+      throw new Error(`Catbox error (HTTP ${res.status}): ${urlText}`);
     }
 
     urls.push(urlText);
@@ -137,7 +155,7 @@ serve(async (req) => {
     const formData = await req.formData();
     const files: File[] = [];
 
-    for (const [key, value] of formData.entries()) {
+    for (const [_, value] of formData.entries()) {
       if (value instanceof File && value.size > 0) {
         files.push(value);
       }
@@ -164,18 +182,11 @@ serve(async (req) => {
     const videoFiles: File[] = [];
 
     for (const f of files) {
-      const mime = f.type.toLowerCase();
-      if (mime.startsWith("image/")) {
+      const mediaType = getMediaType(f);
+      if (mediaType === "image") {
         imageFiles.push(f);
-      } else if (mime.startsWith("video/")) {
-        videoFiles.push(f);
       } else {
-        return new Response(
-          JSON.stringify({
-            error: `Unsupported MIME type '${f.type}' for file '${f.name}'. Only images and videos are supported.`,
-          }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        videoFiles.push(f);
       }
     }
 
@@ -194,6 +205,7 @@ serve(async (req) => {
 
     const supabase = getServiceSupabase();
     const results: any[] = [];
+    let lastError: string | null = null;
 
     for (const group of groups) {
       const rowId = crypto.randomUUID();
@@ -275,6 +287,7 @@ serve(async (req) => {
         });
       } catch (err: any) {
         const errorMsg = err.message || "Upload failed";
+        lastError = errorMsg;
         await supabase
           .from("upload_requests")
           .update({
@@ -295,13 +308,27 @@ serve(async (req) => {
     }
 
     const hasAnySuccess = results.some((r) => r.urls && r.urls.length > 0);
+    if (!hasAnySuccess && lastError) {
+      return new Response(
+        JSON.stringify({
+          error: lastError,
+          results,
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
     return new Response(
       JSON.stringify({
         success: hasAnySuccess,
         results,
+        error: lastError,
       }),
       {
-        status: hasAnySuccess ? 200 : 500,
+        status: hasAnySuccess ? 200 : 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );

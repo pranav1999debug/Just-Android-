@@ -9,7 +9,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.*
+import java.io.BufferedReader
+import java.io.DataOutputStream
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -46,8 +49,11 @@ data class MediaUploadResponse(
 
 object MediaUploadClient {
     private const val TAG = "MediaUploadClient"
-    private val BASE_FUNCTIONS_URL = "${BuildConfig.SUPABASE_URL.trimEnd('/')}/functions/v1"
+    private const val DEBUG_TAG = "UploadDebug"
+    private val SUPABASE_URL = BuildConfig.SUPABASE_URL.trimEnd('/')
     private val SUPABASE_KEY = BuildConfig.SUPABASE_KEY
+    private val BASE_FUNCTIONS_URL = "$SUPABASE_URL/functions/v1"
+    private const val MAX_VIDEO_BYTES = 50L * 1024 * 1024 // 50MB
 
     /**
      * Lists connected Buffer channels using the list-buffer-channels Edge Function.
@@ -65,14 +71,15 @@ object MediaUploadClient {
                 doOutput = true
             }
 
-            // Empty body or post
-            OutputStreamWriter(conn.outputStream).use { it.write("{}") }
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write("{}") }
 
             val code = conn.responseCode
             val responseText = if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
-                val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                val err = conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
                 conn.disconnect()
                 return@withContext Result.failure(Exception("Failed to fetch Buffer channels ($code): $err"))
             }
@@ -117,8 +124,38 @@ object MediaUploadClient {
     }
 
     /**
-     * Uploads media files with automatic host routing via upload-media Edge Function.
-     * Optionally posts to Buffer if social posting is requested.
+     * Convenience method to upload a single media file and return its URL directly.
+     */
+    suspend fun uploadSingleMedia(
+        context: Context,
+        uri: Uri,
+        title: String? = null
+    ): Result<String> {
+        val result = uploadMedia(
+            context = context,
+            uris = listOf(uri),
+            title = title
+        )
+        return if (result.isSuccess) {
+            val response = result.getOrNull()
+            val url = response?.groups?.flatMap { it.urls }?.firstOrNull()
+            if (!url.isNullOrBlank()) {
+                Result.success(url)
+            } else {
+                val err = response?.error ?: response?.groups?.mapNotNull { it.error }?.firstOrNull() ?: "No URL returned from upload"
+                Result.failure(Exception(err))
+            }
+        } else {
+            Result.failure(result.exceptionOrNull() ?: Exception("Upload failed"))
+        }
+    }
+
+    /**
+     * Direct media upload with automatic host routing:
+     * - Images -> Imgchest
+     * - Videos -> Catbox
+     * Holds URLs in memory, saves to `upload_requests` via Supabase REST API,
+     * and optionally triggers `post-to-buffer` Edge Function if requested.
      */
     suspend fun uploadMedia(
         context: Context,
@@ -131,118 +168,503 @@ object MediaUploadClient {
         shareToSocial: Boolean = false,
         userId: String? = null
     ): Result<MediaUploadResponse> = withContext(Dispatchers.IO) {
-        try {
-            if (uris.isEmpty()) {
-                return@withContext Result.failure(IllegalArgumentException("No media selected for upload"))
-            }
+        if (uris.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("No media selected for upload"))
+        }
 
-            val boundary = "==JustFanUploadBoundary_${System.currentTimeMillis()}=="
-            val url = URL("$BASE_FUNCTIONS_URL/upload-media")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                useCaches = false
-                connectTimeout = 60000
-                readTimeout = 120000
-                setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-                setRequestProperty("apikey", SUPABASE_KEY)
-                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
-                setRequestProperty("Accept", "application/json")
-            }
-
-            val lineEnd = "\r\n"
-            val twoHyphens = "--"
-            val outputStream = DataOutputStream(conn.outputStream)
-
-            // Add form fields
-            fun addFormField(name: String, value: String) {
-                outputStream.writeBytes(twoHyphens + boundary + lineEnd)
-                outputStream.writeBytes("Content-Disposition: form-data; name=\"$name\"$lineEnd$lineEnd")
-                outputStream.write(value.toByteArray(Charsets.UTF_8))
-                outputStream.writeBytes(lineEnd)
-            }
-
-            if (!title.isNullOrBlank()) addFormField("title", title)
-            if (!description.isNullOrBlank()) addFormField("description", description)
-            if (!hashtags.isNullOrBlank()) addFormField("hashtags", hashtags)
-            if (!channelId.isNullOrBlank()) addFormField("channel_id", channelId)
-            addFormField("mode", mode)
-            addFormField("share", if (shareToSocial) "true" else "false")
-            if (!userId.isNullOrBlank()) addFormField("user_id", userId)
-
-            // Add file parts
-            for (uri in uris) {
-                val fileName = getFileName(context, uri) ?: "media_${System.currentTimeMillis()}"
-                val mimeType = getMimeType(context, uri) ?: "application/octet-stream"
-
-                outputStream.writeBytes(twoHyphens + boundary + lineEnd)
-                outputStream.writeBytes("Content-Disposition: form-data; name=\"files[]\"; filename=\"$fileName\"$lineEnd")
-                outputStream.writeBytes("Content-Type: $mimeType$lineEnd$lineEnd")
-
-                context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        outputStream.write(buffer, 0, bytesRead)
-                    }
+        // Check video size limit: max 50MB
+        for (uri in uris) {
+            val mime = getMimeType(context, uri)
+            if (mime.startsWith("video/")) {
+                val size = getFileSize(context, uri)
+                if (size > MAX_VIDEO_BYTES) {
+                    Log.e(DEBUG_TAG, "Video exceeds 50MB ($size bytes)")
+                    return@withContext Result.failure(Exception("Video too large, max 50MB"))
                 }
-                outputStream.writeBytes(lineEnd)
             }
+        }
 
-            // End boundary
-            outputStream.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd)
-            outputStream.flush()
-            outputStream.close()
+        val groups = mutableListOf<MediaGroupResult>()
+        val allUploadedUrls = mutableListOf<String>()
+        val effectiveTitle = title?.ifBlank { "JUSTFAN Media" } ?: "JUSTFAN Media"
 
-            val responseCode = conn.responseCode
-            val responseText = if (responseCode in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
+        // Separate images and videos
+        val imageUris = mutableListOf<Uri>()
+        val videoUris = mutableListOf<Uri>()
+
+        for (uri in uris) {
+            val mime = getMimeType(context, uri)
+            if (mime.startsWith("video/")) {
+                videoUris.add(uri)
             } else {
-                conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                imageUris.add(uri)
             }
-            conn.disconnect()
+        }
 
-            Log.d(TAG, "uploadMedia response ($responseCode): $responseText")
+        var primaryRequestId = ""
 
-            if (responseCode in 200..299) {
-                val json = JSONObject(responseText)
-                val resultsArray = json.optJSONArray("results") ?: JSONArray()
-                val groups = mutableListOf<MediaGroupResult>()
+        // 1. Process Images via Imgchest
+        if (imageUris.isNotEmpty()) {
+            val host = "imgchest"
+            val mediaType = "image"
+            val reqId = createUploadRequestRecord(
+                host = host,
+                mediaType = mediaType,
+                fileCount = imageUris.size,
+                title = effectiveTitle,
+                userId = userId
+            )
+            if (reqId.isNotBlank() && primaryRequestId.isBlank()) {
+                primaryRequestId = reqId
+            }
 
-                for (i in 0 until resultsArray.length()) {
-                    val r = resultsArray.getJSONObject(i)
-                    val urlsArray = r.optJSONArray("urls") ?: JSONArray()
-                    val urlsList = mutableListOf<String>()
-                    for (j in 0 until urlsArray.length()) {
-                        urlsList.add(urlsArray.getString(j))
-                    }
+            val imgResult = ImgchestUploader.uploadImagesDirect(
+                context = context,
+                uris = imageUris,
+                title = effectiveTitle
+            )
 
-                    groups.add(
-                        MediaGroupResult(
-                            uploadRequestId = r.optString("upload_request_id", ""),
-                            host = r.optString("host", ""),
-                            mediaType = r.optString("media_type", "image"),
-                            fileCount = r.optInt("file_count", urlsList.size),
-                            urls = urlsList,
-                            status = r.optString("status", "done"),
-                            bufferPostId = if (r.has("buffer_post_id") && !r.isNull("buffer_post_id")) r.optString("buffer_post_id") else null,
-                            error = if (r.has("error") && !r.isNull("error")) r.optString("error") else null
-                        )
-                    )
-                }
-
-                Result.success(
-                    MediaUploadResponse(
-                        success = json.optBoolean("success", true),
-                        groups = groups
+            if (imgResult.isSuccess) {
+                val urls = imgResult.getOrNull() ?: emptyList()
+                allUploadedUrls.addAll(urls)
+                updateUploadRequestRecord(
+                    id = reqId,
+                    status = "done",
+                    imageUrls = urls,
+                    error = null
+                )
+                groups.add(
+                    MediaGroupResult(
+                        uploadRequestId = reqId,
+                        host = host,
+                        mediaType = mediaType,
+                        fileCount = imageUris.size,
+                        urls = urls,
+                        status = "done"
                     )
                 )
             } else {
-                Result.failure(Exception("Upload failed ($responseCode): $responseText"))
+                val err = imgResult.exceptionOrNull()?.message ?: "Imgchest upload failed"
+                updateUploadRequestRecord(
+                    id = reqId,
+                    status = "failed",
+                    imageUrls = null,
+                    error = err
+                )
+                groups.add(
+                    MediaGroupResult(
+                        uploadRequestId = reqId,
+                        host = host,
+                        mediaType = mediaType,
+                        fileCount = imageUris.size,
+                        urls = emptyList(),
+                        status = "failed",
+                        error = err
+                    )
+                )
+            }
+        }
+
+        // 2. Process Videos via Catbox
+        if (videoUris.isNotEmpty()) {
+            val host = "catbox"
+            val mediaType = "video"
+            val reqId = createUploadRequestRecord(
+                host = host,
+                mediaType = mediaType,
+                fileCount = videoUris.size,
+                title = effectiveTitle,
+                userId = userId
+            )
+            if (reqId.isNotBlank() && primaryRequestId.isBlank()) {
+                primaryRequestId = reqId
+            }
+
+            val videoUrls = mutableListOf<String>()
+            var videoError: String? = null
+
+            for (vUri in videoUris) {
+                val vRes = uploadVideoToCatbox(context, vUri)
+                if (vRes.isSuccess) {
+                    val url = vRes.getOrNull().orEmpty()
+                    if (url.isNotBlank()) {
+                        videoUrls.add(url)
+                    }
+                } else {
+                    videoError = vRes.exceptionOrNull()?.message ?: "Catbox video upload failed"
+                    break
+                }
+            }
+
+            if (videoError == null && videoUrls.isNotEmpty()) {
+                allUploadedUrls.addAll(videoUrls)
+                updateUploadRequestRecord(
+                    id = reqId,
+                    status = "done",
+                    imageUrls = videoUrls,
+                    error = null
+                )
+                groups.add(
+                    MediaGroupResult(
+                        uploadRequestId = reqId,
+                        host = host,
+                        mediaType = mediaType,
+                        fileCount = videoUris.size,
+                        urls = videoUrls,
+                        status = "done"
+                    )
+                )
+            } else {
+                val err = videoError ?: "Catbox video upload failed"
+                updateUploadRequestRecord(
+                    id = reqId,
+                    status = "failed",
+                    imageUrls = null,
+                    error = err
+                )
+                groups.add(
+                    MediaGroupResult(
+                        uploadRequestId = reqId,
+                        host = host,
+                        mediaType = mediaType,
+                        fileCount = videoUris.size,
+                        urls = emptyList(),
+                        status = "failed",
+                        error = err
+                    )
+                )
+            }
+        }
+
+        // If no URLs were successfully uploaded, return failure with the real error
+        if (allUploadedUrls.isEmpty()) {
+            val firstErr = groups.mapNotNull { it.error }.firstOrNull() ?: "Upload failed"
+            return@withContext Result.failure(Exception(firstErr))
+        }
+
+        // 3. Social posting via Buffer Edge Function if requested
+        var bufferPostId: String? = null
+        if (shareToSocial && !channelId.isNullOrBlank()) {
+            try {
+                val isAnyVideo = videoUris.isNotEmpty()
+                val postResult = callPostToBufferFunction(
+                    channelId = channelId,
+                    title = effectiveTitle,
+                    description = description.orEmpty(),
+                    hashtags = hashtags.orEmpty(),
+                    mediaUrls = allUploadedUrls,
+                    mediaType = if (isAnyVideo) "video" else "image",
+                    mode = mode,
+                    uploadRequestId = primaryRequestId.ifBlank { null }
+                )
+                bufferPostId = postResult.optString("id", null)
+            } catch (e: Exception) {
+                Log.e(TAG, "Buffer post failed: ${e.message}")
+            }
+        }
+
+        Result.success(
+            MediaUploadResponse(
+                success = true,
+                groups = groups.map { if (bufferPostId != null) it.copy(bufferPostId = bufferPostId) else it }
+            )
+        )
+    }
+
+    /**
+     * Uploads a video file directly to Catbox.
+     * Retries once on 401 or 403 by refreshing catbox_userhash from SecretsStore.
+     */
+    private suspend fun uploadVideoToCatbox(
+        context: Context,
+        uri: Uri
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            var userhash = SecretsStore.get("catbox_userhash")
+            var attempts = 0
+            while (attempts < 2) {
+                attempts++
+                val res = runCatching {
+                    uploadVideoToCatboxInternal(context, uri, userhash)
+                }
+
+                if (res.isSuccess) {
+                    return@withContext res
+                }
+
+                val ex = res.exceptionOrNull()
+                if (ex is HostAuthException && attempts < 2) {
+                    Log.w(TAG, "Catbox returned 401/403, clearing secret cache and retrying...")
+                    SecretsStore.clearCache()
+                    userhash = SecretsStore.get("catbox_userhash", forceReload = true)
+                    continue
+                }
+                return@withContext res
+            }
+            Result.failure(Exception("Catbox upload failed after retry"))
+        } catch (e: Exception) {
+            Log.e(TAG, "uploadVideoToCatbox failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Internal streaming upload to Catbox using 8KB chunked streaming mode.
+     * Never loads the whole video into memory.
+     */
+    private fun uploadVideoToCatboxInternal(
+        context: Context,
+        uri: Uri,
+        userhash: String
+    ): String {
+        val boundary = "==CatboxBoundary_${System.currentTimeMillis()}=="
+        val url = URL("https://catbox.moe/user/api.php")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            useCaches = false
+            connectTimeout = 60000
+            readTimeout = 180000
+            setChunkedStreamingMode(8192)
+            setRequestProperty("User-Agent", "Mozilla/5.0")
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        }
+
+        val lineEnd = "\r\n"
+        val twoHyphens = "--"
+        val outputStream = DataOutputStream(conn.outputStream)
+
+        // reqtype field
+        outputStream.writeBytes(twoHyphens + boundary + lineEnd)
+        outputStream.writeBytes("Content-Disposition: form-data; name=\"reqtype\"$lineEnd$lineEnd")
+        outputStream.writeBytes("fileupload")
+        outputStream.writeBytes(lineEnd)
+
+        // userhash field
+        if (userhash.isNotBlank()) {
+            outputStream.writeBytes(twoHyphens + boundary + lineEnd)
+            outputStream.writeBytes("Content-Disposition: form-data; name=\"userhash\"$lineEnd$lineEnd")
+            outputStream.write(userhash.toByteArray(Charsets.UTF_8))
+            outputStream.writeBytes(lineEnd)
+        }
+
+        // fileToUpload field
+        val fileName = getFileName(context, uri) ?: "video_${System.currentTimeMillis()}.mp4"
+        val mimeType = getMimeType(context, uri)
+
+        outputStream.writeBytes(twoHyphens + boundary + lineEnd)
+        outputStream.writeBytes("Content-Disposition: form-data; name=\"fileToUpload\"; filename=\"$fileName\"$lineEnd")
+        outputStream.writeBytes("Content-Type: $mimeType$lineEnd$lineEnd")
+
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                outputStream.write(buffer, 0, bytesRead)
+            }
+        }
+        outputStream.writeBytes(lineEnd)
+
+        outputStream.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd)
+        outputStream.flush()
+        outputStream.close()
+
+        val responseCode = conn.responseCode
+        val responseBody = if (responseCode in 200..299) {
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+        } else {
+            conn.errorStream?.let {
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+            } ?: "HTTP $responseCode"
+        }
+        conn.disconnect()
+
+        Log.d(DEBUG_TAG, "HTTP $responseCode $responseBody")
+
+        if (responseCode == 401 || responseCode == 403) {
+            throw HostAuthException("Catbox auth failed (HTTP $responseCode): $responseBody")
+        }
+
+        val cleanUrl = responseBody.trim()
+        if (responseCode in 200..299 && cleanUrl.startsWith("http")) {
+            return cleanUrl
+        } else {
+            throw Exception("Catbox upload failed (HTTP $responseCode): $cleanUrl")
+        }
+    }
+
+    /**
+     * Creates an upload_requests row in Supabase via REST API.
+     */
+    private fun createUploadRequestRecord(
+        host: String,
+        mediaType: String,
+        fileCount: Int,
+        title: String?,
+        userId: String?
+    ): String {
+        return try {
+            val endpoint = "$SUPABASE_URL/rest/v1/upload_requests"
+            val url = URL(endpoint)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 15000
+                readTimeout = 15000
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("apikey", SUPABASE_KEY)
+                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+                setRequestProperty("Prefer", "return=representation")
+            }
+
+            val json = JSONObject().apply {
+                put("status", "uploading")
+                put("host", host)
+                put("media_type", mediaType)
+                put("file_count", fileCount)
+                if (!title.isNullOrBlank()) put("title", title)
+                if (!userId.isNullOrBlank()) put("user_id", userId)
+            }
+
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(json.toString()) }
+
+            val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            } else {
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
+            }
+            conn.disconnect()
+
+            Log.d(DEBUG_TAG, "HTTP $code $responseBody")
+
+            if (code in 200..299) {
+                val arr = JSONArray(responseBody)
+                if (arr.length() > 0) {
+                    arr.getJSONObject(0).optString("id", "")
+                } else ""
+            } else {
+                ""
             }
         } catch (e: Exception) {
-            Log.e(TAG, "uploadMedia error", e)
-            Result.failure(e)
+            Log.w(TAG, "Failed to create upload_requests record: ${e.message}")
+            ""
+        }
+    }
+
+    /**
+     * Updates an upload_requests row in Supabase via REST API.
+     */
+    private fun updateUploadRequestRecord(
+        id: String,
+        status: String,
+        imageUrls: List<String>?,
+        error: String?
+    ) {
+        if (id.isBlank()) return
+        try {
+            val endpoint = "$SUPABASE_URL/rest/v1/upload_requests?id=eq.$id"
+            val url = URL(endpoint)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "PATCH"
+                doOutput = true
+                connectTimeout = 15000
+                readTimeout = 15000
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("apikey", SUPABASE_KEY)
+                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+            }
+
+            val json = JSONObject().apply {
+                put("status", status)
+                if (imageUrls != null) {
+                    val arr = JSONArray()
+                    for (u in imageUrls) arr.put(u)
+                    put("image_urls", arr)
+                }
+                if (!error.isNullOrBlank()) {
+                    put("error", error)
+                }
+            }
+
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(json.toString()) }
+
+            val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            } else {
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
+            }
+            conn.disconnect()
+
+            Log.d(DEBUG_TAG, "HTTP $code $responseBody")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update upload_requests record: ${e.message}")
+        }
+    }
+
+    /**
+     * Calls post-to-buffer Edge Function. Does NOT read buffer_api_key in the app.
+     */
+    private fun callPostToBufferFunction(
+        channelId: String,
+        title: String,
+        description: String,
+        hashtags: String,
+        mediaUrls: List<String>,
+        mediaType: String,
+        mode: String,
+        uploadRequestId: String?
+    ): JSONObject {
+        val endpoint = "$BASE_FUNCTIONS_URL/post-to-buffer"
+        val url = URL(endpoint)
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 25000
+            readTimeout = 30000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("apikey", SUPABASE_KEY)
+            setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+        }
+
+        val json = JSONObject().apply {
+            put("channel_id", channelId)
+            put("title", title)
+            put("description", description)
+            put("hashtags", hashtags)
+            val urlsArr = JSONArray()
+            for (u in mediaUrls) urlsArr.put(u)
+            put("media_urls", urlsArr)
+            put("media_type", mediaType)
+            put("mode", mode)
+            if (!uploadRequestId.isNullOrBlank()) {
+                put("upload_request_id", uploadRequestId)
+            }
+        }
+
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(json.toString()) }
+
+        val code = conn.responseCode
+        val responseBody = if (code in 200..299) {
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+        } else {
+            conn.errorStream?.let {
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+            } ?: "HTTP $code"
+        }
+        conn.disconnect()
+
+        Log.d(DEBUG_TAG, "HTTP $code $responseBody")
+
+        return if (code in 200..299) {
+            JSONObject(responseBody)
+        } else {
+            throw Exception("Buffer post failed ($code): $responseBody")
         }
     }
 
@@ -262,14 +684,44 @@ object MediaUploadClient {
         return name
     }
 
-    private fun getMimeType(context: Context, uri: Uri): String? {
-        val type = context.contentResolver.getType(uri)
-        if (!type.isNullOrBlank()) return type
-
-        val extension = android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString())
-        if (!extension.isNullOrBlank()) {
-            return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase())
+    private fun getFileSize(context: Context, uri: Uri): Long {
+        if (uri.scheme == "content") {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIndex != -1 && cursor.moveToFirst()) {
+                    return cursor.getLong(sizeIndex)
+                }
+            }
         }
+        return 0L
+    }
+
+    /**
+     * Determines MIME type, falling back to image/jpeg for images and video/mp4 for videos.
+     * Never returns application/octet-stream.
+     */
+    fun getMimeType(context: Context, uri: Uri): String {
+        val type = context.contentResolver.getType(uri)?.lowercase()?.trim()
+        if (!type.isNullOrBlank() && type != "application/octet-stream") {
+            return type
+        }
+
+        val name = getFileName(context, uri)?.lowercase() ?: uri.toString().lowercase()
+        val ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(name).lowercase().ifBlank {
+            name.substringAfterLast('.', "")
+        }
+
+        if (ext in listOf("mp4", "mov", "webm", "mkv", "m4v", "avi", "ts")) {
+            return "video/mp4"
+        }
+        if (ext in listOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp", "avif")) {
+            return "image/jpeg"
+        }
+
+        if (name.contains("video") || ext.contains("mp4") || ext.contains("mov") || ext.contains("webm")) {
+            return "video/mp4"
+        }
+
         return "image/jpeg"
     }
 }

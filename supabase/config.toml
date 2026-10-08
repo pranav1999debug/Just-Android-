@@ -1,0 +1,11 @@
+[functions.upload-media]
+verify_jwt = false
+
+[functions.list-buffer-channels]
+verify_jwt = false
+
+[functions.post-to-buffer]
+verify_jwt = false
+
+[functions.generate-caption]
+verify_jwt = false

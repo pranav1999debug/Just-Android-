@@ -9,16 +9,44 @@ export function getServiceSupabase() {
   return createClient(supabaseUrl, serviceRoleKey);
 }
 
-export async function getAppSecret(name: string): Promise<string> {
+const secretCache = new Map<string, string>();
+let initialLoadDone = false;
+
+async function loadAllSecrets(): Promise<void> {
   const supabase = getServiceSupabase();
   const { data, error } = await supabase
     .from("app_secrets")
-    .select("value")
-    .eq("name", name)
-    .single();
+    .select("name, value");
 
-  if (error || !data || !data.value) {
-    throw new Error(`Required secret '${name}' not found in app_secrets`);
+  if (error) {
+    throw new Error(`Failed to load app_secrets from database: ${error.message}`);
   }
-  return data.value;
+
+  if (data) {
+    for (const row of data) {
+      if (row.name && row.value) {
+        secretCache.set(row.name, row.value);
+      }
+    }
+  }
+  initialLoadDone = true;
 }
+
+export async function getAppSecret(name: string): Promise<string> {
+  if (!initialLoadDone) {
+    await loadAllSecrets();
+  }
+
+  if (secretCache.has(name)) {
+    return secretCache.get(name)!;
+  }
+
+  // Reload once if the name is missing
+  await loadAllSecrets();
+  if (secretCache.has(name)) {
+    return secretCache.get(name)!;
+  }
+
+  throw new Error(`Required secret '${name}' not found in app_secrets`);
+}
+

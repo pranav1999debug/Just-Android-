@@ -104,46 +104,12 @@ object MediaUploadClient {
     }
 
     /**
-     * Generates a description and hashtags given a title using Groq via the generate-caption Edge Function.
+     * Generates a description and hashtags given a title using Gemini AI with fallback.
      */
     suspend fun generateCaption(title: String): Result<GeneratedCaption> = withContext(Dispatchers.IO) {
         try {
-            val url = URL("$BASE_FUNCTIONS_URL/generate-caption")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("apikey", SUPABASE_KEY)
-                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
-                connectTimeout = 25000
-                readTimeout = 30000
-                doOutput = true
-            }
-
-            val payload = JSONObject().apply {
-                put("title", title)
-            }
-
-            OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
-
-            val code = conn.responseCode
-            val responseText = if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
-            } else {
-                val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
-                conn.disconnect()
-                return@withContext Result.failure(Exception("Caption generation failed ($code): $err"))
-            }
-            conn.disconnect()
-
-            val json = JSONObject(responseText)
-            val desc = json.optString("description", "")
-            val tagsArray = json.optJSONArray("hashtags") ?: JSONArray()
-            val tags = mutableListOf<String>()
-            for (i in 0 until tagsArray.length()) {
-                tags.add(tagsArray.getString(i))
-            }
-
-            Result.success(GeneratedCaption(description = desc, hashtags = tags))
+            val genResult = GeminiAiHelper.generateDescriptionAndHashtags(title).getOrThrow()
+            Result.success(GeneratedCaption(description = genResult.description, hashtags = genResult.hashtags))
         } catch (e: Exception) {
             Log.e(TAG, "generateCaption error", e)
             Result.failure(e)

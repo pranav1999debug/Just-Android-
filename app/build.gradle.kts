@@ -20,6 +20,8 @@ android {
 
         buildConfigField("String", "SUPABASE_URL", "\"https://zlboyxbqppoimhhbvrax.supabase.co\"")
         buildConfigField("String", "SUPABASE_KEY", "\"sb_publishable_GhUYsZ9tE9XnFHPmqmYBXw_p2pf1meg\"")
+        val geminiKey = System.getenv("GEMINI_API_KEY") ?: ""
+        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiKey\"")
     }
 
     buildTypes {

@@ -4,10 +4,12 @@ import android.net.Uri
 import android.view.LayoutInflater
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.VolumeMute
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,13 +46,16 @@ fun InlineVideoPreview(
     val context = LocalContext.current
     var isVideoReady by remember { mutableStateOf(false) }
     var hasError by remember { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(true) }
 
     val exoPlayer = remember(videoUrl) {
         val reqHeaders = mutableMapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "Referer" to if (videoUrl.contains("catbox.moe")) "https://catbox.moe/" else "https://justfan.app/",
             "Accept" to "*/*"
         )
+        if (videoUrl.contains("catbox.moe")) {
+            reqHeaders["Referer"] = "https://catbox.moe/"
+        }
         if (videoUrl.contains("supabase.co")) {
             reqHeaders["apikey"] = BuildConfig.SUPABASE_KEY
             reqHeaders["Authorization"] = "Bearer ${BuildConfig.SUPABASE_KEY}"
@@ -65,7 +70,7 @@ fun InlineVideoPreview(
             .setDefaultRequestProperties(reqHeaders)
 
         val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
-            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
@@ -91,7 +96,7 @@ fun InlineVideoPreview(
                     .build()
 
                 setMediaItem(mediaItem)
-                volume = 0f // Muted for inline feed preview
+                volume = 0f // Muted by default for feed preview
                 repeatMode = Player.REPEAT_MODE_ALL
                 playWhenReady = true
                 prepare()
@@ -165,27 +170,31 @@ fun InlineVideoPreview(
             )
         }
 
-        // Live Muted Audio indicator
+        // Live Audio indicator (tap to mute/unmute)
         Surface(
-            color = Color.Black.copy(alpha = 0.65f),
-            shape = RoundedCornerShape(6.dp),
+            color = Color.Black.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(8.dp)
+                .clickable {
+                    isMuted = !isMuted
+                    exoPlayer.volume = if (isMuted) 0f else 1f
+                }
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Default.VolumeMute,
-                    contentDescription = "Muted",
+                    imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
                     tint = Color.White,
-                    modifier = Modifier.size(12.dp)
+                    modifier = Modifier.size(13.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "AUTO-PLAY",
+                    text = if (isMuted) "MUTED" else "SOUND ON",
                     color = Color.White,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold

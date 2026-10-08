@@ -1,5 +1,8 @@
 package com.example.justfan.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,10 +33,13 @@ import coil.compose.AsyncImage
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserEntity
+import com.example.justfan.data.remote.GeminiAiHelper
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 import com.example.justfan.ui.theme.ThemeEmerald
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -42,7 +49,7 @@ fun AdminScreen(
     posts: List<PostEntity>,
     requests: List<RequestEntity>,
     users: List<UserEntity>,
-    onCreatePost: (title: String, desc: String, img: String, link: String, premLink: String?, tags: List<String>, isFree: Boolean, isNsfw: Boolean) -> Unit,
+    onCreatePost: (title: String, desc: String, img: String, contentImages: List<String>, link: String, premLink: String?, tags: List<String>, isFree: Boolean, isNsfw: Boolean) -> Unit,
     onUpdatePost: (PostEntity) -> Unit,
     onDeletePost: (String) -> Unit,
     onUpdateUserTier: (userId: String, newTier: String) -> Unit,
@@ -265,6 +272,7 @@ fun AdminScreen(
                     newPost.title,
                     newPost.description,
                     newPost.imageUrl,
+                    newPost.contentImages,
                     newPost.linkUrl,
                     newPost.premiumLinkUrl,
                     newPost.tags,
@@ -1334,9 +1342,13 @@ private fun PostFormDialog(
     onDismiss: () -> Unit,
     onSave: (PostEntity) -> Unit
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     var postTitle by remember { mutableStateOf(initialPost?.title ?: "") }
     var postDesc by remember { mutableStateOf(initialPost?.description ?: "") }
     var postImg by remember { mutableStateOf(initialPost?.imageUrl ?: "") }
+    var postContentImages by remember { mutableStateOf(initialPost?.contentImages ?: emptyList<String>()) }
     var postLink by remember { mutableStateOf(initialPost?.linkUrl ?: "") }
     var postPremLink by remember { mutableStateOf(initialPost?.premiumLinkUrl ?: "") }
     var postDirectLink by remember { mutableStateOf(initialPost?.directLinkUrl ?: "") }
@@ -1345,13 +1357,70 @@ private fun PostFormDialog(
     var postIsFree by remember { mutableStateOf(initialPost?.isFree ?: true) }
     var postIsNsfw by remember { mutableStateOf(initialPost?.isNsfw ?: false) }
 
+    // Cover upload state
+    var isUploadingCover by remember { mutableStateOf(false) }
+    var coverUploadError by remember { mutableStateOf<String?>(null) }
+
+    // Content media multi-upload state
+    var isUploadingContent by remember { mutableStateOf(false) }
+    var contentUploadStatus by remember { mutableStateOf<String?>(null) }
+    var manualContentUrl by remember { mutableStateOf("") }
+    var showManualUrlInput by remember { mutableStateOf(false) }
+
+    // AI Generation state
+    var isGeneratingAi by remember { mutableStateOf(false) }
+    var aiMessage by remember { mutableStateOf<String?>(null) }
+    var aiIsError by remember { mutableStateOf(false) }
+
+    val coverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                isUploadingCover = true
+                coverUploadError = null
+                val result = ImgchestUploader.uploadImage(context, uri)
+                if (result.isSuccess) {
+                    postImg = result.getOrNull() ?: ""
+                } else {
+                    coverUploadError = result.exceptionOrNull()?.message ?: "Cover upload failed"
+                }
+                isUploadingCover = false
+            }
+        }
+    }
+
+    val contentMediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 30)
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            coroutineScope.launch {
+                isUploadingContent = true
+                val total = uris.size
+                val uploadedUrls = mutableListOf<String>()
+                for ((idx, u) in uris.withIndex()) {
+                    contentUploadStatus = "Uploading ${idx + 1} of $total..."
+                    val res = ImgchestUploader.uploadImage(context, u)
+                    if (res.isSuccess) {
+                        res.getOrNull()?.let { uploadedUrls.add(it) }
+                    }
+                }
+                if (uploadedUrls.isNotEmpty()) {
+                    postContentImages = postContentImages + uploadedUrls
+                }
+                isUploadingContent = false
+                contentUploadStatus = null
+            }
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 16.dp)
+                .padding(vertical = 12.dp)
         ) {
             LazyColumn(
                 modifier = Modifier
@@ -1363,16 +1432,83 @@ private fun PostFormDialog(
                     Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 }
 
+                // Title field with AI Button
                 item {
-                    OutlinedTextField(
-                        value = postTitle,
-                        onValueChange = { postTitle = it },
-                        label = { Text("Gallery Title *") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("post_form_title")
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = postTitle,
+                            onValueChange = {
+                                postTitle = it
+                                aiMessage = null
+                            },
+                            label = { Text("Gallery Title *") },
+                            placeholder = { Text("e.g. Cyberpunk 2077 Neon Lucy 4K Set") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("post_form_title")
+                        )
+
+                        // AI Generate Button
+                        Button(
+                            onClick = {
+                                if (postTitle.isBlank()) {
+                                    aiMessage = "Please enter a title first"
+                                    aiIsError = true
+                                } else {
+                                    coroutineScope.launch {
+                                        isGeneratingAi = true
+                                        aiMessage = null
+                                        aiIsError = false
+                                        val genRes = GeminiAiHelper.generateDescriptionAndHashtags(postTitle)
+                                        if (genRes.isSuccess) {
+                                            val gen = genRes.getOrNull()!!
+                                            postDesc = gen.description
+                                            postTags = gen.hashtags.joinToString(", ")
+                                            aiMessage = "✨ Description and hashtags generated with AI!"
+                                            aiIsError = false
+                                        } else {
+                                            aiMessage = genRes.exceptionOrNull()?.message ?: "AI generation failed"
+                                            aiIsError = true
+                                        }
+                                        isGeneratingAi = false
+                                    }
+                                }
+                            },
+                            enabled = !isGeneratingAi,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_ai_generate_btn")
+                        ) {
+                            if (isGeneratingAi) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Generating with Gemini AI...", fontSize = 13.sp)
+                            } else {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = "AI", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Generate Description & Hashtags with AI", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
+                        }
+
+                        if (aiMessage != null) {
+                            Text(
+                                text = aiMessage!!,
+                                color = if (aiIsError) DangerRed else SuccessGreen,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
 
+                // Description field
                 item {
                     OutlinedTextField(
                         value = postDesc,
@@ -1383,14 +1519,221 @@ private fun PostFormDialog(
                     )
                 }
 
+                // --- COVER IMAGE SECTION ---
                 item {
-                    OutlinedTextField(
-                        value = postImg,
-                        onValueChange = { postImg = it },
-                        label = { Text("Thumbnail Image URL *") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("post_form_img")
-                    )
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Cover Image *", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                OutlinedButton(
+                                    onClick = {
+                                        coverPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    enabled = !isUploadingCover,
+                                    modifier = Modifier.testTag("admin_upload_cover_btn")
+                                ) {
+                                    Icon(Icons.Default.CloudUpload, contentDescription = "Upload", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (postImg.isBlank()) "Upload Cover" else "Change Cover", fontSize = 12.sp)
+                                }
+                            }
+
+                            if (isUploadingCover) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Text("Uploading cover to CDN...", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                            }
+
+                            if (coverUploadError != null) {
+                                Text(coverUploadError!!, color = DangerRed, fontSize = 11.sp)
+                            }
+
+                            if (postImg.isNotBlank()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    AsyncImage(
+                                        model = postImg,
+                                        contentDescription = "Cover Preview",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(60.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Cover ready", color = SuccessGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text(postImg.take(45) + "...", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    IconButton(onClick = { postImg = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove Cover", tint = DangerRed)
+                                    }
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = postImg,
+                                onValueChange = { postImg = it },
+                                label = { Text("Cover Image Direct URL") },
+                                placeholder = { Text("https://...") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("post_form_img")
+                            )
+                        }
+                    }
+                }
+
+                // --- CONTENT IMAGES & VIDEOS SECTION ---
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Content Media (${postContentImages.size})",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            contentMediaPickerLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                            )
+                                        },
+                                        enabled = !isUploadingContent,
+                                        modifier = Modifier.testTag("admin_upload_content_btn")
+                                    ) {
+                                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Add Media", modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Add Media", fontSize = 12.sp)
+                                    }
+
+                                    IconButton(onClick = { showManualUrlInput = !showManualUrlInput }) {
+                                        Icon(Icons.Default.Link, contentDescription = "Add Link")
+                                    }
+                                }
+                            }
+
+                            if (isUploadingContent) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Text(contentUploadStatus ?: "Uploading media...", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                            }
+
+                            // Manual URL input toggle
+                            if (showManualUrlInput) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    OutlinedTextField(
+                                        value = manualContentUrl,
+                                        onValueChange = { manualContentUrl = it },
+                                        placeholder = { Text("Paste image/video link") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Button(
+                                        onClick = {
+                                            if (manualContentUrl.isNotBlank()) {
+                                                postContentImages = postContentImages + manualContentUrl.trim()
+                                                manualContentUrl = ""
+                                                showManualUrlInput = false
+                                            }
+                                        }
+                                    ) {
+                                        Text("Add")
+                                    }
+                                }
+                            }
+
+                            // Horizontal scroll of content images
+                            if (postContentImages.isNotEmpty()) {
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                ) {
+                                    items(postContentImages) { mediaUrl ->
+                                        Box(
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                        ) {
+                                            AsyncImage(
+                                                model = mediaUrl,
+                                                contentDescription = "Content Media",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+
+                                            // If video url, show small video icon
+                                            val isVid = com.example.justfan.ui.components.isVideoMediaUrl(mediaUrl)
+                                            if (isVid) {
+                                                Surface(
+                                                    color = Color.Black.copy(alpha = 0.6f),
+                                                    shape = CircleShape,
+                                                    modifier = Modifier.size(20.dp).align(Alignment.Center)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.PlayArrow,
+                                                        contentDescription = "Video",
+                                                        tint = Color.White,
+                                                        modifier = Modifier.padding(2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            // Remove button
+                                            Surface(
+                                                color = Color.Black.copy(alpha = 0.7f),
+                                                shape = CircleShape,
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .align(Alignment.TopEnd)
+                                                    .padding(2.dp)
+                                                    .clickable {
+                                                        postContentImages = postContentImages.filter { it != mediaUrl }
+                                                    }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = "Remove",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.padding(2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    "No content images or videos added yet. Upload from device or add links.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
 
                 item {
@@ -1489,12 +1832,14 @@ private fun PostFormDialog(
                                         title = postTitle.trim(),
                                         description = postDesc.trim(),
                                         imageUrl = postImg.trim(),
+                                        contentImages = postContentImages,
                                         linkUrl = postLink.trim().ifBlank { postImg.trim() },
                                         tags = tagsList
                                     )).copy(
                                         title = postTitle.trim(),
                                         description = postDesc.trim(),
                                         imageUrl = postImg.trim(),
+                                        contentImages = postContentImages,
                                         linkUrl = postLink.trim().ifBlank { postImg.trim() },
                                         premiumLinkUrl = postPremLink.trim().ifBlank { null },
                                         directLinkUrl = postDirectLink.trim().ifBlank { null },
@@ -1506,7 +1851,7 @@ private fun PostFormDialog(
                                     onSave(saved)
                                 }
                             },
-                            enabled = postTitle.isNotBlank() && postImg.isNotBlank(),
+                            enabled = postTitle.isNotBlank() && postImg.isNotBlank() && !isUploadingCover && !isUploadingContent,
                             modifier = Modifier.weight(1f).testTag("post_form_submit")
                         ) {
                             Text("Save Post")

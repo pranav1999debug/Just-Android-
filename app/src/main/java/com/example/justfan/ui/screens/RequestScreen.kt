@@ -32,6 +32,7 @@ import coil.compose.AsyncImage
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserProfile
 import com.example.justfan.data.remote.BufferChannel
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.data.remote.MediaUploadClient
 import com.example.justfan.ui.components.SocialPostingBottomSheet
 import com.example.justfan.ui.theme.GoldAccent
@@ -104,33 +105,67 @@ fun RequestScreen(
     ) {
         if (uris.isEmpty()) return
         isUploadingMedia = true
-        uploadStatusText = if (shareToSocial) "Uploading & cross-posting to Buffer..." else "Uploading & routing media..."
+        uploadStatusText = if (shareToSocial) "Uploading & cross-posting to Buffer..." else "Uploading image..."
         uploadError = null
 
         coroutineScope.launch {
-            val result = MediaUploadClient.uploadMedia(
+            // First try direct multi-host upload (Imgchest / Litterbox / Uguu / Tmpfiles)
+            val firstUri = uris.first()
+            val directResult = ImgchestUploader.uploadImage(
                 context = context,
-                uris = uris,
-                title = title ?: modelName.ifBlank { "JUSTFAN Content" },
-                description = description,
-                hashtags = hashtags,
-                channelId = channelId,
-                mode = mode,
-                shareToSocial = shareToSocial,
-                userId = userProfile.id
+                imageUri = firstUri,
+                title = title ?: modelName.ifBlank { "JUSTFAN Request Reference" }
             )
-            isUploadingMedia = false
-            isSubmittingSocial = false
 
-            if (result.isSuccess) {
-                val resp = result.getOrNull()
-                val allUrls = resp?.groups?.flatMap { it.urls } ?: emptyList()
-                if (allUrls.isNotEmpty()) {
-                    referenceImageUrl = allUrls.first()
-                }
+            if (directResult.isSuccess) {
+                val directUrl = directResult.getOrNull().orEmpty()
+                referenceImageUrl = directUrl
+                isUploadingMedia = false
+                isSubmittingSocial = false
                 showSuccessSnackbar = true
+
+                // If user requested Buffer social sharing as well, attempt edge function in background without blocking
+                if (shareToSocial) {
+                    MediaUploadClient.uploadMedia(
+                        context = context,
+                        uris = uris,
+                        title = title ?: modelName.ifBlank { "JUSTFAN Content" },
+                        description = description,
+                        hashtags = hashtags,
+                        channelId = channelId,
+                        mode = mode,
+                        shareToSocial = true,
+                        userId = userProfile.id
+                    )
+                }
             } else {
-                uploadError = result.exceptionOrNull()?.message ?: "Upload failed"
+                // If direct upload failed, fallback to MediaUploadClient
+                val result = MediaUploadClient.uploadMedia(
+                    context = context,
+                    uris = uris,
+                    title = title ?: modelName.ifBlank { "JUSTFAN Content" },
+                    description = description,
+                    hashtags = hashtags,
+                    channelId = channelId,
+                    mode = mode,
+                    shareToSocial = shareToSocial,
+                    userId = userProfile.id
+                )
+                isUploadingMedia = false
+                isSubmittingSocial = false
+
+                if (result.isSuccess) {
+                    val resp = result.getOrNull()
+                    val allUrls = resp?.groups?.flatMap { it.urls } ?: emptyList()
+                    if (allUrls.isNotEmpty()) {
+                        referenceImageUrl = allUrls.first()
+                    }
+                    showSuccessSnackbar = true
+                } else {
+                    uploadError = directResult.exceptionOrNull()?.message 
+                        ?: result.exceptionOrNull()?.message 
+                        ?: "Upload failed. Please check network connection."
+                }
             }
         }
     }
@@ -481,12 +516,18 @@ fun RequestScreen(
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
                                                 Text(
-                                                    text = "Routing images to Imgchest & videos to Catbox...",
+                                                    text = "Uploading securely to cloud hosting...",
                                                     fontSize = 11.sp,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             } else if (referenceImageUrl.isNotBlank()) {
-                                                val hostLabel = if (referenceImageUrl.contains("catbox")) "Uploaded to Catbox ✓" else "Uploaded to Imgchest ✓"
+                                                val hostLabel = when {
+                                                    referenceImageUrl.contains("imgchest") -> "Uploaded to Imgchest ✓"
+                                                    referenceImageUrl.contains("uguu") -> "Uploaded securely ✓"
+                                                    referenceImageUrl.contains("catbox") || referenceImageUrl.contains("litter") -> "Uploaded to Catbox ✓"
+                                                    referenceImageUrl.contains("tmpfiles") -> "Uploaded securely ✓"
+                                                    else -> "Uploaded ✓"
+                                                }
                                                 Surface(
                                                     color = SuccessGreen.copy(alpha = 0.2f),
                                                     shape = RoundedCornerShape(4.dp)

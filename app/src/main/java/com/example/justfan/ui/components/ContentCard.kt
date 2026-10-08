@@ -8,13 +8,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,21 +59,46 @@ fun ContentCard(
                     .fillMaxWidth()
                     .aspectRatio(1.1f)
             ) {
+                var isPlayingInline by remember(autoPlay) { mutableStateOf(autoPlay) }
+
                 val videoUrl: String? = when {
                     isVideoMediaUrl(post.imageUrl) -> post.imageUrl
                     post.contentImages.any { isVideoMediaUrl(it) } -> post.contentImages.first { isVideoMediaUrl(it) }
                     isVideoMediaUrl(post.directLinkUrl) -> post.directLinkUrl
                     isVideoMediaUrl(post.linkUrl) -> post.linkUrl
+                    post.title.contains("video", ignoreCase = true) && post.contentImages.isNotEmpty() -> post.contentImages.first()
                     else -> null
                 }
                 val isVideo = videoUrl != null
 
-                if (isVideo && autoPlay) {
-                    InlineVideoPreview(
-                        videoUrl = videoUrl!!,
-                        thumbnailUrl = post.imageUrl,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                if (isVideo && isPlayingInline) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        InlineVideoPreview(
+                            videoUrl = videoUrl!!,
+                            thumbnailUrl = post.imageUrl,
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        // Top bar inside active video preview to stop/close inline playback
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.65f),
+                            shape = CircleShape,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(8.dp)
+                                .size(28.dp)
+                                .clickable { isPlayingInline = false }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Stop Video Preview",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
                 } else {
                     AsyncImage(
                         model = post.imageUrl,
@@ -83,18 +109,19 @@ fun ContentCard(
 
                     if (isVideo) {
                         Surface(
-                            color = Color.Black.copy(alpha = 0.65f),
+                            color = Color.Black.copy(alpha = 0.75f),
                             shape = CircleShape,
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(44.dp)
                                 .align(Alignment.Center)
+                                .clickable { isPlayingInline = true }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Video",
+                                    contentDescription = "Play Video",
                                     tint = Color.White,
-                                    modifier = Modifier.size(26.dp)
+                                    modifier = Modifier.size(28.dp)
                                 )
                             }
                         }

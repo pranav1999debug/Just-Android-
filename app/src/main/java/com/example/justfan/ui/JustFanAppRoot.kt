@@ -305,8 +305,8 @@ fun JustFanAppRoot(
                                             posts = posts,
                                             requests = requests,
                                             users = users,
-                                            onCreatePost = { title, desc, img, link, premLink, tags, isFree, isNsfw ->
-                                                viewModel.createPost(title, desc, img, link, premLink, tags, isFree, isNsfw)
+                                            onCreatePost = { title, desc, img, contentImages, link, premLink, tags, isFree, isNsfw ->
+                                                viewModel.createPost(title, desc, img, contentImages, link, premLink, tags, isFree, isNsfw)
                                             },
                                             onUpdatePost = { updated -> viewModel.updatePost(updated) },
                                             onDeletePost = { id -> viewModel.deletePost(id) },

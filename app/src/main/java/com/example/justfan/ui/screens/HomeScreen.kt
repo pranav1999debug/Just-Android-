@@ -103,7 +103,8 @@ fun HomeScreen(
                 com.example.justfan.ui.components.isVideoMediaUrl(it.imageUrl) ||
                         it.contentImages.any { img -> com.example.justfan.ui.components.isVideoMediaUrl(img) } ||
                         com.example.justfan.ui.components.isVideoMediaUrl(it.directLinkUrl) ||
-                        com.example.justfan.ui.components.isVideoMediaUrl(it.linkUrl)
+                        com.example.justfan.ui.components.isVideoMediaUrl(it.linkUrl) ||
+                        (it.title.contains("video", ignoreCase = true) && it.contentImages.isNotEmpty())
             }?.id
         }
     }

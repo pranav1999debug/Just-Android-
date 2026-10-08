@@ -59,7 +59,8 @@ fun isVideoMediaUrl(url: String?): Boolean {
             pathOnly.endsWith(".m3u8") || pathOnly.contains(".m3u8") ||
             pathOnly.endsWith(".mpd") ||
             pathOnly.endsWith(".avi") ||
-            pathOnly.endsWith(".ts")
+            pathOnly.endsWith(".ts") ||
+            pathOnly.contains("video")
 }
 
 @OptIn(UnstableApi::class)

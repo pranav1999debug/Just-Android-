@@ -679,7 +679,7 @@ class JustFanRepository(
             return Result.success(user)
         }
 
-        Result.failure(
+        return Result.failure<UserProfile>(
             IllegalArgumentException(
                 supaResult?.exceptionOrNull()?.message
                     ?: "Supabase sign-in failed. Check your email and password, then try again."

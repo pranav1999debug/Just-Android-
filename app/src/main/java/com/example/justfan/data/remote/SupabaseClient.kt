@@ -203,48 +203,241 @@ object SupabaseClient {
         }
     }
 
-    suspend fun submitRequest(
-        name: String,
-        email: String,
-        message: String,
-        imageUrl: String?,
-        userId: String? = null
-    ): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "RequestfromApp"
-            val conn = openConnection(endpoint, "POST")
-            conn.doOutput = true
+    data class AuthSession(
+        val accessToken: String,
+        val refreshToken: String? = null,
+        val userId: String,
+        val email: String
+    )
 
-            val payload = JSONObject().apply {
-                put("id", UUID.randomUUID().toString())
-                put("name", name)
-                put("email", email)
-                put("message", message)
-                if (!imageUrl.isNullOrBlank()) {
-                    put("image_url", imageUrl)
-                }
-                put("status", "pending")
-                val uid = if (!userId.isNullOrBlank() && userId.length > 10) userId else "fe335770-80a9-4125-9c15-d47f385579fb"
-                put("user_id", uid)
+    suspend fun signInWithEmailPassword(email: String, password: String): Result<AuthSession> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "$baseUrl/auth/v1/token?grant_type=password"
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
             }
 
-            val writer = OutputStreamWriter(conn.outputStream)
+            val payload = JSONObject().apply {
+                put("email", email.trim().lowercase())
+                put("password", password)
+            }
+
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+
+            val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            } else {
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
+            }
+            conn.disconnect()
+
+            if (code in 200..299) {
+                val json = JSONObject(responseBody)
+                val token = json.getString("access_token")
+                val refreshToken = json.optString("refresh_token", null)
+                val userObj = json.getJSONObject("user")
+                val uid = userObj.getString("id")
+                val uEmail = userObj.optString("email", email)
+                Result.success(AuthSession(accessToken = token, refreshToken = refreshToken, userId = uid, email = uEmail))
+            } else {
+                val errMessage = try {
+                    val j = JSONObject(responseBody)
+                    j.optString("msg", j.optString("error_description", responseBody))
+                } catch (_: Exception) {
+                    responseBody
+                }
+                Result.failure(Exception(errMessage))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun refreshSession(refreshToken: String): Result<AuthSession> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "$baseUrl/auth/v1/token?grant_type=refresh_token"
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            val payload = JSONObject().apply {
+                put("refresh_token", refreshToken)
+            }
+
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+
+            val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            } else {
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
+            }
+            conn.disconnect()
+
+            if (code in 200..299) {
+                val json = JSONObject(responseBody)
+                val token = json.getString("access_token")
+                val newRefreshToken = json.optString("refresh_token", refreshToken)
+                val userObj = json.optJSONObject("user")
+                val uid = userObj?.optString("id") ?: ""
+                val uEmail = userObj?.optString("email") ?: ""
+                Result.success(AuthSession(accessToken = token, refreshToken = newRefreshToken, userId = uid, email = uEmail))
+            } else {
+                Result.failure(Exception("Refresh failed ($code): $responseBody"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchRequestQuota(userId: String, deviceId: String, accessToken: String?): Result<com.example.justfan.data.model.RequestQuota> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "$baseUrl/rest/v1/rpc/get_request_quota"
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("apikey", apiKey)
+                val authHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey"
+                setRequestProperty("Authorization", authHeader)
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            val payload = JSONObject().apply {
+                put("p_user_id", userId)
+                put("p_device_id", deviceId)
+            }
+
+            val writer = OutputStreamWriter(conn.outputStream, Charsets.UTF_8)
             writer.write(payload.toString())
             writer.flush()
             writer.close()
 
             val code = conn.responseCode
             val responseBody = if (code in 200..299) {
-                conn.inputStream?.bufferedReader()?.readText() ?: ""
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
-                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
             }
             conn.disconnect()
-            Log.d(TAG, "submitRequest to Supabase ($code): $responseBody")
+
+            Log.d("QuotaDebug", "HTTP $code $responseBody")
+
+            if (code in 200..299) {
+                val json = JSONObject(responseBody)
+                val quota = com.example.justfan.data.model.RequestQuota(
+                    unlimited = json.optBoolean("unlimited", false),
+                    limit = json.optInt("limit", 3),
+                    used = json.optInt("used", 0),
+                    remaining = json.optInt("remaining", 3),
+                    resetsAt = if (json.has("resets_at") && !json.isNull("resets_at")) json.optString("resets_at") else null
+                )
+                Result.success(quota)
+            } else {
+                Result.failure(Exception("Failed to fetch quota ($code): $responseBody"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchRequestQuota error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun submitRequest(
+        name: String,
+        email: String,
+        telegram: String? = null,
+        message: String,
+        imageUrl: String?,
+        userId: String,
+        deviceId: String,
+        accessToken: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "$baseUrl/rest/v1/RequestfromApp"
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $accessToken")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("Prefer", "return=representation")
+            }
+
+            val payload = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("name", name)
+                put("email", email)
+                if (!telegram.isNullOrBlank()) {
+                    put("telegram_username", telegram)
+                }
+                put("message", message)
+                if (!imageUrl.isNullOrBlank()) {
+                    put("image_url", imageUrl)
+                }
+                put("status", "pending")
+                put("user_id", userId)
+                put("device_id", deviceId)
+            }
+
+            val writer = OutputStreamWriter(conn.outputStream, Charsets.UTF_8)
+            writer.write(payload.toString())
+            writer.flush()
+            writer.close()
+
+            val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            } else {
+                conn.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: "HTTP $code"
+            }
+            conn.disconnect()
+
+            Log.d("QuotaDebug", "HTTP $code $responseBody")
+
             if (code in 200..299) {
                 Result.success(true)
             } else {
-                Result.failure(Exception("Supabase insert request ($code): $responseBody"))
+                val errMessage = when {
+                    responseBody.contains("DEVICE_REQUIRED", ignoreCase = true) -> "DEVICE_REQUIRED"
+                    responseBody.contains("SIGN_IN_REQUIRED", ignoreCase = true) || code == 401 -> "SIGN_IN_REQUIRED"
+                    responseBody.contains("LIMIT_REACHED", ignoreCase = true) -> "LIMIT_REACHED"
+                    responseBody.contains("USER_MISMATCH", ignoreCase = true) -> "USER_MISMATCH"
+                    else -> {
+                        try {
+                            val j = JSONObject(responseBody)
+                            j.optString("message", responseBody)
+                        } catch (_: Exception) {
+                            responseBody
+                        }
+                    }
+                }
+                Result.failure(Exception(errMessage))
             }
         } catch (e: Exception) {
             Log.e(TAG, "submitRequest error", e)
@@ -373,7 +566,6 @@ object SupabaseClient {
                         username = obj.optString("username", email),
                         email = email,
                         tier = if (email.equals("reytherapper12@gmail.com", ignoreCase = true)) "Legendary" else "Free",
-                        requestsCount = 0,
                         isAdmin = email.equals("reytherapper12@gmail.com", ignoreCase = true),
                         isSignedIn = true
                     )

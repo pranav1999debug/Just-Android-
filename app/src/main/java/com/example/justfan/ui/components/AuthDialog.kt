@@ -36,15 +36,23 @@ import java.util.*
 @Composable
 fun AuthDialog(
     userProfile: UserProfile,
+    requestQuota: com.example.justfan.data.model.RequestQuota = com.example.justfan.data.model.RequestQuota(),
+    titleText: String? = null,
     isOpen: Boolean,
     onDismiss: () -> Unit,
     onSignInWithGoogle: (email: String, name: String) -> Unit,
     onSignInWithPasskey: (name: String) -> Unit,
     onSignInWithEmail: (email: String, pass: String) -> Result<UserProfile>,
     onSignOut: () -> Unit,
-    onUpgradeClick: () -> Unit
+    onUpgradeClick: () -> Unit,
+    onBiometricSignIn: ((refreshToken: String, email: String, onResult: (Boolean, String?) -> Unit) -> Unit)? = null
 ) {
     if (!isOpen) return
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val savedBioEmail = remember(isOpen) { com.example.justfan.util.BiometricAuthManager.getSavedAccountEmail(context) }
+    var useStandardLogin by remember(isOpen) { mutableStateOf(savedBioEmail.isNullOrBlank()) }
+    var loginErrorMessage by remember { mutableStateOf<String?>(null) }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -84,12 +92,12 @@ fun AuthDialog(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = if (userProfile.isSignedIn) "Your Account" else "Sign In to JUSTFAN",
+                                text = if (userProfile.isSignedIn) "Your Account" else (titleText ?: "Sign In to JUSTFAN"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (userProfile.isSignedIn) "Tier: ${userProfile.tier}" else "Choose your sign-in method",
+                                text = if (userProfile.isSignedIn) "Tier: ${userProfile.tier}" else if (!titleText.isNullOrBlank()) "Account required to proceed" else "Choose your sign-in method",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -107,6 +115,7 @@ fun AuthDialog(
                     // Signed In Account Profile View
                     SignedInProfileView(
                         userProfile = userProfile,
+                        requestQuota = requestQuota,
                         onSignOut = {
                             onSignOut()
                             onDismiss()
@@ -116,9 +125,48 @@ fun AuthDialog(
                             onUpgradeClick()
                         }
                     )
+                } else if (!savedBioEmail.isNullOrBlank() && !useStandardLogin) {
+                    // Saved Biometric Fingerprint Login View
+                    FingerprintSignInView(
+                        email = savedBioEmail,
+                        errorMessage = loginErrorMessage,
+                        onBiometricClick = {
+                            val act = context as? androidx.fragment.app.FragmentActivity
+                            if (act != null) {
+                                com.example.justfan.util.BiometricAuthManager.promptBiometricLogin(
+                                    activity = act,
+                                    onSuccess = { decryptedRefreshToken, email ->
+                                        if (onBiometricSignIn != null) {
+                                            onBiometricSignIn(decryptedRefreshToken, email) { success, _ ->
+                                                if (success) {
+                                                    onDismiss()
+                                                } else {
+                                                    com.example.justfan.util.BiometricAuthManager.clearBiometricData(context)
+                                                    loginErrorMessage = "Please sign in again"
+                                                    useStandardLogin = true
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onInvalidatedOrFailed = { _ ->
+                                        com.example.justfan.util.BiometricAuthManager.clearBiometricData(context)
+                                        loginErrorMessage = "Please sign in again"
+                                        useStandardLogin = true
+                                    },
+                                    onCancel = {
+                                        useStandardLogin = true
+                                    }
+                                )
+                            }
+                        },
+                        onUseStandardLoginClick = {
+                            useStandardLogin = true
+                        }
+                    )
                 } else {
                     // Sign In Options
                     SignInFormView(
+                        externalErrorMessage = loginErrorMessage,
                         onSignInWithGoogle = { email, name ->
                             onSignInWithGoogle(email, name)
                             onDismiss()
@@ -144,6 +192,7 @@ fun AuthDialog(
 @Composable
 private fun SignedInProfileView(
     userProfile: UserProfile,
+    requestQuota: com.example.justfan.data.model.RequestQuota = com.example.justfan.data.model.RequestQuota(),
     onSignOut: () -> Unit,
     onUpgradeClick: () -> Unit
 ) {
@@ -253,10 +302,11 @@ private fun SignedInProfileView(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                val hasUnlimited = userProfile.tier == "Legendary" || userProfile.isProActive || requestQuota.unlimited
                 // Requests Allowance Text
-                val requestText = when (userProfile.tier) {
-                    "Legendary" -> "✨ Unlimited requests forever (Lifetime VIP)"
-                    "Pro" -> {
+                val requestText = when {
+                    userProfile.tier == "Legendary" -> "✨ Unlimited requests forever (Lifetime VIP)"
+                    userProfile.isProActive -> {
                         val expiresFormatted = if (userProfile.proExpiresAt > 0L && userProfile.proExpiresAt != Long.MAX_VALUE) {
                             val sdf = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
                             "Active until ${sdf.format(Date(userProfile.proExpiresAt))}"
@@ -265,7 +315,8 @@ private fun SignedInProfileView(
                         }
                         "⚡ Unlimited requests ($expiresFormatted)"
                     }
-                    else -> "📝 3 requests allowed (${userProfile.remainingRequests} remaining)"
+                    hasUnlimited -> "✨ Unlimited requests"
+                    else -> "${requestQuota.remaining} of ${requestQuota.limit} requests left this month"
                 }
 
                 Text(
@@ -275,10 +326,10 @@ private fun SignedInProfileView(
                     fontWeight = FontWeight.SemiBold
                 )
 
-                if (userProfile.tier == "Free") {
+                if (!hasUnlimited) {
                     Spacer(modifier = Modifier.height(8.dp))
                     LinearProgressIndicator(
-                        progress = { (userProfile.requestsCount.toFloat() / 3f).coerceIn(0f, 1f) },
+                        progress = { (requestQuota.used.toFloat() / requestQuota.limit.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
                         color = MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surface
@@ -335,7 +386,91 @@ private fun SignedInProfileView(
 }
 
 @Composable
+private fun FingerprintSignInView(
+    email: String,
+    errorMessage: String?,
+    onBiometricClick: () -> Unit,
+    onUseStandardLoginClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(68.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Default.Fingerprint,
+                    contentDescription = "Fingerprint",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Text(
+            text = "Sign in as $email",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Touch the fingerprint sensor to sign in",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (errorMessage != null) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = errorMessage,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        Button(
+            onClick = onBiometricClick,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            Icon(Icons.Default.Fingerprint, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Touch Fingerprint Sensor")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        TextButton(
+            onClick = onUseStandardLoginClick
+        ) {
+            Text("Use email or Google instead")
+        }
+    }
+}
+
+@Composable
 private fun SignInFormView(
+    externalErrorMessage: String? = null,
     onSignInWithGoogle: (email: String, name: String) -> Unit,
     onSignInWithPasskey: (name: String) -> Unit,
     onSignInWithEmail: (email: String, pass: String) -> Result<UserProfile>
@@ -348,6 +483,24 @@ private fun SignInFormView(
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        if (!externalErrorMessage.isNullOrBlank()) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            ) {
+                Text(
+                    text = externalErrorMessage,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+        }
+
         // Method Selector Tabs
         Row(
             modifier = Modifier

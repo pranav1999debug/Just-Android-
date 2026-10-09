@@ -122,6 +122,14 @@ data class UserPreferences(
     val wallpaperDim: Float = 0.65f
 )
 
+data class RequestQuota(
+    val unlimited: Boolean = false,
+    val limit: Int = 3,
+    val used: Int = 0,
+    val remaining: Int = 3,
+    val resetsAt: String? = null
+)
+
 data class UserProfile(
     val id: String = "guest_user",
     val username: String = "Guest Fan",
@@ -129,14 +137,14 @@ data class UserProfile(
     val isSignedIn: Boolean = false,
     val authMethod: String = "guest", // "google", "passkey", "password"
     val tier: String = "Free", // Free, Pro, Legendary
-    val requestsCount: Int = 0,
     val proExpiresAt: Long = 0L, // timestamp when 1-month Pro expires
     val isAdmin: Boolean = false,
-    val customWallpaperUri: String? = null
+    val customWallpaperUri: String? = null,
+    val accessToken: String? = null,
+    val refreshToken: String? = null
 ) {
     // Backward compatibility getters
     val plan: String get() = tier
-    val weeklyRequestsUsed: Int get() = requestsCount
 
     val isProActive: Boolean
         get() {
@@ -146,17 +154,4 @@ data class UserProfile(
             }
             return false
         }
-
-    val maxRequestsAllowed: Int
-        get() = when {
-            isAdmin || tier == "Legendary" -> Int.MAX_VALUE
-            tier == "Pro" && isProActive -> Int.MAX_VALUE
-            else -> 3 // Free tier: strictly 3 requests
-        }
-
-    val remainingRequests: Int
-        get() = if (maxRequestsAllowed == Int.MAX_VALUE) 999 else (3 - requestsCount).coerceAtLeast(0)
-
-    val canMakeRequest: Boolean
-        get() = remainingRequests > 0
 }

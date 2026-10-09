@@ -46,12 +46,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val preferences: StateFlow<UserPreferences> = repository.preferences
     val userProfile: StateFlow<UserProfile> = repository.userProfile
 
+    private val _requestQuota = MutableStateFlow(RequestQuota())
+    val requestQuota: StateFlow<RequestQuota> = _requestQuota.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            userProfile.collect { profile ->
+                if (profile.isSignedIn && profile.id != "guest_user" && !profile.accessToken.isNullOrBlank()) {
+                    fetchRequestQuota()
+                } else {
+                    _requestQuota.value = RequestQuota()
+                }
+            }
+        }
+    }
+
+    fun fetchRequestQuota() {
+        val profile = userProfile.value
+        if (!profile.isSignedIn || profile.id == "guest_user") {
+            _requestQuota.value = RequestQuota()
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.fetchRequestQuota()
+            if (res.isSuccess) {
+                _requestQuota.value = res.getOrThrow()
+            }
+        }
+    }
+
     val isSyncing: StateFlow<Boolean> = repository.isSyncing
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     fun refreshFromSupabase() {
         viewModelScope.launch {
             repository.refreshPosts()
+            fetchRequestQuota()
         }
     }
 
@@ -97,9 +127,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         imageUrl: String?,
         onComplete: ((Boolean, String?) -> Unit)? = null
     ) {
+        val profile = userProfile.value
+        if (!profile.isSignedIn || profile.id == "guest_user" || profile.accessToken.isNullOrBlank()) {
+            onComplete?.invoke(false, "SIGN_IN_REQUIRED")
+            return
+        }
         viewModelScope.launch {
             try {
                 val res = repository.submitRequest(name, email, telegram, message, imageUrl)
+                if (res.isSuccess) {
+                    fetchRequestQuota()
+                }
                 onComplete?.invoke(res.isSuccess, res.exceptionOrNull()?.message)
             } catch (e: Exception) {
                 onComplete?.invoke(false, e.message)
@@ -110,6 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshRequestsFromSupabase(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch {
             repository.syncRequestsFromSupabase()
+            fetchRequestQuota()
             onComplete?.invoke()
         }
     }
@@ -178,17 +217,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.updateTier(tier)
     }
 
-    fun signInWithEmail(email: String, password: String): Result<UserProfile> =
-        repository.signInWithEmail(email, password)
+    fun signInWithEmail(email: String, password: String): Result<UserProfile> {
+        val res = repository.signInWithEmail(email, password)
+        if (res.isSuccess) {
+            fetchRequestQuota()
+        }
+        return res
+    }
 
-    fun signInWithGoogle(email: String, name: String = "Google User"): Result<UserProfile> =
-        repository.signInWithGoogle(email, name)
+    fun signInWithGoogle(
+        email: String,
+        name: String = "Google User",
+        accessToken: String? = null,
+        userId: String? = null,
+        refreshToken: String? = null
+    ): Result<UserProfile> {
+        val res = repository.signInWithGoogle(email, name, accessToken, userId, refreshToken)
+        if (res.isSuccess) {
+            fetchRequestQuota()
+        }
+        return res
+    }
 
-    fun signInWithPasskey(name: String = "Device Passkey"): Result<UserProfile> =
-        repository.signInWithPasskey(name)
+    fun refreshBiometricSession(
+        refreshToken: String,
+        email: String,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val res = com.example.justfan.data.remote.SupabaseClient.refreshSession(refreshToken)
+                if (res.isSuccess) {
+                    val session = res.getOrThrow()
+                    repository.signInWithRefreshedSession(session)
+                    com.example.justfan.util.BiometricAuthManager.updateStoredRefreshToken(
+                        getApplication(),
+                        email,
+                        session.refreshToken ?: refreshToken
+                    )
+                    fetchRequestQuota()
+                    onResult(true, null)
+                } else {
+                    com.example.justfan.util.BiometricAuthManager.clearBiometricData(getApplication())
+                    onResult(false, res.exceptionOrNull()?.message ?: "Refresh failed")
+                }
+            } catch (e: Exception) {
+                com.example.justfan.util.BiometricAuthManager.clearBiometricData(getApplication())
+                onResult(false, e.message ?: "Decryption or refresh failed")
+            }
+        }
+    }
+
+    fun signInWithPasskey(name: String = "Device Passkey"): Result<UserProfile> {
+        val res = repository.signInWithPasskey(name)
+        if (res.isSuccess) {
+            fetchRequestQuota()
+        }
+        return res
+    }
 
     fun signOut() {
         repository.signOut()
+        _requestQuota.value = RequestQuota()
     }
 
     fun updateWallpaper(uri: String?, dim: Float = 0.65f) {
@@ -254,6 +344,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (parts.size == 2) parts[0] to java.net.URLDecoder.decode(parts[1], "UTF-8") else parts[0] to ""
                 }
                 val accessToken = params["access_token"]
+                val refreshToken = params["refresh_token"]
                 if (!accessToken.isNullOrBlank()) {
                     val parts = accessToken.split(".")
                     if (parts.size >= 2) {
@@ -263,13 +354,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         val payloadJson = String(decodedBytes, Charsets.UTF_8)
                         val json = org.json.JSONObject(payloadJson)
+                        val sub = json.optString("sub", "")
                         val email = json.optString("email", "")
                         val userMetadata = json.optJSONObject("user_metadata")
                         val name = userMetadata?.optString("full_name")?.ifBlank { null }
                             ?: userMetadata?.optString("name")?.ifBlank { null }
                             ?: email.substringBefore("@")
                         if (email.isNotBlank()) {
-                            repository.signInWithGoogle(email, name)
+                            repository.signInWithGoogle(
+                                email,
+                                name,
+                                accessToken = accessToken,
+                                userId = sub,
+                                refreshToken = refreshToken
+                            )
+                            fetchRequestQuota()
                         }
                     }
                 }

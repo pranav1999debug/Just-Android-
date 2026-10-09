@@ -45,17 +45,24 @@ import java.util.Locale
 @Composable
 fun RequestScreen(
     userProfile: UserProfile,
+    requestQuota: com.example.justfan.data.model.RequestQuota,
     requests: List<RequestEntity>,
-    onSubmitRequest: (name: String, email: String, telegram: String?, message: String, imageUrl: String?) -> Unit,
+    onSubmitRequest: (name: String, email: String, telegram: String?, message: String, imageUrl: String?, onResult: (Boolean, String?) -> Unit) -> Unit,
     onViewGallery: () -> Unit,
     onUpgradeClick: () -> Unit,
     isSyncing: Boolean = false,
     onSyncRequests: () -> Unit = {},
+    onSignInRequired: () -> Unit = {},
+    onUserMismatch: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        onSyncRequests()
+    }
 
     var modelName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf(userProfile.email) }
@@ -66,6 +73,8 @@ fun RequestScreen(
     var isUploadingMedia by remember { mutableStateOf(false) }
     var uploadStatusText by remember { mutableStateOf("Uploading media...") }
     var uploadError by remember { mutableStateOf<String?>(null) }
+    var submitErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isSubmitting by remember { mutableStateOf(false) }
     var showSuccessSnackbar by remember { mutableStateOf(false) }
     var previewImageUrl by remember { mutableStateOf<String?>(null) }
 
@@ -148,8 +157,40 @@ fun RequestScreen(
 
     val isLegendary = userProfile.tier == "Legendary" || userProfile.isAdmin
     val isPro = userProfile.isProActive
-    val hasUnlimited = isLegendary || isPro
-    val remainingRequests = if (hasUnlimited) 999 else userProfile.remainingRequests
+    val hasUnlimited = isLegendary || isPro || requestQuota.unlimited
+    val remainingRequests = if (hasUnlimited) 999 else requestQuota.remaining
+    val resetsDateFormatted = remember(requestQuota.resetsAt) {
+        val raw = requestQuota.resetsAt
+        if (raw.isNullOrBlank()) {
+            "end of month"
+        } else {
+            try {
+                val inputFormats = listOf(
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US),
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
+                    SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                )
+                var parsedDate: Date? = null
+                for (fmt in inputFormats) {
+                    try {
+                        parsedDate = fmt.parse(raw)
+                        if (parsedDate != null) break
+                    } catch (_: Exception) {
+                    }
+                }
+                if (parsedDate != null) {
+                    val outFormat = SimpleDateFormat("MMM dd, yyyy", Locale.US)
+                    outFormat.format(parsedDate)
+                } else {
+                    raw.substringBefore("T")
+                }
+            } catch (_: Exception) {
+                raw.substringBefore("T")
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -212,13 +253,20 @@ fun RequestScreen(
                         }
                         Text(
                             text = when {
-                                isLegendary -> "Unlimited requests forever (Unlimited Time)"
-                                isPro -> "Unlimited requests for 1 month active"
-                                else -> "$remainingRequests of 3 requests remaining"
+                                hasUnlimited -> "Unlimited"
+                                else -> "${requestQuota.remaining} of ${requestQuota.limit} requests left this month"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
+                        if (!hasUnlimited) {
+                            Text(
+                                text = "Resets on $resetsDateFormatted",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
                     if (!isLegendary) {
@@ -638,6 +686,29 @@ fun RequestScreen(
                         }
                     }
 
+                    if (submitErrorMessage != null) {
+                        item {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = submitErrorMessage!!,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     if (!hasUnlimited && remainingRequests <= 0) {
                         item {
                             Surface(
@@ -650,18 +721,12 @@ fun RequestScreen(
                                         Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "Request Limit Reached (3 / 3 Used)",
+                                            text = "Monthly limit reached on this device or account. Resets on $resetsDateFormatted, or upgrade for unlimited.",
                                             style = MaterialTheme.typography.titleSmall,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Free users get 3 requests total. Upgrade to Pro for 1 month of unlimited requests or Legendary for unlimited time.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
-                                    )
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Button(
                                         onClick = onUpgradeClick,
@@ -669,7 +734,7 @@ fun RequestScreen(
                                         shape = RoundedCornerShape(8.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Upgrade to Pro / Legendary", fontWeight = FontWeight.Bold)
+                                        Text("Upgrade for Unlimited", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -677,23 +742,49 @@ fun RequestScreen(
                     }
 
                     item {
+                        val isSubmitEnabled = modelName.isNotBlank() && notes.isNotBlank() && !isSubmitting && (hasUnlimited || remainingRequests > 0)
                         Button(
                             onClick = {
                                 if (modelName.isNotBlank() && email.isNotBlank() && notes.isNotBlank()) {
+                                    isSubmitting = true
+                                    submitErrorMessage = null
                                     onSubmitRequest(
                                         modelName.trim(),
                                         email.trim(),
                                         telegram.trim().ifBlank { null },
                                         notes.trim(),
                                         referenceImageUrl.trim().ifBlank { null }
-                                    )
-                                    modelName = ""
-                                    notes = ""
-                                    referenceImageUrl = ""
-                                    showSuccessSnackbar = true
+                                    ) { success, errorText ->
+                                        isSubmitting = false
+                                        if (success) {
+                                            modelName = ""
+                                            notes = ""
+                                            referenceImageUrl = ""
+                                            showSuccessSnackbar = true
+                                        } else {
+                                            when (errorText) {
+                                                "SIGN_IN_REQUIRED" -> {
+                                                    onSignInRequired()
+                                                }
+                                                "DEVICE_REQUIRED" -> {
+                                                    submitErrorMessage = "Device check failed, update the app"
+                                                }
+                                                "LIMIT_REACHED" -> {
+                                                    onSyncRequests()
+                                                    submitErrorMessage = "Monthly limit reached on this device or account. Resets on $resetsDateFormatted, or upgrade for unlimited."
+                                                }
+                                                "USER_MISMATCH" -> {
+                                                    onUserMismatch()
+                                                }
+                                                else -> {
+                                                    submitErrorMessage = errorText ?: "Failed to submit request"
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             },
-                            enabled = modelName.isNotBlank() && notes.isNotBlank() && (hasUnlimited || remainingRequests > 0),
+                            enabled = isSubmitEnabled,
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             modifier = Modifier
@@ -701,12 +792,23 @@ fun RequestScreen(
                                 .fillMaxWidth()
                                 .height(50.dp)
                         ) {
-                            Icon(Icons.Default.CloudUpload, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (hasUnlimited || remainingRequests > 0) "Submit to Supabase Database" else "Limit Reached (Upgrade for Unlimited)",
-                                fontWeight = FontWeight.Bold
-                            )
+                            if (isSubmitting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Submitting...")
+                            } else {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (hasUnlimited || remainingRequests > 0) "Submit to Supabase Database" else "Monthly limit reached. Resets on $resetsDateFormatted or Upgrade for unlimited",
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }

@@ -50,9 +50,10 @@ class JustFanRepository(
                     authMethod = sp.getString("auth_method", "google") ?: "google",
                     tier = sp.getString("tier", if (isRey) "Legendary" else "Free") ?: "Free",
                     isAdmin = isRey,
-                    requestsCount = sp.getInt("requests_count", 0),
                     proExpiresAt = sp.getLong("pro_expires_at", if (isRey) Long.MAX_VALUE else 0L),
-                    customWallpaperUri = sp.getString("custom_wallpaper_uri", null)
+                    customWallpaperUri = sp.getString("custom_wallpaper_uri", null),
+                    accessToken = sp.getString("access_token", null),
+                    refreshToken = sp.getString("refresh_token", null)
                 )
             }
         } catch (_: Exception) {}
@@ -64,8 +65,9 @@ class JustFanRepository(
             authMethod = "guest",
             tier = "Free",
             isAdmin = false,
-            requestsCount = 0,
-            proExpiresAt = 0L
+            proExpiresAt = 0L,
+            accessToken = null,
+            refreshToken = null
         )
     }
 
@@ -81,9 +83,10 @@ class JustFanRepository(
                 putString("auth_method", profile.authMethod)
                 putString("tier", if (isStrictAdmin) "Legendary" else profile.tier)
                 putBoolean("is_admin", isStrictAdmin)
-                putInt("requests_count", profile.requestsCount)
                 putLong("pro_expires_at", profile.proExpiresAt)
                 putString("custom_wallpaper_uri", profile.customWallpaperUri)
+                putString("access_token", profile.accessToken)
+                putString("refresh_token", profile.refreshToken)
                 apply()
             }
         } catch (_: Exception) {}
@@ -374,41 +377,46 @@ class JustFanRepository(
         imageUrl: String?
     ): Result<Boolean> {
         val currentProfile = _userProfile.value
-        if (!currentProfile.canMakeRequest) {
-            throw IllegalStateException("Free users are limited to 3 requests. Please upgrade to Pro (1 Month Unlimited) or Legendary (Lifetime Unlimited)!")
+        if (!currentProfile.isSignedIn || currentProfile.id == "guest_user" || currentProfile.accessToken.isNullOrBlank()) {
+            return Result.failure(Exception("SIGN_IN_REQUIRED"))
         }
 
-        val req = RequestEntity(
-            id = UUID.randomUUID().toString(),
-            name = name,
-            email = email,
-            telegramUsername = telegram,
-            message = message,
-            imageUrl = imageUrl,
-            status = "pending"
-        )
-        requestDao.insertRequest(req)
-        activityDao.insertActivity(
-            ActivityEntity(
-                id = UUID.randomUUID().toString(),
-                type = "request_submitted",
-                title = "Request submitted for $name",
-                body = message
-            )
-        )
-        _userProfile.value = _userProfile.value.copy(
-            requestsCount = _userProfile.value.requestsCount + 1
-        )
-        // Push directly to live Supabase requests table
+        val deviceId = context?.let { com.example.justfan.util.getDeviceId(it) } ?: "unknown_device"
+
+        // Push directly to live Supabase requests table using real user session
         val remoteResult = com.example.justfan.data.remote.SupabaseClient.submitRequest(
             name = name,
             email = email,
+            telegram = telegram,
             message = message,
             imageUrl = imageUrl,
-            userId = currentProfile.id
+            userId = currentProfile.id,
+            deviceId = deviceId,
+            accessToken = currentProfile.accessToken!!
         )
-        // Refresh live requests from Supabase
-        syncRequestsFromSupabase()
+
+        if (remoteResult.isSuccess) {
+            val req = RequestEntity(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                email = email,
+                telegramUsername = telegram,
+                message = message,
+                imageUrl = imageUrl,
+                status = "pending"
+            )
+            requestDao.insertRequest(req)
+            activityDao.insertActivity(
+                ActivityEntity(
+                    id = UUID.randomUUID().toString(),
+                    type = "request_submitted",
+                    title = "Request submitted for $name",
+                    body = message
+                )
+            )
+            // Refresh live requests from Supabase
+            syncRequestsFromSupabase()
+        }
         return remoteResult
     }
 
@@ -525,9 +533,15 @@ class JustFanRepository(
 
     suspend fun updateUserRequestsCount(userId: String, count: Int) {
         userDao.updateUserRequestsCount(userId, count)
-        if (_userProfile.value.id == userId) {
-            _userProfile.value = _userProfile.value.copy(requestsCount = count)
+    }
+
+    suspend fun fetchRequestQuota(): Result<com.example.justfan.data.model.RequestQuota> {
+        val current = _userProfile.value
+        if (!current.isSignedIn || current.id == "guest_user") {
+            return Result.success(com.example.justfan.data.model.RequestQuota())
         }
+        val deviceId = context?.let { com.example.justfan.util.getDeviceId(it) } ?: "unknown_device"
+        return com.example.justfan.data.remote.SupabaseClient.fetchRequestQuota(current.id, deviceId, current.accessToken)
     }
 
     suspend fun updateUserStatus(userId: String, status: String) {
@@ -630,59 +644,95 @@ class JustFanRepository(
 
     fun signInWithEmail(email: String, password: String): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
-        return if (cleanEmail == "reytherapper12@gmail.com") {
-            if (password == "Pranav19ranjan97") {
-                val adminProfile = UserProfile(
-                    id = "admin_rey",
-                    username = "reytherapper12",
-                    email = "reytherapper12@gmail.com",
-                    isSignedIn = true,
-                    authMethod = "password",
-                    tier = "Legendary",
-                    isAdmin = true,
-                    requestsCount = 0,
-                    proExpiresAt = Long.MAX_VALUE
-                )
-                _userProfile.value = adminProfile
-                saveProfileToPrefs(adminProfile)
-                Result.success(adminProfile)
-            } else {
-                Result.failure(IllegalArgumentException("Incorrect password for admin account."))
+        val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
+
+        // Try Supabase Auth API
+        val supaResult = runCatching {
+            kotlinx.coroutines.runBlocking {
+                com.example.justfan.data.remote.SupabaseClient.signInWithEmailPassword(cleanEmail, password)
             }
+        }.getOrNull()
+
+        if (supaResult != null && supaResult.isSuccess) {
+            val session = supaResult.getOrThrow()
+            val user = UserProfile(
+                id = session.userId,
+                username = cleanEmail.substringBefore("@"),
+                email = cleanEmail,
+                isSignedIn = true,
+                authMethod = "password",
+                tier = if (isAdminUser) "Legendary" else "Free",
+                isAdmin = isAdminUser,
+                proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L,
+                accessToken = session.accessToken,
+                refreshToken = session.refreshToken
+            )
+            _userProfile.value = user
+            saveProfileToPrefs(user)
+            return Result.success(user)
+        }
+
+        return if (isAdminUser && password == "Pranav19ranjan97") {
+            val adminProfile = UserProfile(
+                id = "admin_rey",
+                username = "reytherapper12",
+                email = "reytherapper12@gmail.com",
+                isSignedIn = true,
+                authMethod = "password",
+                tier = "Legendary",
+                isAdmin = true,
+                proExpiresAt = Long.MAX_VALUE,
+                accessToken = null,
+                refreshToken = null
+            )
+            _userProfile.value = adminProfile
+            saveProfileToPrefs(adminProfile)
+            Result.success(adminProfile)
+        } else if (cleanEmail.contains("@") && password.length >= 4) {
+            val user = UserProfile(
+                id = UUID.randomUUID().toString(),
+                username = cleanEmail.substringBefore("@"),
+                email = cleanEmail,
+                isSignedIn = true,
+                authMethod = "password",
+                tier = "Free",
+                isAdmin = false,
+                accessToken = null,
+                refreshToken = null
+            )
+            _userProfile.value = user
+            saveProfileToPrefs(user)
+            Result.success(user)
         } else {
-            if (cleanEmail.contains("@") && password.length >= 4) {
-                val user = UserProfile(
-                    id = UUID.randomUUID().toString(),
-                    username = cleanEmail.substringBefore("@"),
-                    email = cleanEmail,
-                    isSignedIn = true,
-                    authMethod = "password",
-                    tier = "Free",
-                    isAdmin = false,
-                    requestsCount = 0
-                )
-                _userProfile.value = user
-                saveProfileToPrefs(user)
-                Result.success(user)
-            } else {
-                Result.failure(IllegalArgumentException("Please enter a valid email and password (min 4 characters)."))
-            }
+            Result.failure(IllegalArgumentException(supaResult?.exceptionOrNull()?.message ?: "Please enter a valid email and password (min 4 characters)."))
         }
     }
 
-    fun signInWithGoogle(email: String, name: String = "Google User"): Result<UserProfile> {
+    fun signInWithGoogle(
+        email: String,
+        name: String = "Google User",
+        accessToken: String? = null,
+        userId: String? = null,
+        refreshToken: String? = null
+    ): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
         val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
+        val effectiveId = when {
+            !userId.isNullOrBlank() -> userId
+            isAdminUser -> "admin_rey"
+            else -> UUID.randomUUID().toString()
+        }
         val profile = UserProfile(
-            id = if (isAdminUser) "admin_rey" else UUID.randomUUID().toString(),
+            id = effectiveId,
             username = if (isAdminUser) "reytherapper12 (Admin)" else name,
             email = cleanEmail,
             isSignedIn = true,
             authMethod = "google",
             tier = if (isAdminUser) "Legendary" else "Free",
             isAdmin = isAdminUser,
-            requestsCount = 0,
-            proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L
+            proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L,
+            accessToken = accessToken,
+            refreshToken = refreshToken
         )
         _userProfile.value = profile
         saveProfileToPrefs(profile)
@@ -693,8 +743,53 @@ class JustFanRepository(
                 if (res.isSuccess) {
                     res.getOrNull()?.let { remoteProfile ->
                         val updated = remoteProfile.copy(
+                            id = effectiveId,
                             isAdmin = isAdminUser,
-                            tier = if (isAdminUser) "Legendary" else remoteProfile.tier
+                            tier = if (isAdminUser) "Legendary" else remoteProfile.tier,
+                            accessToken = accessToken,
+                            refreshToken = refreshToken
+                        )
+                        _userProfile.value = updated
+                        saveProfileToPrefs(updated)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return Result.success(profile)
+    }
+
+    fun signInWithRefreshedSession(
+        session: com.example.justfan.data.remote.SupabaseClient.AuthSession
+    ): Result<UserProfile> {
+        val cleanEmail = session.email.trim().lowercase()
+        val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
+        val effectiveId = if (session.userId.isNotBlank()) session.userId else if (isAdminUser) "admin_rey" else UUID.randomUUID().toString()
+        val profile = UserProfile(
+            id = effectiveId,
+            username = if (isAdminUser) "reytherapper12 (Admin)" else if (cleanEmail.contains("@")) cleanEmail.substringBefore("@") else "User",
+            email = cleanEmail,
+            isSignedIn = true,
+            authMethod = "biometric",
+            tier = if (isAdminUser) "Legendary" else "Free",
+            isAdmin = isAdminUser,
+            proExpiresAt = if (isAdminUser) Long.MAX_VALUE else 0L,
+            accessToken = session.accessToken,
+            refreshToken = session.refreshToken
+        )
+        _userProfile.value = profile
+        saveProfileToPrefs(profile)
+        // Background sync user's specific tier if they exist on Supabase
+        scope.launch {
+            try {
+                val res = com.example.justfan.data.remote.SupabaseClient.fetchProfile(cleanEmail)
+                if (res.isSuccess) {
+                    res.getOrNull()?.let { remoteProfile ->
+                        val updated = remoteProfile.copy(
+                            id = effectiveId,
+                            isAdmin = isAdminUser,
+                            tier = if (isAdminUser) "Legendary" else remoteProfile.tier,
+                            accessToken = session.accessToken,
+                            refreshToken = session.refreshToken
                         )
                         _userProfile.value = updated
                         saveProfileToPrefs(updated)
@@ -716,8 +811,9 @@ class JustFanRepository(
             authMethod = "passkey",
             tier = if (isRey) "Legendary" else "Free",
             isAdmin = isRey,
-            requestsCount = 0,
-            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L,
+            accessToken = null,
+            refreshToken = null
         )
         _userProfile.value = profile
         saveProfileToPrefs(profile)
@@ -725,6 +821,9 @@ class JustFanRepository(
     }
 
     fun signOut() {
+        context?.let {
+            com.example.justfan.util.BiometricAuthManager.clearBiometricData(it)
+        }
         val guest = UserProfile(
             id = "guest_user",
             username = "Guest Fan",
@@ -733,8 +832,9 @@ class JustFanRepository(
             authMethod = "guest",
             tier = "Free",
             isAdmin = false,
-            requestsCount = 0,
-            proExpiresAt = 0L
+            proExpiresAt = 0L,
+            accessToken = null,
+            refreshToken = null
         )
         _userProfile.value = guest
         saveProfileToPrefs(guest)

@@ -64,11 +64,56 @@ fun JustFanAppRoot(
     val activities by viewModel.activities.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
+    val requestQuota by viewModel.requestQuota.collectAsStateWithLifecycle()
 
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var currentSubScreen by remember { mutableStateOf(SubScreen.NONE) }
     var selectedPostId by remember { mutableStateOf<String?>(null) }
     var isAuthDialogOpen by remember { mutableStateOf(false) }
+    var authDialogTitle by remember { mutableStateOf<String?>(null) }
+    var pendingRequestNavigationAfterAuth by remember { mutableStateOf(false) }
+
+    var showEnableFingerprintDialog by remember { mutableStateOf(false) }
+    var pendingBioRefreshToken by remember { mutableStateOf<String?>(null) }
+    var pendingBioEmail by remember { mutableStateOf<String?>(null) }
+    var hasPromptedBioOnStart by remember { mutableStateOf(false) }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Biometric Shortcut on App Start
+    LaunchedEffect(Unit) {
+        if (!hasPromptedBioOnStart && !userProfile.isSignedIn && com.example.justfan.util.BiometricAuthManager.hasSavedBiometricAccount(context)) {
+            hasPromptedBioOnStart = true
+            val act = context as? androidx.fragment.app.FragmentActivity
+            if (act != null) {
+                com.example.justfan.util.BiometricAuthManager.promptBiometricLogin(
+                    activity = act,
+                    onSuccess = { decryptedRefreshToken, email ->
+                        viewModel.refreshBiometricSession(decryptedRefreshToken, email) { success, _ ->
+                            if (!success) {
+                                isAuthDialogOpen = true
+                            }
+                        }
+                    },
+                    onInvalidatedOrFailed = { _ ->
+                        isAuthDialogOpen = true
+                    },
+                    onCancel = {
+                        // User chose "Use email or Google instead"
+                    }
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(userProfile.isSignedIn, userProfile.id) {
+        if (userProfile.isSignedIn && userProfile.id != "guest_user" && pendingRequestNavigationAfterAuth) {
+            pendingRequestNavigationAfterAuth = false
+            currentScreen = Screen.REQUEST
+            currentSubScreen = SubScreen.NONE
+            isAuthDialogOpen = false
+        }
+    }
 
     val favoritePostIds = remember(favorites) { favorites.map { it.postId }.toSet() }
     val hasCustomWallpaper = !preferences.customWallpaperUri.isNullOrBlank()
@@ -375,17 +420,47 @@ fun JustFanAppRoot(
                                         }
                                         Screen.REQUEST -> {
                                             BackHandler { currentScreen = Screen.HOME }
-                                            RequestScreen(
-                                                userProfile = userProfile,
-                                                requests = requests,
-                                                onSubmitRequest = { name, email, telegram, message, imageUrl ->
-                                                    viewModel.submitRequest(name, email, telegram, message, imageUrl)
-                                                },
-                                                onViewGallery = { currentSubScreen = SubScreen.GALLERY },
-                                                onUpgradeClick = { currentSubScreen = SubScreen.PRICING },
-                                                isSyncing = isSyncing,
-                                                onSyncRequests = { viewModel.refreshRequestsFromSupabase() }
-                                            )
+                                            if (!userProfile.isSignedIn || userProfile.id == "guest_user") {
+                                                LaunchedEffect(Unit) {
+                                                    authDialogTitle = "Sign in to submit a request"
+                                                    pendingRequestNavigationAfterAuth = true
+                                                    isAuthDialogOpen = true
+                                                }
+                                                Box(
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = "Sign in to submit a request",
+                                                        style = MaterialTheme.typography.bodyLarge,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            } else {
+                                                RequestScreen(
+                                                    userProfile = userProfile,
+                                                    requestQuota = requestQuota,
+                                                    requests = requests,
+                                                    onSubmitRequest = { name, email, telegram, message, imageUrl, onResult ->
+                                                        viewModel.submitRequest(name, email, telegram, message, imageUrl, onResult)
+                                                    },
+                                                    onViewGallery = { currentSubScreen = SubScreen.GALLERY },
+                                                    onUpgradeClick = { currentSubScreen = SubScreen.PRICING },
+                                                    isSyncing = isSyncing,
+                                                    onSyncRequests = { viewModel.refreshRequestsFromSupabase() },
+                                                    onSignInRequired = {
+                                                        authDialogTitle = "Sign in to submit a request"
+                                                        pendingRequestNavigationAfterAuth = true
+                                                        isAuthDialogOpen = true
+                                                    },
+                                                    onUserMismatch = {
+                                                        viewModel.signOut()
+                                                        authDialogTitle = "Sign in to submit a request"
+                                                        pendingRequestNavigationAfterAuth = true
+                                                        isAuthDialogOpen = true
+                                                    }
+                                                )
+                                            }
                                         }
                                         Screen.FAVORITES -> {
                                             BackHandler { currentScreen = Screen.HOME }
@@ -408,6 +483,7 @@ fun JustFanAppRoot(
                                             PreferencesScreen(
                                                 preferences = preferences,
                                                 userProfile = userProfile,
+                                                requestQuota = requestQuota,
                                                 onUpdateTheme = { theme, dark -> viewModel.updateTheme(theme, dark) },
                                                 onUpdateContentFilter = { filter -> viewModel.updateContentFilter(filter) },
                                                 onAddPreferredTag = { tag -> viewModel.addPreferredTag(tag) },
@@ -460,14 +536,24 @@ fun JustFanAppRoot(
                 }
             }
 
+            val openRequestScreenWithGate: () -> Unit = {
+                if (!userProfile.isSignedIn || userProfile.id == "guest_user") {
+                    authDialogTitle = "Sign in to submit a request"
+                    pendingRequestNavigationAfterAuth = true
+                    isAuthDialogOpen = true
+                } else {
+                    currentScreen = Screen.REQUEST
+                    currentSubScreen = SubScreen.NONE
+                }
+            }
+
             // More Bottom Sheet Dialog (matching user screenshot)
             if (isMoreSheetOpen) {
                 MoreBottomSheet(
                     onDismissRequest = { isMoreSheetOpen = false },
                     onRequestClick = {
                         isMoreSheetOpen = false
-                        currentSubScreen = SubScreen.NONE
-                        currentScreen = Screen.REQUEST
+                        openRequestScreenWithGate()
                     },
                     onFavoritesClick = {
                         isMoreSheetOpen = false
@@ -504,24 +590,133 @@ fun JustFanAppRoot(
             // Global Authentication & Account Dialog
             AuthDialog(
                 userProfile = userProfile,
+                requestQuota = requestQuota,
+                titleText = authDialogTitle,
                 isOpen = isAuthDialogOpen,
-                onDismiss = { isAuthDialogOpen = false },
+                onDismiss = {
+                    isAuthDialogOpen = false
+                    authDialogTitle = null
+                    if (pendingRequestNavigationAfterAuth || currentScreen == Screen.REQUEST) {
+                        currentScreen = Screen.HOME
+                        currentSubScreen = SubScreen.NONE
+                    }
+                    pendingRequestNavigationAfterAuth = false
+                },
                 onSignInWithGoogle = { email, name ->
-                    viewModel.signInWithGoogle(email, name)
+                    val res = viewModel.signInWithGoogle(email, name)
+                    if (res.isSuccess) {
+                        isAuthDialogOpen = false
+                        authDialogTitle = null
+                        if (pendingRequestNavigationAfterAuth) {
+                            pendingRequestNavigationAfterAuth = false
+                            currentScreen = Screen.REQUEST
+                            currentSubScreen = SubScreen.NONE
+                        }
+                        if (com.example.justfan.util.BiometricAuthManager.canAuthenticate(context) &&
+                            !com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context)) {
+                            val signedUser = res.getOrNull()
+                            val rToken = signedUser?.refreshToken ?: userProfile.refreshToken ?: java.util.UUID.randomUUID().toString()
+                            val mail = signedUser?.email?.ifBlank { email } ?: email
+                            pendingBioRefreshToken = rToken
+                            pendingBioEmail = mail
+                            showEnableFingerprintDialog = true
+                        }
+                    }
                 },
                 onSignInWithPasskey = { name ->
-                    viewModel.signInWithPasskey(name)
+                    val res = viewModel.signInWithPasskey(name)
+                    if (res.isSuccess) {
+                        isAuthDialogOpen = false
+                        authDialogTitle = null
+                        if (pendingRequestNavigationAfterAuth) {
+                            pendingRequestNavigationAfterAuth = false
+                            currentScreen = Screen.REQUEST
+                            currentSubScreen = SubScreen.NONE
+                        }
+                    }
                 },
                 onSignInWithEmail = { email, pass ->
-                    viewModel.signInWithEmail(email, pass)
+                    val res = viewModel.signInWithEmail(email, pass)
+                    if (res.isSuccess) {
+                        isAuthDialogOpen = false
+                        authDialogTitle = null
+                        if (pendingRequestNavigationAfterAuth) {
+                            pendingRequestNavigationAfterAuth = false
+                            currentScreen = Screen.REQUEST
+                            currentSubScreen = SubScreen.NONE
+                        }
+                        if (com.example.justfan.util.BiometricAuthManager.canAuthenticate(context) &&
+                            !com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context)) {
+                            val signedUser = res.getOrNull()
+                            val rToken = signedUser?.refreshToken ?: userProfile.refreshToken ?: java.util.UUID.randomUUID().toString()
+                            val mail = signedUser?.email?.ifBlank { email } ?: email
+                            pendingBioRefreshToken = rToken
+                            pendingBioEmail = mail
+                            showEnableFingerprintDialog = true
+                        }
+                    }
+                    res
                 },
                 onSignOut = {
                     viewModel.signOut()
                 },
                 onUpgradeClick = {
                     currentSubScreen = SubScreen.PRICING
+                },
+                onBiometricSignIn = { refreshToken, email, onResult ->
+                    viewModel.refreshBiometricSession(refreshToken, email) { success, err ->
+                        if (success && pendingRequestNavigationAfterAuth) {
+                            pendingRequestNavigationAfterAuth = false
+                            currentScreen = Screen.REQUEST
+                            currentSubScreen = SubScreen.NONE
+                        }
+                        onResult(success, err)
+                    }
                 }
             )
+
+            // Enable Fingerprint Login Dialog
+            if (showEnableFingerprintDialog && pendingBioEmail != null && pendingBioRefreshToken != null) {
+                val act = context as? androidx.fragment.app.FragmentActivity
+                AlertDialog(
+                    onDismissRequest = { showEnableFingerprintDialog = false },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Fingerprint,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    },
+                    title = { Text("Enable fingerprint login?") },
+                    text = { Text("Use fingerprint authentication for quick and secure sign-in next time.") },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showEnableFingerprintDialog = false
+                                if (act != null) {
+                                    com.example.justfan.util.BiometricAuthManager.promptEnableBiometric(
+                                        activity = act,
+                                        email = pendingBioEmail!!,
+                                        refreshToken = pendingBioRefreshToken!!,
+                                        onSuccess = {},
+                                        onError = {}
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Enable")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { showEnableFingerprintDialog = false }
+                        ) {
+                            Text("Not now")
+                        }
+                    }
+                )
+            }
         }
     }
 }

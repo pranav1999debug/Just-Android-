@@ -39,6 +39,7 @@ import java.util.*
 fun PreferencesScreen(
     preferences: UserPreferences,
     userProfile: UserProfile,
+    requestQuota: com.example.justfan.data.model.RequestQuota = com.example.justfan.data.model.RequestQuota(),
     onUpdateTheme: (String, Boolean) -> Unit,
     onUpdateContentFilter: (String) -> Unit,
     onAddPreferredTag: (String) -> Unit,
@@ -523,10 +524,42 @@ fun PreferencesScreen(
 
                         Spacer(modifier = Modifier.height(6.dp))
 
+                        val hasUnlimited = userProfile.tier == "Legendary" || userProfile.isProActive || requestQuota.unlimited
+                        val resetsDateFormatted = remember(requestQuota.resetsAt) {
+                            val raw = requestQuota.resetsAt
+                            if (raw.isNullOrBlank()) {
+                                "end of month"
+                            } else {
+                                try {
+                                    val inputFormats = listOf(
+                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US),
+                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
+                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
+                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
+                                        SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                                    )
+                                    var parsedDate: Date? = null
+                                    for (fmt in inputFormats) {
+                                        try {
+                                            parsedDate = fmt.parse(raw)
+                                            if (parsedDate != null) break
+                                        } catch (_: Exception) {}
+                                    }
+                                    if (parsedDate != null) {
+                                        SimpleDateFormat("MMM dd, yyyy", Locale.US).format(parsedDate)
+                                    } else {
+                                        raw.substringBefore("T")
+                                    }
+                                } catch (_: Exception) {
+                                    raw.substringBefore("T")
+                                }
+                            }
+                        }
+
                         // Requests Allowance display
-                        val quotaDescription = when (userProfile.tier) {
-                            "Legendary" -> "🌟 Unlimited requests forever (Lifetime VIP)"
-                            "Pro" -> {
+                        val quotaDescription = when {
+                            userProfile.tier == "Legendary" -> "🌟 Unlimited requests forever (Lifetime VIP)"
+                            userProfile.isProActive -> {
                                 val expiresFormatted = if (userProfile.proExpiresAt > 0L && userProfile.proExpiresAt != Long.MAX_VALUE) {
                                     val sdf = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
                                     "Expires: ${sdf.format(Date(userProfile.proExpiresAt))}"
@@ -535,7 +568,8 @@ fun PreferencesScreen(
                                 }
                                 "⚡ Unlimited requests for 1 month ($expiresFormatted)"
                             }
-                            else -> "📝 3 requests limit (${userProfile.remainingRequests} remaining)"
+                            hasUnlimited -> "✨ Unlimited requests"
+                            else -> "📝 ${requestQuota.remaining} of ${requestQuota.limit} requests left this month • Resets on $resetsDateFormatted"
                         }
 
                         Text(
@@ -619,6 +653,63 @@ fun PreferencesScreen(
                                     Text("Sign Out")
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Fingerprint Login Toggle
+            item {
+                var isBioEnabled by remember {
+                    mutableStateOf(com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context))
+                }
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Fingerprint login", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = if (isBioEnabled) "Enabled for ${com.example.justfan.util.BiometricAuthManager.getSavedAccountEmail(context) ?: "this device"}" else "Disabled (Shortcut for returning users)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isBioEnabled,
+                                onCheckedChange = { checked ->
+                                    if (!checked) {
+                                        com.example.justfan.util.BiometricAuthManager.clearBiometricData(context)
+                                        isBioEnabled = false
+                                    } else {
+                                        if (userProfile.isSignedIn && !userProfile.refreshToken.isNullOrBlank()) {
+                                            val act = context as? androidx.fragment.app.FragmentActivity
+                                            if (act != null) {
+                                                com.example.justfan.util.BiometricAuthManager.promptEnableBiometric(
+                                                    activity = act,
+                                                    email = userProfile.email,
+                                                    refreshToken = userProfile.refreshToken!!,
+                                                    onSuccess = { isBioEnabled = true },
+                                                    onError = { /* ignored */ }
+                                                )
+                                            }
+                                        } else {
+                                            onOpenAuth()
+                                        }
+                                    }
+                                }
+                            )
                         }
                     }
                 }

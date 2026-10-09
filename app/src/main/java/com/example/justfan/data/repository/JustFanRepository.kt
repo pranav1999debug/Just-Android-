@@ -220,15 +220,22 @@ class JustFanRepository(
             }
 
             // 7. Fetch Active User Profile (only if signed in, strictly refresh the logged-in user's profile)
-            val currentEmail = _userProfile.value.email
-            if (_userProfile.value.isSignedIn && currentEmail.isNotBlank()) {
+            val currentProfile = _userProfile.value
+            val currentEmail = currentProfile.email
+            if (currentProfile.isSignedIn && currentEmail.isNotBlank()) {
                 val profileResult = com.example.justfan.data.remote.SupabaseClient.fetchProfile(currentEmail)
                 if (profileResult.isSuccess) {
                     profileResult.getOrNull()?.let { p ->
                         val isStrictAdmin = p.email.equals("reytherapper12@gmail.com", ignoreCase = true)
                         val updated = p.copy(
+                            // Profile rows do not contain auth session tokens. Never overwrite
+                            // the active Supabase session while refreshing profile data.
+                            id = if (p.id.isBlank()) currentProfile.id else p.id,
+                            isSignedIn = true,
                             isAdmin = isStrictAdmin,
-                            tier = if (isStrictAdmin) "Legendary" else p.tier
+                            tier = if (isStrictAdmin) "Legendary" else p.tier,
+                            accessToken = currentProfile.accessToken,
+                            refreshToken = currentProfile.refreshToken
                         )
                         _userProfile.value = updated
                         saveProfileToPrefs(updated)
@@ -672,41 +679,12 @@ class JustFanRepository(
             return Result.success(user)
         }
 
-        return if (isAdminUser && password == "Pranav19ranjan97") {
-            val adminProfile = UserProfile(
-                id = "admin_rey",
-                username = "reytherapper12",
-                email = "reytherapper12@gmail.com",
-                isSignedIn = true,
-                authMethod = "password",
-                tier = "Legendary",
-                isAdmin = true,
-                proExpiresAt = Long.MAX_VALUE,
-                accessToken = null,
-                refreshToken = null
+        Result.failure(
+            IllegalArgumentException(
+                supaResult?.exceptionOrNull()?.message
+                    ?: "Supabase sign-in failed. Check your email and password, then try again."
             )
-            _userProfile.value = adminProfile
-            saveProfileToPrefs(adminProfile)
-            Result.success(adminProfile)
-        } else if (cleanEmail.contains("@") && password.length >= 4) {
-            val user = UserProfile(
-                id = UUID.randomUUID().toString(),
-                username = cleanEmail.substringBefore("@"),
-                email = cleanEmail,
-                isSignedIn = true,
-                authMethod = "password",
-                tier = "Free",
-                isAdmin = false,
-                accessToken = null,
-                refreshToken = null
-            )
-            _userProfile.value = user
-            saveProfileToPrefs(user)
-            Result.success(user)
-        } else {
-            Result.failure(IllegalArgumentException(supaResult?.exceptionOrNull()?.message ?: "Please enter a valid email and password (min 4 characters)."))
-        }
-    }
+        )
 
     fun signInWithGoogle(
         email: String,
@@ -715,6 +693,9 @@ class JustFanRepository(
         userId: String? = null,
         refreshToken: String? = null
     ): Result<UserProfile> {
+        if (accessToken.isNullOrBlank()) {
+            return Result.failure(IllegalStateException("Complete Google OAuth sign-in through Supabase first."))
+        }
         val cleanEmail = email.trim().lowercase()
         val isAdminUser = cleanEmail == "reytherapper12@gmail.com"
         val effectiveId = when {

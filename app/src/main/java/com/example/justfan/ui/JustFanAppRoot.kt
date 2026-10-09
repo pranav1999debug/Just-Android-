@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
@@ -77,36 +78,60 @@ fun JustFanAppRoot(
     var pendingBioRefreshToken by remember { mutableStateOf<String?>(null) }
     var pendingBioEmail by remember { mutableStateOf<String?>(null) }
     var hasPromptedBioOnStart by remember { mutableStateOf(false) }
+    var startupAuthRequired by remember { mutableStateOf(false) }
+    var startupGateResolved by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Biometric Shortcut on App Start
-    LaunchedEffect(Unit) {
-        if (!hasPromptedBioOnStart && !userProfile.isSignedIn && com.example.justfan.util.BiometricAuthManager.hasSavedBiometricAccount(context)) {
-            hasPromptedBioOnStart = true
-            val act = context as? androidx.fragment.app.FragmentActivity
-            if (act != null) {
-                com.example.justfan.util.BiometricAuthManager.promptBiometricLogin(
-                    activity = act,
-                    onSuccess = { decryptedRefreshToken, email ->
-                        viewModel.refreshBiometricSession(decryptedRefreshToken, email) { success, _ ->
-                            if (!success) {
-                                isAuthDialogOpen = true
-                            }
+    // Lock the app on every cold start. A saved biometric account unlocks the
+    // existing Supabase session; otherwise the user must complete sign-in.
+    LaunchedEffect(userProfile.isSignedIn, userProfile.id) {
+        if (startupGateResolved || hasPromptedBioOnStart) return@LaunchedEffect
+        hasPromptedBioOnStart = true
+        val hasBiometricAccount = com.example.justfan.util.BiometricAuthManager.hasSavedBiometricAccount(context)
+        val activity = context as? androidx.fragment.app.FragmentActivity
+        if (hasBiometricAccount && activity != null) {
+            com.example.justfan.util.BiometricAuthManager.promptBiometricLogin(
+                activity = activity,
+                onSuccess = { decryptedRefreshToken, email ->
+                    viewModel.refreshBiometricSession(decryptedRefreshToken, email) { success, _ ->
+                        if (success) {
+                            startupGateResolved = true
+                        } else {
+                            viewModel.signOut()
+                            startupAuthRequired = true
+                            isAuthDialogOpen = true
                         }
-                    },
-                    onInvalidatedOrFailed = { _ ->
-                        isAuthDialogOpen = true
-                    },
-                    onCancel = {
-                        // User chose "Use email or Google instead"
                     }
-                )
-            }
+                },
+                onInvalidatedOrFailed = { _ ->
+                    viewModel.signOut()
+                    startupAuthRequired = true
+                    isAuthDialogOpen = true
+                },
+                onCancel = {
+                    viewModel.signOut()
+                    startupAuthRequired = true
+                    isAuthDialogOpen = true
+                }
+            )
+        } else if (userProfile.isSignedIn && userProfile.id != "guest_user" && !userProfile.accessToken.isNullOrBlank()) {
+            // Existing sessions without biometric enrollment remain usable, but
+            // first-time sign-in below will offer biometric enrollment.
+            startupGateResolved = true
+        } else {
+            startupAuthRequired = true
+            isAuthDialogOpen = true
         }
     }
 
     LaunchedEffect(userProfile.isSignedIn, userProfile.id) {
+        if (startupAuthRequired && userProfile.isSignedIn && userProfile.id != "guest_user" && !userProfile.accessToken.isNullOrBlank()) {
+            startupAuthRequired = false
+            startupGateResolved = true
+            isAuthDialogOpen = false
+            authDialogTitle = null
+        }
         if (userProfile.isSignedIn && userProfile.id != "guest_user" && pendingRequestNavigationAfterAuth) {
             pendingRequestNavigationAfterAuth = false
             currentScreen = Screen.REQUEST
@@ -149,7 +174,12 @@ fun JustFanAppRoot(
             }
             var isMoreSheetOpen by remember { mutableStateOf(false) }
 
-            Row(modifier = Modifier.fillMaxSize()) {
+            val isStartupLocked = startupAuthRequired || !startupGateResolved && hasPromptedBioOnStart
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(if (isStartupLocked) 14.dp else 0.dp)
+            ) {
                 if (isWideScreen && currentSubScreen == SubScreen.NONE) {
                     NavigationRail(
                         containerColor = if (hasCustomWallpaper) Color.Black.copy(alpha = 0.65f) else MaterialTheme.colorScheme.surface,
@@ -420,7 +450,7 @@ fun JustFanAppRoot(
                                         }
                                         Screen.REQUEST -> {
                                             BackHandler { currentScreen = Screen.HOME }
-                                            if (!userProfile.isSignedIn || userProfile.id == "guest_user") {
+                                            if (!userProfile.isSignedIn || userProfile.id == "guest_user" || userProfile.accessToken.isNullOrBlank()) {
                                                 LaunchedEffect(Unit) {
                                                     authDialogTitle = "Sign in to submit a request"
                                                     pendingRequestNavigationAfterAuth = true
@@ -449,6 +479,7 @@ fun JustFanAppRoot(
                                                     isSyncing = isSyncing,
                                                     onSyncRequests = { viewModel.refreshRequestsFromSupabase() },
                                                     onSignInRequired = {
+                                                        viewModel.signOut()
                                                         authDialogTitle = "Sign in to submit a request"
                                                         pendingRequestNavigationAfterAuth = true
                                                         isAuthDialogOpen = true
@@ -537,7 +568,8 @@ fun JustFanAppRoot(
             }
 
             val openRequestScreenWithGate: () -> Unit = {
-                if (!userProfile.isSignedIn || userProfile.id == "guest_user") {
+                if (!userProfile.isSignedIn || userProfile.id == "guest_user" || userProfile.accessToken.isNullOrBlank()) {
+                    if (userProfile.isSignedIn) viewModel.signOut()
                     authDialogTitle = "Sign in to submit a request"
                     pendingRequestNavigationAfterAuth = true
                     isAuthDialogOpen = true
@@ -594,17 +626,21 @@ fun JustFanAppRoot(
                 titleText = authDialogTitle,
                 isOpen = isAuthDialogOpen,
                 onDismiss = {
-                    isAuthDialogOpen = false
-                    authDialogTitle = null
-                    if (pendingRequestNavigationAfterAuth || currentScreen == Screen.REQUEST) {
-                        currentScreen = Screen.HOME
-                        currentSubScreen = SubScreen.NONE
+                    if (!startupAuthRequired) {
+                        isAuthDialogOpen = false
+                        authDialogTitle = null
+                        if (pendingRequestNavigationAfterAuth || currentScreen == Screen.REQUEST) {
+                            currentScreen = Screen.HOME
+                            currentSubScreen = SubScreen.NONE
+                        }
+                        pendingRequestNavigationAfterAuth = false
                     }
-                    pendingRequestNavigationAfterAuth = false
                 },
                 onSignInWithGoogle = { email, name ->
                     val res = viewModel.signInWithGoogle(email, name)
-                    if (res.isSuccess) {
+                    if (res.isSuccess && !res.getOrNull()?.accessToken.isNullOrBlank()) {
+                        startupAuthRequired = false
+                        startupGateResolved = true
                         isAuthDialogOpen = false
                         authDialogTitle = null
                         if (pendingRequestNavigationAfterAuth) {
@@ -615,11 +651,13 @@ fun JustFanAppRoot(
                         if (com.example.justfan.util.BiometricAuthManager.canAuthenticate(context) &&
                             !com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context)) {
                             val signedUser = res.getOrNull()
-                            val rToken = signedUser?.refreshToken ?: userProfile.refreshToken ?: java.util.UUID.randomUUID().toString()
+                            val rToken = signedUser?.refreshToken
                             val mail = signedUser?.email?.ifBlank { email } ?: email
-                            pendingBioRefreshToken = rToken
-                            pendingBioEmail = mail
-                            showEnableFingerprintDialog = true
+                            if (!rToken.isNullOrBlank()) {
+                                pendingBioRefreshToken = rToken
+                                pendingBioEmail = mail
+                                showEnableFingerprintDialog = true
+                            }
                         }
                     }
                 },
@@ -637,7 +675,9 @@ fun JustFanAppRoot(
                 },
                 onSignInWithEmail = { email, pass ->
                     val res = viewModel.signInWithEmail(email, pass)
-                    if (res.isSuccess) {
+                    if (res.isSuccess && !res.getOrNull()?.accessToken.isNullOrBlank()) {
+                        startupAuthRequired = false
+                        startupGateResolved = true
                         isAuthDialogOpen = false
                         authDialogTitle = null
                         if (pendingRequestNavigationAfterAuth) {
@@ -648,11 +688,13 @@ fun JustFanAppRoot(
                         if (com.example.justfan.util.BiometricAuthManager.canAuthenticate(context) &&
                             !com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context)) {
                             val signedUser = res.getOrNull()
-                            val rToken = signedUser?.refreshToken ?: userProfile.refreshToken ?: java.util.UUID.randomUUID().toString()
+                            val rToken = signedUser?.refreshToken
                             val mail = signedUser?.email?.ifBlank { email } ?: email
-                            pendingBioRefreshToken = rToken
-                            pendingBioEmail = mail
-                            showEnableFingerprintDialog = true
+                            if (!rToken.isNullOrBlank()) {
+                                pendingBioRefreshToken = rToken
+                                pendingBioEmail = mail
+                                showEnableFingerprintDialog = true
+                            }
                         }
                     }
                     res

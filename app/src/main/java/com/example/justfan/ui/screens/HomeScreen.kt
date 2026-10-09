@@ -96,19 +96,6 @@ fun HomeScreen(
         result
     }
 
-    val activeAutoPlayPostId = remember(filteredPosts, isScreenActive) {
-        if (!isScreenActive) null
-        else {
-            filteredPosts.firstOrNull {
-                com.example.justfan.ui.components.isVideoMediaUrl(it.imageUrl) ||
-                        it.contentImages.any { img -> com.example.justfan.ui.components.isVideoMediaUrl(img) } ||
-                        com.example.justfan.ui.components.isVideoMediaUrl(it.directLinkUrl) ||
-                        com.example.justfan.ui.components.isVideoMediaUrl(it.linkUrl) ||
-                        (it.title.contains("video", ignoreCase = true) && it.contentImages.isNotEmpty())
-            }?.id
-        }
-    }
-
     Column(modifier = modifier.fillMaxSize()) {
         TopHeader(
             searchQuery = searchQuery,
@@ -239,7 +226,9 @@ fun HomeScreen(
                         isFavorite = isFav,
                         onPostClick = { onPostClick(post.id) },
                         onToggleFavorite = { onToggleFavorite(post.id) },
-                        autoPlay = post.id == activeAutoPlayPostId,
+                        // Lazy grids compose visible cards on demand; every visible video
+                        // starts muted autoplay whenever the home feed is active.
+                        autoPlay = isScreenActive,
                         onDownloadClick = {
                             onIncrementClicks(post.id)
                             val targetUrl = if (post.linkUrl.isNotBlank()) post.linkUrl else post.imageUrl

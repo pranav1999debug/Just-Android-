@@ -685,6 +685,7 @@ class JustFanRepository(
                     ?: "Supabase sign-in failed. Check your email and password, then try again."
             )
         )
+    }
 
     fun signInWithGoogle(
         email: String,

@@ -445,11 +445,12 @@ object SupabaseClient {
         }
     }
 
-    suspend fun updateRequestStatusInSupabase(id: String, status: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun updateRequestStatusInSupabase(id: String, status: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
             val payload = JSONObject().apply {
                 put("status", status)
             }
@@ -459,20 +460,21 @@ object SupabaseClient {
             writer.close()
             val code = conn.responseCode
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
         } catch (e: Exception) {
             Log.e(TAG, "updateRequestStatusInSupabase error", e)
             Result.failure(e)
         }
     }
 
-    suspend fun deleteRequestFromSupabase(id: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun deleteRequestFromSupabase(id: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "DELETE")
+                conn.setRequestProperty("Authorization", "Bearer $accessToken")
             val code = conn.responseCode
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
         } catch (e: Exception) {
             Log.e(TAG, "deleteRequestFromSupabase error", e)
             Result.failure(e)
@@ -1122,11 +1124,12 @@ object SupabaseClient {
         }
     }
 
-    suspend fun fulfillRequestInSupabase(id: String, downloadLink: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun fulfillRequestInSupabase(id: String, downloadLink: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
             val payload = JSONObject().apply {
                 put("status", "delivered")
                 put("download_link", downloadLink)
@@ -1137,18 +1140,19 @@ object SupabaseClient {
             writer.close()
             val code = conn.responseCode
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
         } catch (e: Exception) {
             Log.e(TAG, "fulfillRequestInSupabase error", e)
             Result.failure(e)
         }
     }
 
-    suspend fun rejectRequestInSupabase(id: String, reason: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun rejectRequestInSupabase(id: String, reason: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "RequestfromApp?id=eq.$id"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
             val payload = JSONObject().apply {
                 put("status", "rejected")
                 put("rejection_reason", reason)
@@ -1159,7 +1163,7 @@ object SupabaseClient {
             writer.close()
             val code = conn.responseCode
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
         } catch (e: Exception) {
             Log.e(TAG, "rejectRequestInSupabase error", e)
             Result.failure(e)

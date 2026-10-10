@@ -1,5 +1,6 @@
 package com.example.justfan.ui.components
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -41,9 +42,10 @@ fun TopHeader(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .animateContentSize()
             .statusBarsPadding()
             .background(if (hasCustomWallpaper) Color.Black.copy(alpha = 0.55f) else MaterialTheme.colorScheme.background)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -148,7 +150,7 @@ fun TopHeader(
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // 2nd Line: Full-Width Search Bar to free up header space
         OutlinedTextField(
@@ -181,7 +183,7 @@ fun TopHeader(
             modifier = Modifier
                 .testTag("search_text_input")
                 .fillMaxWidth()
-                .height(50.dp)
+                .height(48.dp)
         )
     }
 }

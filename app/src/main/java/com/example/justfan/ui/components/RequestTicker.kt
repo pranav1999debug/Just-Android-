@@ -2,6 +2,7 @@ package com.example.justfan.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -42,7 +43,7 @@ fun RequestTicker(
 
     // Real delivered requests from database only (no fake sample data)
     val displayRequests = remember(requests) {
-        requests.filter { it.status == "delivered" }.ifEmpty { requests }
+        requests.filter { it.status.equals("delivered", ignoreCase = true) }
     }
 
     if (displayRequests.isEmpty()) {
@@ -53,6 +54,7 @@ fun RequestTicker(
         modifier = modifier
             .testTag("request_ticker")
             .fillMaxWidth()
+            .animateContentSize()
             .padding(horizontal = 4.dp, vertical = 6.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
         shape = RoundedCornerShape(16.dp),
@@ -103,17 +105,7 @@ fun RequestTicker(
                 items(displayRequests, key = { it.id }) { req ->
                     RequestChipItem(
                         req = req,
-                        onClick = {
-                            if (!req.downloadLink.isNullOrBlank()) {
-                                try {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
-                                } catch (_: Exception) {
-                                    selectedRequest = req
-                                }
-                            } else {
-                                selectedRequest = req
-                            }
-                        }
+                        onClick = { selectedRequest = req }
                     )
                 }
             }
@@ -139,6 +131,23 @@ fun RequestTicker(
                                 .fillMaxWidth()
                                 .height(160.dp)
                                 .clip(RoundedCornerShape(10.dp))
+                        )
+                    }
+
+                    if (!req.downloadLink.isNullOrBlank()) {
+                        Text(
+                            text = "Reference link",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = req.downloadLink,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                            modifier = Modifier.clickable {
+                                try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink))) } catch (_: Exception) {}
+                            }
                         )
                     }
 

@@ -1060,6 +1060,7 @@ private fun RequestAdminCard(
 ) {
     val isPaymentProof = request.name.contains("PAYMENT", ignoreCase = true) || request.message.contains("[PAYMENT_PROOF]", ignoreCase = true)
     var upgradedSuccessMessage by remember { mutableStateOf<String?>(null) }
+    var previewImageUrl by remember { mutableStateOf<String?>(null) }
 
     Card(
         shape = RoundedCornerShape(14.dp),
@@ -1165,9 +1166,31 @@ private fun RequestAdminCard(
                                 .fillMaxWidth()
                                 .height(160.dp)
                                 .clip(RoundedCornerShape(8.dp))
+                                .clickable { previewImageUrl = request.imageUrl }
                         )
                     }
                 }
+            }
+
+            if (previewImageUrl != null) {
+                AlertDialog(
+                    onDismissRequest = { previewImageUrl = null },
+                    title = { Text("Reference Image", fontWeight = FontWeight.Bold) },
+                    text = {
+                        AsyncImage(
+                            model = previewImageUrl,
+                            contentDescription = "Full reference image",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 460.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { previewImageUrl = null }) { Text("Close") }
+                    }
+                )
             }
 
             // Quick Admin Action: Upgrade User Account Directly from Payment Proof

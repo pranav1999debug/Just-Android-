@@ -462,11 +462,19 @@ class JustFanRepository(
         return _userProfile.value
     }
 
-    suspend fun updateRequestStatus(id: String, status: String, link: String?) {
-        requestDao.updateStatus(id, status, link)
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.updateRequestStatusInSupabase(id, status)
+    private suspend fun getAdminSession(): UserProfile? {
+        var profile = _userProfile.value
+        if (!profile.isSignedIn || !profile.isAdmin) return null
+        if (profile.accessToken.isNullOrBlank()) {
+            profile = refreshStoredSession() ?: return null
         }
+        return profile
+    }
+
+    suspend fun updateRequestStatus(id: String, status: String, link: String?) {
+        val profile = getAdminSession() ?: return
+        val result = com.example.justfan.data.remote.SupabaseClient.updateRequestStatusInSupabase(id, status, profile.accessToken!!)
+        if (result.isSuccess) requestDao.updateStatus(id, status, link)
         if (status == "delivered") {
             activityDao.insertActivity(
                 ActivityEntity(
@@ -630,6 +638,15 @@ class JustFanRepository(
     }
 
     suspend fun rejectRequest(id: String, reason: String) {
+        val profile = getAdminSession() ?: return
+        var remoteResult = com.example.justfan.data.remote.SupabaseClient.rejectRequestInSupabase(id, reason, profile.accessToken!!)
+        if (remoteResult.isFailure && remoteResult.exceptionOrNull()?.message?.contains("401") == true) {
+            val refreshed = refreshStoredSession()
+            if (refreshed != null) {
+                remoteResult = com.example.justfan.data.remote.SupabaseClient.rejectRequestInSupabase(id, reason, refreshed.accessToken!!)
+            }
+        }
+        if (remoteResult.isFailure) return
         requestDao.updateStatusWithReason(id, "rejected", null, reason)
         activityDao.insertActivity(
             ActivityEntity(
@@ -639,12 +656,18 @@ class JustFanRepository(
                 body = "Reason: $reason"
             )
         )
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.rejectRequestInSupabase(id, reason)
-        }
     }
 
     suspend fun fulfillRequest(id: String, downloadLink: String) {
+        val profile = getAdminSession() ?: return
+        var remoteResult = com.example.justfan.data.remote.SupabaseClient.fulfillRequestInSupabase(id, downloadLink, profile.accessToken!!)
+        if (remoteResult.isFailure && remoteResult.exceptionOrNull()?.message?.contains("401") == true) {
+            val refreshed = refreshStoredSession()
+            if (refreshed != null) {
+                remoteResult = com.example.justfan.data.remote.SupabaseClient.fulfillRequestInSupabase(id, downloadLink, refreshed.accessToken!!)
+            }
+        }
+        if (remoteResult.isFailure) return
         requestDao.updateStatusWithReason(id, "delivered", downloadLink, null)
         activityDao.insertActivity(
             ActivityEntity(
@@ -655,16 +678,12 @@ class JustFanRepository(
                 link = downloadLink
             )
         )
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.fulfillRequestInSupabase(id, downloadLink)
-        }
     }
 
     suspend fun deleteRequest(id: String) {
-        requestDao.deleteRequest(id)
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.deleteRequestFromSupabase(id)
-        }
+        val profile = getAdminSession() ?: return
+        val result = com.example.justfan.data.remote.SupabaseClient.deleteRequestFromSupabase(id, profile.accessToken!!)
+        if (result.isSuccess) requestDao.deleteRequest(id)
     }
 
     fun updateTheme(themeVariant: String, isDark: Boolean) {

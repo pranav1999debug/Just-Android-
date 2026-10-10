@@ -12,6 +12,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Shuffle
@@ -31,7 +34,6 @@ import com.example.justfan.ui.components.RequestTicker
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.components.TrendingCarousel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     posts: List<PostEntity>,
@@ -112,11 +114,8 @@ fun HomeScreen(
             hasCustomWallpaper = hasCustomWallpaper
         )
 
-        PullToRefreshBox(
-            isRefreshing = isSyncing,
-            onRefresh = onSyncClick,
-            modifier = Modifier.fillMaxSize()
-        ) {
+        val pullRefreshState = rememberPullRefreshState(isRefreshing = isSyncing, onRefresh = onSyncClick)
+        Box(modifier = Modifier.fillMaxSize().pullRefresh(pullRefreshState)) {
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 160.dp),
             contentPadding = PaddingValues(bottom = 80.dp),
@@ -249,6 +248,11 @@ fun HomeScreen(
                 }
             }
         }
+            PullRefreshIndicator(
+                refreshing = isSyncing,
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }

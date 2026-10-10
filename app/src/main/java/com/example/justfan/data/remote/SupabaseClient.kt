@@ -945,11 +945,12 @@ object SupabaseClient {
         }
     }
 
-    suspend fun insertPost(post: PostEntity): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun insertPost(post: PostEntity, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "posts"
             val conn = openConnection(endpoint, "POST")
             conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
 
             val payload = JSONObject().apply {
                 put("id", post.id)
@@ -976,8 +977,17 @@ object SupabaseClient {
             writer.close()
 
             val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                conn.inputStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            } else {
+                conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            }
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception("POST_CREATE_FAILED ($code): $responseBody"))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "insertPost error", e)
             Result.failure(e)

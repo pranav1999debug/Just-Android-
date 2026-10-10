@@ -519,7 +519,7 @@ class JustFanRepository(
         tags: List<String>,
         isFree: Boolean,
         isNsfw: Boolean
-    ) {
+    ): Result<Boolean> {
         val post = PostEntity(
             id = UUID.randomUUID().toString(),
             title = title,
@@ -534,6 +534,24 @@ class JustFanRepository(
             clicksCount = 0,
             likesCount = 0
         )
+        var profile = _userProfile.value
+        if (!profile.isSignedIn || !profile.isAdmin) {
+            return Result.failure(Exception("ADMIN_AUTH_REQUIRED"))
+        }
+        if (profile.accessToken.isNullOrBlank()) {
+            profile = refreshStoredSession() ?: return Result.failure(Exception("SIGN_IN_REQUIRED"))
+        }
+
+        var remoteResult = com.example.justfan.data.remote.SupabaseClient.insertPost(post, profile.accessToken!!)
+        if (remoteResult.isFailure && remoteResult.exceptionOrNull()?.message?.contains("401") == true) {
+            val refreshed = refreshStoredSession()
+            if (refreshed != null) {
+                remoteResult = com.example.justfan.data.remote.SupabaseClient.insertPost(post, refreshed.accessToken!!)
+            }
+        }
+        if (remoteResult.isFailure) return remoteResult
+
+        // Only cache the post locally after Supabase confirms the insert.
         postDao.insertPost(post)
         activityDao.insertActivity(
             ActivityEntity(
@@ -544,9 +562,7 @@ class JustFanRepository(
                 link = post.id
             )
         )
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.insertPost(post)
-        }
+        return Result.success(true)
     }
 
     suspend fun deletePost(id: String) {

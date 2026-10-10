@@ -276,8 +276,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return res
     }
 
-    fun signOut() {
-        repository.signOut()
+    fun signOut(clearBiometric: Boolean = true) {
+        repository.signOut(clearBiometric)
         _requestQuota.value = RequestQuota()
     }
 

@@ -994,11 +994,12 @@ object SupabaseClient {
         }
     }
 
-    suspend fun updatePost(post: PostEntity): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun updatePost(post: PostEntity, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val endpoint = "posts?id=eq.${post.id}"
             val conn = openConnection(endpoint, "PATCH")
             conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
 
             val payload = JSONObject().apply {
                 put("title", post.title)
@@ -1023,8 +1024,17 @@ object SupabaseClient {
             writer.close()
 
             val code = conn.responseCode
+            val responseBody = if (code in 200..299) {
+                conn.inputStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            } else {
+                conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            }
             conn.disconnect()
-            Result.success(code in 200..299)
+            if (code in 200..299) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception("POST_UPDATE_FAILED ($code): $responseBody"))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "updatePost error", e)
             Result.failure(e)

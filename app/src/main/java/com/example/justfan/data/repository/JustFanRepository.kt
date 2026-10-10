@@ -573,9 +573,22 @@ class JustFanRepository(
     }
 
     suspend fun updatePost(post: PostEntity) {
-        postDao.updatePost(post)
-        scope.launch {
-            com.example.justfan.data.remote.SupabaseClient.updatePost(post)
+        var profile = _userProfile.value
+        if (!profile.isSignedIn || !profile.isAdmin) return
+        if (profile.accessToken.isNullOrBlank()) {
+            profile = refreshStoredSession() ?: return
+        }
+        var remoteResult = com.example.justfan.data.remote.SupabaseClient.updatePost(post, profile.accessToken!!)
+        if (remoteResult.isFailure && remoteResult.exceptionOrNull()?.message?.contains("401") == true) {
+            val refreshed = refreshStoredSession()
+            if (refreshed != null) {
+                remoteResult = com.example.justfan.data.remote.SupabaseClient.updatePost(post, refreshed.accessToken!!)
+            }
+        }
+        if (remoteResult.isSuccess) {
+            postDao.updatePost(post)
+        } else {
+            android.util.Log.e("JustFanRepository", "Post update failed", remoteResult.exceptionOrNull())
         }
     }
 

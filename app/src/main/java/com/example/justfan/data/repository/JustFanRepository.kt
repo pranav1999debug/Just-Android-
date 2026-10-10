@@ -383,15 +383,22 @@ class JustFanRepository(
         message: String,
         imageUrl: String?
     ): Result<Boolean> {
-        val currentProfile = _userProfile.value
-        if (!currentProfile.isSignedIn || currentProfile.id == "guest_user" || currentProfile.accessToken.isNullOrBlank()) {
+        var currentProfile = _userProfile.value
+        if (!currentProfile.isSignedIn || currentProfile.id == "guest_user") {
             return Result.failure(Exception("SIGN_IN_REQUIRED"))
+        }
+
+        // Access tokens are short-lived. A locally signed-in profile can still
+        // exist after its access token expires, so refresh the Supabase session
+        // before the insert instead of sending the user back to the login UI.
+        if (currentProfile.accessToken.isNullOrBlank()) {
+            currentProfile = refreshStoredSession() ?: return Result.failure(Exception("SIGN_IN_REQUIRED"))
         }
 
         val deviceId = context?.let { com.example.justfan.util.getDeviceId(it) } ?: "unknown_device"
 
         // Push directly to live Supabase requests table using real user session
-        val remoteResult = com.example.justfan.data.remote.SupabaseClient.submitRequest(
+        var remoteResult = com.example.justfan.data.remote.SupabaseClient.submitRequest(
             name = name,
             email = email,
             telegram = telegram,
@@ -401,6 +408,24 @@ class JustFanRepository(
             deviceId = deviceId,
             accessToken = currentProfile.accessToken!!
         )
+
+        // A 401 means the token expired between startup and submit. Refresh
+        // once and retry the exact request with the new access token.
+        if (remoteResult.isFailure && remoteResult.exceptionOrNull()?.message == "SIGN_IN_REQUIRED") {
+            val refreshed = refreshStoredSession()
+            if (refreshed != null) {
+                remoteResult = com.example.justfan.data.remote.SupabaseClient.submitRequest(
+                    name = name,
+                    email = email,
+                    telegram = telegram,
+                    message = message,
+                    imageUrl = imageUrl,
+                    userId = refreshed.id,
+                    deviceId = deviceId,
+                    accessToken = refreshed.accessToken!!
+                )
+            }
+        }
 
         if (remoteResult.isSuccess) {
             val req = RequestEntity(
@@ -425,6 +450,16 @@ class JustFanRepository(
             syncRequestsFromSupabase()
         }
         return remoteResult
+    }
+
+    private suspend fun refreshStoredSession(): UserProfile? {
+        val current = _userProfile.value
+        val refreshToken = current.refreshToken ?: return null
+        val result = com.example.justfan.data.remote.SupabaseClient.refreshSession(refreshToken)
+        if (result.isFailure) return null
+        val session = result.getOrNull() ?: return null
+        signInWithRefreshedSession(session)
+        return _userProfile.value
     }
 
     suspend fun updateRequestStatus(id: String, status: String, link: String?) {
@@ -802,9 +837,11 @@ class JustFanRepository(
         return Result.success(profile)
     }
 
-    fun signOut() {
-        context?.let {
-            com.example.justfan.util.BiometricAuthManager.clearBiometricData(it)
+    fun signOut(clearBiometric: Boolean = true) {
+        if (clearBiometric) {
+            context?.let {
+                com.example.justfan.util.BiometricAuthManager.clearBiometricData(it)
+            }
         }
         val guest = UserProfile(
             id = "guest_user",

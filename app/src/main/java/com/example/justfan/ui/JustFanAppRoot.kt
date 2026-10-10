@@ -84,7 +84,8 @@ fun JustFanAppRoot(
     val context = androidx.compose.ui.platform.LocalContext.current
 
     // Lock the app on every cold start. A saved biometric account unlocks the
-    // existing Supabase session; otherwise the user must complete sign-in.
+    // existing Supabase session. Existing sessions without enrollment are
+    // enrolled now; guests must sign in before the app is unlocked.
     LaunchedEffect(userProfile.isSignedIn, userProfile.id) {
         if (startupGateResolved || hasPromptedBioOnStart) return@LaunchedEffect
         hasPromptedBioOnStart = true
@@ -98,26 +99,43 @@ fun JustFanAppRoot(
                         if (success) {
                             startupGateResolved = true
                         } else {
-                            viewModel.signOut()
+                            viewModel.signOut(clearBiometric = false)
                             startupAuthRequired = true
                             isAuthDialogOpen = true
                         }
                     }
                 },
                 onInvalidatedOrFailed = { _ ->
-                    viewModel.signOut()
+                    viewModel.signOut(clearBiometric = false)
                     startupAuthRequired = true
                     isAuthDialogOpen = true
                 },
                 onCancel = {
-                    viewModel.signOut()
+                    viewModel.signOut(clearBiometric = false)
                     startupAuthRequired = true
                     isAuthDialogOpen = true
                 }
             )
+        } else if (userProfile.isSignedIn && userProfile.id != "guest_user" && activity != null &&
+            !userProfile.refreshToken.isNullOrBlank() &&
+            com.example.justfan.util.BiometricAuthManager.canAuthenticate(context)) {
+            startupAuthRequired = true
+            com.example.justfan.util.BiometricAuthManager.promptEnableBiometric(
+                activity = activity,
+                email = userProfile.email,
+                refreshToken = userProfile.refreshToken!!,
+                onSuccess = {
+                    startupAuthRequired = false
+                    startupGateResolved = true
+                },
+                onError = {
+                    isAuthDialogOpen = true
+                    authDialogTitle = "Biometric verification required"
+                }
+            )
         } else if (userProfile.isSignedIn && userProfile.id != "guest_user" && !userProfile.accessToken.isNullOrBlank()) {
-            // Existing sessions without biometric enrollment remain usable, but
-            // first-time sign-in below will offer biometric enrollment.
+            // Devices without biometric hardware can use the valid Supabase
+            // session directly.
             startupGateResolved = true
         } else {
             startupAuthRequired = true
@@ -479,13 +497,13 @@ fun JustFanAppRoot(
                                                     isSyncing = isSyncing,
                                                     onSyncRequests = { viewModel.refreshRequestsFromSupabase() },
                                                     onSignInRequired = {
-                                                        viewModel.signOut()
+                                                        viewModel.signOut(clearBiometric = false)
                                                         authDialogTitle = "Sign in to submit a request"
                                                         pendingRequestNavigationAfterAuth = true
                                                         isAuthDialogOpen = true
                                                     },
                                                     onUserMismatch = {
-                                                        viewModel.signOut()
+                                                        viewModel.signOut(clearBiometric = false)
                                                         authDialogTitle = "Sign in to submit a request"
                                                         pendingRequestNavigationAfterAuth = true
                                                         isAuthDialogOpen = true
@@ -569,7 +587,7 @@ fun JustFanAppRoot(
 
             val openRequestScreenWithGate: () -> Unit = {
                 if (!userProfile.isSignedIn || userProfile.id == "guest_user" || userProfile.accessToken.isNullOrBlank()) {
-                    if (userProfile.isSignedIn) viewModel.signOut()
+                    if (userProfile.isSignedIn) viewModel.signOut(clearBiometric = false)
                     authDialogTitle = "Sign in to submit a request"
                     pendingRequestNavigationAfterAuth = true
                     isAuthDialogOpen = true

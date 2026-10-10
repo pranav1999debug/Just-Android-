@@ -34,6 +34,7 @@ import com.example.justfan.ui.components.RequestTicker
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.components.TrendingCarousel
 
+@OptIn(androidx.compose.material.ExperimentalMaterialApi::class)
 @Composable
 fun HomeScreen(
     posts: List<PostEntity>,
@@ -114,7 +115,7 @@ fun HomeScreen(
             hasCustomWallpaper = hasCustomWallpaper
         )
 
-        val pullRefreshState = rememberPullRefreshState(isRefreshing = isSyncing, onRefresh = onSyncClick)
+        val pullRefreshState = rememberPullRefreshState(refreshing = isSyncing, onRefresh = onSyncClick)
         Box(modifier = Modifier.fillMaxSize().pullRefresh(pullRefreshState)) {
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 160.dp),

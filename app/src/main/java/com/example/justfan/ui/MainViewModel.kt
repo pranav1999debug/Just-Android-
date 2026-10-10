@@ -85,6 +85,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun checkForAppUpdate(currentVersion: String, onResult: (AppVersion?) -> Unit) {
+        viewModelScope.launch {
+            val remote = com.example.justfan.data.remote.SupabaseClient.fetchLatestAppVersion()
+                .getOrNull()
+            onResult(remote?.takeIf { isVersionNewer(it.version, currentVersion) && it.downloadLink.isNotBlank() })
+        }
+    }
+
+    private fun isVersionNewer(remote: String, local: String): Boolean {
+        val a = remote.split('.').map { it.toIntOrNull() ?: 0 }
+        val b = local.split('.').map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(a.size, b.size)) {
+            val remotePart = a.getOrElse(i) { 0 }
+            val localPart = b.getOrElse(i) { 0 }
+            if (remotePart != localPart) return remotePart > localPart
+        }
+        return false
+    }
+
     fun getCommentsForPost(postId: String): Flow<List<CommentEntity>> =
         repository.getCommentsForPost(postId)
 

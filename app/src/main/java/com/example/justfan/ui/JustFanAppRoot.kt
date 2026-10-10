@@ -1,5 +1,7 @@
 package com.example.justfan.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
@@ -80,6 +82,8 @@ fun JustFanAppRoot(
     var hasPromptedBioOnStart by remember { mutableStateOf(false) }
     var startupAuthRequired by remember { mutableStateOf(false) }
     var startupGateResolved by remember { mutableStateOf(false) }
+    var availableUpdate by remember { mutableStateOf<com.example.justfan.data.model.AppVersion?>(null) }
+    var hasCheckedAppVersion by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -155,6 +159,15 @@ fun JustFanAppRoot(
             currentScreen = Screen.REQUEST
             currentSubScreen = SubScreen.NONE
             isAuthDialogOpen = false
+        }
+    }
+
+    LaunchedEffect(startupGateResolved) {
+        if (startupGateResolved && !hasCheckedAppVersion) {
+            hasCheckedAppVersion = true
+            viewModel.checkForAppUpdate(com.example.justfan.BuildConfig.VERSION_NAME) { update ->
+                availableUpdate = update
+            }
         }
     }
 
@@ -634,6 +647,23 @@ fun JustFanAppRoot(
                         currentSubScreen = SubScreen.NONE
                         currentScreen = Screen.SETTINGS
                     }
+                )
+            }
+
+            if (availableUpdate != null) {
+                val update = availableUpdate!!
+                AlertDialog(
+                    onDismissRequest = { availableUpdate = null },
+                    icon = { Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    title = { Text("New version detected") },
+                    text = { Text("Version ${update.version} is available. Update now to get the latest features and fixes?") },
+                    confirmButton = {
+                        Button(onClick = {
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadLink))) } catch (_: Exception) { }
+                            availableUpdate = null
+                        }) { Text("Update") }
+                    },
+                    dismissButton = { TextButton(onClick = { availableUpdate = null }) { Text("Cancel") } }
                 )
             }
 

@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.justfan.BuildConfig
 import com.example.justfan.data.model.CollectionEntity
 import com.example.justfan.data.model.CommentEntity
+import com.example.justfan.data.model.AppVersion
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserProfile
@@ -41,6 +42,25 @@ object SupabaseClient {
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Prefer", "return=representation")
         return connection
+    }
+
+    suspend fun fetchLatestAppVersion(): Result<AppVersion?> = withContext(Dispatchers.IO) {
+        try {
+            val conn = openConnection("app_version?select=uid,version,download_link&order=version.desc&limit=1", "GET")
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                conn.disconnect()
+                return@withContext Result.failure(Exception("APP_VERSION_CHECK_FAILED ($code)"))
+            }
+            val rows = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
+            conn.disconnect()
+            if (rows.length() == 0) return@withContext Result.success(null)
+            val row = rows.getJSONObject(0)
+            Result.success(AppVersion(row.optString("uid"), row.optString("version"), row.optString("download_link")))
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchLatestAppVersion error", e)
+            Result.failure(e)
+        }
     }
 
     suspend fun fetchPosts(limit: Int = 1000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {

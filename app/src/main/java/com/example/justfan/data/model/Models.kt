@@ -130,6 +130,12 @@ data class RequestQuota(
     val resetsAt: String? = null
 )
 
+data class AppVersion(
+    val uid: String,
+    val version: String,
+    val downloadLink: String
+)
+
 data class UserProfile(
     val id: String = "guest_user",
     val username: String = "Guest Fan",

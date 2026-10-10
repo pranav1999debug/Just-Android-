@@ -31,6 +31,7 @@ import com.example.justfan.ui.components.RequestTicker
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.components.TrendingCarousel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     posts: List<PostEntity>,
@@ -111,6 +112,11 @@ fun HomeScreen(
             hasCustomWallpaper = hasCustomWallpaper
         )
 
+        PullToRefreshBox(
+            isRefreshing = isSyncing,
+            onRefresh = onSyncClick,
+            modifier = Modifier.fillMaxSize()
+        ) {
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 160.dp),
             contentPadding = PaddingValues(bottom = 80.dp),
@@ -242,6 +248,7 @@ fun HomeScreen(
                     )
                 }
             }
+        }
         }
     }
 }

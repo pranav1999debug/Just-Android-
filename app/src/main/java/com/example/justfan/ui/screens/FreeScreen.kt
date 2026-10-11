@@ -103,6 +103,7 @@ fun FreeScreen(
                     ContentCard(
                         post = post,
                         isFavorite = favoritePostIds.contains(post.id),
+                        autoPlay = true,
                         onPostClick = { onPostClick(post.id) },
                         onToggleFavorite = { onToggleFavorite(post.id) },
                         onDownloadClick = {

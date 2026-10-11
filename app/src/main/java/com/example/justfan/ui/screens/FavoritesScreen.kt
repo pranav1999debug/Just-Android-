@@ -117,6 +117,7 @@ fun FavoritesScreen(
                             ContentCard(
                                 post = post,
                                 isFavorite = true,
+                                autoPlay = true,
                                 onPostClick = { onPostClick(post.id) },
                                 onToggleFavorite = { onToggleFavorite(post.id) },
                                 onDownloadClick = { onPostClick(post.id) }

@@ -39,6 +39,8 @@ import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 import com.example.justfan.ui.theme.ThemeEmerald
+import com.example.justfan.ui.components.InlineVideoPreview
+import com.example.justfan.ui.components.isVideoMediaUrl
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -910,12 +912,26 @@ private fun PostsCrudTab(
                                 .size(64.dp)
                                 .clip(RoundedCornerShape(8.dp))
                         ) {
-                            AsyncImage(
-                                model = post.imageUrl,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            val contentVideoUrl = listOfNotNull(
+                                post.imageUrl,
+                                post.contentImages.firstOrNull(),
+                                post.directLinkUrl,
+                                post.linkUrl
+                            ).firstOrNull(::isVideoMediaUrl)
+                            if (contentVideoUrl != null) {
+                                InlineVideoPreview(
+                                    videoUrl = contentVideoUrl,
+                                    thumbnailUrl = post.imageUrl,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                AsyncImage(
+                                    model = post.imageUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(12.dp))

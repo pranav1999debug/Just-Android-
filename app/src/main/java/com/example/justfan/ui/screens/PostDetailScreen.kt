@@ -35,11 +35,16 @@ import android.content.Context
 import android.widget.Toast
 import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.PostEntity
+import com.example.justfan.ui.components.InlineVideoPreview
 import com.example.justfan.ui.components.VideoPlayerView
 import com.example.justfan.ui.components.isVideoMediaUrl
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.ThemeEmerald
+
+private fun postVideoUrl(post: PostEntity): String? = (
+    listOf(post.imageUrl) + post.contentImages + listOfNotNull(post.directLinkUrl, post.linkUrl)
+).firstOrNull(::isVideoMediaUrl)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -633,12 +638,21 @@ fun PostDetailScreen(
                                     .clickable { onSelectPost(sim.id) }
                             ) {
                                 Box(modifier = Modifier.fillMaxSize()) {
-                                    AsyncImage(
-                                        model = sim.imageUrl,
-                                        contentDescription = sim.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                    val videoUrl = postVideoUrl(sim)
+                                    if (videoUrl != null) {
+                                        InlineVideoPreview(
+                                            videoUrl = videoUrl,
+                                            thumbnailUrl = sim.imageUrl,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        AsyncImage(
+                                            model = sim.imageUrl,
+                                            contentDescription = sim.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                     Box(
                                         modifier = Modifier
                                             .align(Alignment.BottomCenter)
@@ -691,13 +705,22 @@ fun PostDetailScreen(
                                     .clickable { onSelectPost(disc.id) }
                             ) {
                                 Box(modifier = Modifier.fillMaxSize()) {
-                                    val isDiscVideo = isVideoMediaUrl(disc.imageUrl)
-                                    AsyncImage(
-                                        model = disc.imageUrl,
-                                        contentDescription = disc.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                    val videoUrl = postVideoUrl(disc)
+                                    val isDiscVideo = videoUrl != null
+                                    if (videoUrl != null) {
+                                        InlineVideoPreview(
+                                            videoUrl = videoUrl,
+                                            thumbnailUrl = disc.imageUrl,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        AsyncImage(
+                                            model = disc.imageUrl,
+                                            contentDescription = disc.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                     if (isDiscVideo) {
                                         Surface(
                                             color = Color.Red.copy(alpha = 0.85f),
@@ -768,13 +791,22 @@ fun PostDetailScreen(
                                     .clickable { onSelectPost(tr.id) }
                             ) {
                                 Box(modifier = Modifier.fillMaxSize()) {
-                                    val isTrVideo = isVideoMediaUrl(tr.imageUrl)
-                                    AsyncImage(
-                                        model = tr.imageUrl,
-                                        contentDescription = tr.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                    val videoUrl = postVideoUrl(tr)
+                                    val isTrVideo = videoUrl != null
+                                    if (videoUrl != null) {
+                                        InlineVideoPreview(
+                                            videoUrl = videoUrl,
+                                            thumbnailUrl = tr.imageUrl,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        AsyncImage(
+                                            model = tr.imageUrl,
+                                            contentDescription = tr.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                     if (isTrVideo) {
                                         Surface(
                                             color = Color.Red.copy(alpha = 0.85f),

@@ -524,6 +524,7 @@ class JustFanRepository(
         contentImages: List<String> = emptyList(),
         linkUrl: String,
         premiumLinkUrl: String?,
+        directLinkUrl: String?,
         tags: List<String>,
         isFree: Boolean,
         isNsfw: Boolean
@@ -536,6 +537,7 @@ class JustFanRepository(
             contentImages = contentImages,
             linkUrl = linkUrl,
             premiumLinkUrl = premiumLinkUrl,
+            directLinkUrl = directLinkUrl,
             tags = tags,
             isFree = isFree,
             isNsfw = isNsfw,

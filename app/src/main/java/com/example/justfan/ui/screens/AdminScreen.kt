@@ -49,7 +49,7 @@ fun AdminScreen(
     posts: List<PostEntity>,
     requests: List<RequestEntity>,
     users: List<UserEntity>,
-    onCreatePost: (title: String, desc: String, img: String, contentImages: List<String>, link: String, premLink: String?, tags: List<String>, isFree: Boolean, isNsfw: Boolean) -> Unit,
+    onCreatePost: (title: String, desc: String, img: String, contentImages: List<String>, link: String, premLink: String?, directLink: String?, tags: List<String>, isFree: Boolean, isNsfw: Boolean) -> Unit,
     onUpdatePost: (PostEntity) -> Unit,
     onDeletePost: (String) -> Unit,
     onUpdateUserTier: (userId: String, newTier: String) -> Unit,
@@ -275,6 +275,7 @@ fun AdminScreen(
                     newPost.contentImages,
                     newPost.linkUrl,
                     newPost.premiumLinkUrl,
+                    newPost.directLinkUrl,
                     newPost.tags,
                     newPost.isFree,
                     newPost.isNsfw

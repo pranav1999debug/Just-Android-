@@ -197,12 +197,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         contentImages: List<String> = emptyList(),
         link: String,
         premLink: String?,
+        directLink: String?,
         tags: List<String>,
         isFree: Boolean,
         isNsfw: Boolean
     ) {
         viewModelScope.launch {
-            repository.createPost(title, desc, img, contentImages, link, premLink, tags, isFree, isNsfw)
+            repository.createPost(title, desc, img, contentImages, link, premLink, directLink, tags, isFree, isNsfw)
         }
     }
 

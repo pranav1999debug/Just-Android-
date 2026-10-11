@@ -127,7 +127,7 @@ fun HomeScreen(
                 .padding(horizontal = 12.dp)
         ) {
             // Live Delivered Requests Ticker (Top of Everything, only if real delivered requests exist)
-            if (requests.any { it.status == "delivered" }) {
+            if (requests.any { it.status.equals("delivered", true) || it.status.equals("replied", true) }) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     RequestTicker(
                         requests = requests,

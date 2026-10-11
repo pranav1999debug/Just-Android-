@@ -877,8 +877,9 @@ class JustFanRepository(
             tier = if (isRey) "Legendary" else "Free",
             isAdmin = isRey,
             proExpiresAt = if (isRey) Long.MAX_VALUE else 0L,
-            accessToken = null,
-            refreshToken = null
+            // Passkey unlocks the app; preserve the real Supabase session for CRUD.
+            accessToken = if (isRey) current.accessToken else null,
+            refreshToken = if (isRey) current.refreshToken else null
         )
         _userProfile.value = profile
         saveProfileToPrefs(profile)

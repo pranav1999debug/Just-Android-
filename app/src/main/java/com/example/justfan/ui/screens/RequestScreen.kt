@@ -963,7 +963,7 @@ fun RequestScreen(
                                                 .padding(6.dp)
                                         ) {
                                             AsyncImage(
-                                                model = req.imageUrl,
+                                                model = requestImageModel(req.imageUrl),
                                                 contentDescription = "Imgchest Reference",
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier
@@ -1159,4 +1159,12 @@ fun RequestScreen(
             isSubmitting = isSubmittingSocial
         )
     }
+}
+
+
+private fun requestImageModel(url: String?): String? {
+    if (url.isNullOrBlank()) return null
+    return if (url.contains("imgchest", ignoreCase = true)) {
+        "https://images.weserv.nl/?url=${Uri.encode(url)}"
+    } else url
 }

@@ -43,7 +43,7 @@ fun RequestTicker(
 
     // Real delivered requests from database only (no fake sample data)
     val displayRequests = remember(requests) {
-        requests.filter { it.status.equals("delivered", ignoreCase = true) }
+        requests.filter { it.status.equals("delivered", ignoreCase = true) || it.status.equals("replied", ignoreCase = true) }
     }
 
     if (displayRequests.isEmpty()) {
@@ -124,7 +124,7 @@ fun RequestTicker(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (!req.imageUrl.isNullOrBlank()) {
                         AsyncImage(
-                            model = req.imageUrl,
+                            model = requestImageModel(req.imageUrl),
                             contentDescription = req.name,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
@@ -229,7 +229,7 @@ private fun RequestChipItem(
             // Circular Avatar
             if (!req.imageUrl.isNullOrBlank()) {
                 AsyncImage(
-                    model = req.imageUrl,
+                    model = requestImageModel(req.imageUrl),
                     contentDescription = req.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -267,4 +267,11 @@ private fun RequestChipItem(
             }
         }
     }
+}
+
+private fun requestImageModel(url: String?): String? {
+    if (url.isNullOrBlank()) return null
+    return if (url.contains("imgchest", ignoreCase = true)) {
+        "https://images.weserv.nl/?url=${Uri.encode(url)}"
+    } else url
 }

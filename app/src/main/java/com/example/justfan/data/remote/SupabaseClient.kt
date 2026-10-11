@@ -195,6 +195,8 @@ object SupabaseClient {
                     val telegram = if (obj.has("telegram_username") && !obj.isNull("telegram_username")) obj.optString("telegram_username", "").trim() else null
                     val imageUrl = if (obj.has("image_url") && !obj.isNull("image_url")) obj.optString("image_url").trim().ifBlank { null } else null
                     val status = obj.optString("status", "pending")
+                    val downloadLink = if (obj.has("download_link") && !obj.isNull("download_link")) obj.optString("download_link").trim().ifBlank { null } else null
+                    val rejectionReason = if (obj.has("rejection_reason") && !obj.isNull("rejection_reason")) obj.optString("rejection_reason").trim().ifBlank { null } else null
                     val createdAtStr = obj.optString("created_at", "")
 
                     list.add(
@@ -206,7 +208,8 @@ object SupabaseClient {
                             message = rawMsg,
                             imageUrl = imageUrl,
                             status = status,
-                            downloadLink = null,
+                            downloadLink = downloadLink,
+                            rejectionReason = rejectionReason,
                             createdAt = parseIsoToMillis(createdAtStr)
                         )
                     )
@@ -479,8 +482,9 @@ object SupabaseClient {
             writer.flush()
             writer.close()
             val code = conn.responseCode
+            val responseBody = readResponseBody(conn, code)
             conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
         } catch (e: Exception) {
             Log.e(TAG, "updateRequestStatusInSupabase error", e)
             Result.failure(e)
@@ -493,8 +497,9 @@ object SupabaseClient {
             val conn = openConnection(endpoint, "DELETE")
                 conn.setRequestProperty("Authorization", "Bearer $accessToken")
             val code = conn.responseCode
+            val responseBody = readResponseBody(conn, code)
             conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
         } catch (e: Exception) {
             Log.e(TAG, "deleteRequestFromSupabase error", e)
             Result.failure(e)
@@ -1159,8 +1164,9 @@ object SupabaseClient {
             writer.flush()
             writer.close()
             val code = conn.responseCode
+            val responseBody = readResponseBody(conn, code)
             conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
         } catch (e: Exception) {
             Log.e(TAG, "fulfillRequestInSupabase error", e)
             Result.failure(e)
@@ -1182,11 +1188,21 @@ object SupabaseClient {
             writer.flush()
             writer.close()
             val code = conn.responseCode
+            val responseBody = readResponseBody(conn, code)
             conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code)"))
+            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
         } catch (e: Exception) {
             Log.e(TAG, "rejectRequestInSupabase error", e)
             Result.failure(e)
+        }
+    }
+
+    private fun readResponseBody(conn: HttpURLConnection, code: Int): String {
+        return try {
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        } catch (_: Exception) {
+            ""
         }
     }
 

@@ -152,7 +152,7 @@ object MediaUploadClient {
 
     /**
      * Direct media upload with automatic host routing:
-     * - Images -> Imgchest
+     * - Images -> Catbox (direct CDN URLs accessible from Android)
      * - Videos -> Catbox
      * Holds URLs in memory, saves to `upload_requests` via Supabase REST API,
      * and optionally triggers `post-to-buffer` Edge Function if requested.
@@ -203,9 +203,10 @@ object MediaUploadClient {
 
         var primaryRequestId = ""
 
-        // 1. Process Images via Imgchest
+        // 1. Process Images via Catbox. Imgchest CDN URLs are protected by
+        // Cloudflare challenges and do not render reliably in Android Coil.
         if (imageUris.isNotEmpty()) {
-            val host = "imgchest"
+            val host = "catbox"
             val mediaType = "image"
             val reqId = createUploadRequestRecord(
                 host = host,
@@ -218,14 +219,19 @@ object MediaUploadClient {
                 primaryRequestId = reqId
             }
 
-            val imgResult = ImgchestUploader.uploadImagesDirect(
-                context = context,
-                uris = imageUris,
-                title = effectiveTitle
-            )
+            val urls = mutableListOf<String>()
+            var imageError: String? = null
+            for (imageUri in imageUris) {
+                val imageResult = uploadVideoToCatbox(context, imageUri)
+                if (imageResult.isSuccess && !imageResult.getOrNull().isNullOrBlank()) {
+                    urls.add(imageResult.getOrNull()!!)
+                } else {
+                    imageError = imageResult.exceptionOrNull()?.message ?: "Catbox image upload failed"
+                    break
+                }
+            }
 
-            if (imgResult.isSuccess) {
-                val urls = imgResult.getOrNull() ?: emptyList()
+            if (imageError == null && urls.size == imageUris.size) {
                 allUploadedUrls.addAll(urls)
                 updateUploadRequestRecord(
                     id = reqId,
@@ -244,7 +250,7 @@ object MediaUploadClient {
                     )
                 )
             } else {
-                val err = imgResult.exceptionOrNull()?.message ?: "Imgchest upload failed"
+                val err = imageError ?: "Catbox image upload failed"
                 updateUploadRequestRecord(
                     id = reqId,
                     status = "failed",

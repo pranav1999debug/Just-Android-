@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +29,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
@@ -41,9 +44,11 @@ fun RequestTicker(
     val context = LocalContext.current
     var selectedRequest by remember { mutableStateOf<RequestEntity?>(null) }
 
-    // Real delivered requests from database only (no fake sample data)
+    // Real requests from database: delivered/replied first, followed by pending/in_progress
     val displayRequests = remember(requests) {
-        requests.filter { it.status.equals("delivered", ignoreCase = true) || it.status.equals("replied", ignoreCase = true) }
+        val delivered = requests.filter { it.status.equals("delivered", ignoreCase = true) || it.status.equals("replied", ignoreCase = true) }
+        val pending = requests.filter { !it.status.equals("delivered", ignoreCase = true) && !it.status.equals("replied", ignoreCase = true) }
+        (delivered + pending).take(30)
     }
 
     if (displayRequests.isEmpty()) {
@@ -61,7 +66,7 @@ fun RequestTicker(
         tonalElevation = 2.dp
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Header: ✦ LIVE DELIVERED    Archive
+            // Header: ✦ COMMUNITY REQUESTS    Archive
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -76,7 +81,7 @@ fun RequestTicker(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "LIVE DELIVERED",
+                        text = "COMMUNITY REQUESTS",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Black,
                         letterSpacing = 1.sp,
@@ -123,14 +128,69 @@ fun RequestTicker(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (!req.imageUrl.isNullOrBlank()) {
-                        AsyncImage(
-                            model = requestImageModel(req.imageUrl),
+                        SubcomposeAsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(req.imageUrl)
+                                .crossfade(true)
+                                .build(),
                             contentDescription = req.name,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(160.dp)
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(10.dp)),
+                            loading = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                }
+                            },
+                            error = {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(100.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxSize().padding(10.dp),
+                                        verticalArrangement = Arrangement.Center,
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Image,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Reference Archive Media",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = req.imageUrl,
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.clickable {
+                                                try {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
+                                                } catch (_: Exception) {}
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         )
                     }
 
@@ -159,7 +219,7 @@ fun RequestTicker(
 
                     Surface(
                         color = when (req.status.lowercase()) {
-                            "delivered" -> SuccessGreen.copy(alpha = 0.2f)
+                            "delivered", "replied" -> SuccessGreen.copy(alpha = 0.2f)
                             "in_progress" -> GoldAccent.copy(alpha = 0.2f)
                             else -> MaterialTheme.colorScheme.primaryContainer
                         },
@@ -168,7 +228,7 @@ fun RequestTicker(
                         Text(
                             text = "STATUS: ${req.status.replace("_", " ").uppercase()}",
                             color = when (req.status.lowercase()) {
-                                "delivered" -> SuccessGreen
+                                "delivered", "replied" -> SuccessGreen
                                 "in_progress" -> GoldAccent
                                 else -> MaterialTheme.colorScheme.primary
                             },
@@ -227,14 +287,51 @@ private fun RequestChipItem(
             modifier = Modifier.padding(start = 4.dp, end = 14.dp, top = 4.dp, bottom = 4.dp)
         ) {
             // Circular Avatar
-            if (!req.imageUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = requestImageModel(req.imageUrl),
+            val initials = remember(req.name) {
+                req.name.trim().take(1).uppercase().ifBlank { "R" }
+            }
+            val isDirectImage = remember(req.imageUrl) {
+                val url = req.imageUrl.orEmpty()
+                url.isNotBlank() && !url.contains("instagram.com") && !url.contains("onlyfans.com") && !url.contains("fansly.com")
+            }
+            if (isDirectImage) {
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(req.imageUrl)
+                        .crossfade(true)
+                        .build(),
                     contentDescription = req.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .size(40.dp)
-                        .clip(CircleShape)
+                        .clip(CircleShape),
+                    loading = {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        }
+                    },
+                    error = {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = initials,
+                                fontWeight = FontWeight.Black,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 16.sp
+                            )
+                        }
+                    }
                 )
             } else {
                 Box(
@@ -244,11 +341,11 @@ private fun RequestChipItem(
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                    Text(
+                        text = initials,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 16.sp
                     )
                 }
             }
@@ -264,14 +361,18 @@ private fun RequestChipItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Text(
+                    text = req.status.replace("_", " ").uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when (req.status.lowercase()) {
+                        "delivered", "replied" -> SuccessGreen
+                        "in_progress" -> GoldAccent
+                        else -> MaterialTheme.colorScheme.primary
+                    }
+                )
             }
         }
     }
-}
-
-private fun requestImageModel(url: String?): String? {
-    if (url.isNullOrBlank()) return null
-    return if (url.contains("imgchest", ignoreCase = true)) {
-        "https://images.weserv.nl/?url=${Uri.encode(url)}"
-    } else url
 }

@@ -481,48 +481,30 @@ fun JustFanAppRoot(
                                         }
                                         Screen.REQUEST -> {
                                             BackHandler { currentScreen = Screen.HOME }
-                                            if (!userProfile.isSignedIn || userProfile.id == "guest_user" || userProfile.accessToken.isNullOrBlank()) {
-                                                LaunchedEffect(Unit) {
+                                            RequestScreen(
+                                                userProfile = userProfile,
+                                                requestQuota = requestQuota,
+                                                requests = requests,
+                                                onSubmitRequest = { name, email, telegram, message, imageUrl, onResult ->
+                                                    viewModel.submitRequest(name, email, telegram, message, imageUrl, onResult)
+                                                },
+                                                onViewGallery = { currentSubScreen = SubScreen.GALLERY },
+                                                onUpgradeClick = { currentSubScreen = SubScreen.PRICING },
+                                                isSyncing = isSyncing,
+                                                onSyncRequests = { viewModel.refreshRequestsFromSupabase() },
+                                                onSignInRequired = {
                                                     authDialogTitle = "Sign in to submit a request"
                                                     pendingRequestNavigationAfterAuth = true
                                                     isAuthDialogOpen = true
-                                                }
-                                                Box(
-                                                    modifier = Modifier.fillMaxSize(),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(
-                                                        text = "Sign in to submit a request",
-                                                        style = MaterialTheme.typography.bodyLarge,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            } else {
-                                                RequestScreen(
-                                                    userProfile = userProfile,
-                                                    requestQuota = requestQuota,
-                                                    requests = requests,
-                                                    onSubmitRequest = { name, email, telegram, message, imageUrl, onResult ->
-                                                        viewModel.submitRequest(name, email, telegram, message, imageUrl, onResult)
-                                                    },
-                                                    onViewGallery = { currentSubScreen = SubScreen.GALLERY },
-                                                    onUpgradeClick = { currentSubScreen = SubScreen.PRICING },
-                                                    isSyncing = isSyncing,
-                                                    onSyncRequests = { viewModel.refreshRequestsFromSupabase() },
-                                                    onSignInRequired = {
-                                                        viewModel.signOut(clearBiometric = false)
-                                                        authDialogTitle = "Sign in to submit a request"
-                                                        pendingRequestNavigationAfterAuth = true
-                                                        isAuthDialogOpen = true
-                                                    },
-                                                    onUserMismatch = {
-                                                        viewModel.signOut(clearBiometric = false)
-                                                        authDialogTitle = "Sign in to submit a request"
-                                                        pendingRequestNavigationAfterAuth = true
-                                                        isAuthDialogOpen = true
-                                                    }
-                                                )
-                                            }
+                                                },
+                                                onUserMismatch = {
+                                                    authDialogTitle = "Sign in to submit a request"
+                                                    pendingRequestNavigationAfterAuth = true
+                                                    isAuthDialogOpen = true
+                                                },
+                                                onDeleteRequest = { id -> viewModel.deleteRequest(id) },
+                                                onEditRequest = { id, name, msg, img -> viewModel.editRequest(id, name, msg, img) }
+                                            )
                                         }
                                         Screen.FAVORITES -> {
                                             BackHandler { currentScreen = Screen.HOME }

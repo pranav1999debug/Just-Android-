@@ -1,8 +1,12 @@
 package com.example.justfan.ui.theme
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 
 @Composable
@@ -11,7 +15,12 @@ fun JustFanTheme(
     darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val accentColor = AVAILABLE_THEMES.find { it.id == themeVariant }?.color ?: ThemeCyan
+    val targetColor = AVAILABLE_THEMES.find { it.id == themeVariant }?.color ?: ThemeCyan
+    val accentColor by animateColorAsState(
+        targetValue = targetColor,
+        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+        label = "accentColorTheme"
+    )
 
     val colorScheme = if (darkTheme) {
         darkColorScheme(

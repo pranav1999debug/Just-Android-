@@ -111,6 +111,9 @@ interface RequestDao {
     @Query("UPDATE requests SET status = :status, downloadLink = :link, rejectionReason = :reason WHERE id = :id")
     suspend fun updateStatusWithReason(id: String, status: String, link: String?, reason: String? = null)
 
+    @Query("UPDATE requests SET name = :name, message = :message, imageUrl = :imageUrl WHERE id = :id")
+    suspend fun updateDetails(id: String, name: String, message: String, imageUrl: String?)
+
     @Query("DELETE FROM requests WHERE id = :id")
     suspend fun deleteRequest(id: String)
 

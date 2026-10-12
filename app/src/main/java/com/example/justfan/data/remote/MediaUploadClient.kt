@@ -15,6 +15,11 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 data class BufferChannel(
     val id: String,
@@ -152,7 +157,7 @@ object MediaUploadClient {
 
     /**
      * Direct media upload with automatic host routing:
-     * - Images -> Catbox (direct CDN URLs accessible from Android)
+     * - Images -> Imgchest
      * - Videos -> Catbox
      * Holds URLs in memory, saves to `upload_requests` via Supabase REST API,
      * and optionally triggers `post-to-buffer` Edge Function if requested.
@@ -203,10 +208,9 @@ object MediaUploadClient {
 
         var primaryRequestId = ""
 
-        // 1. Process Images via Catbox. Imgchest CDN URLs are protected by
-        // Cloudflare challenges and do not render reliably in Android Coil.
+        // 1. Process Images via Imgchest
         if (imageUris.isNotEmpty()) {
-            val host = "catbox"
+            val host = "imgchest"
             val mediaType = "image"
             val reqId = createUploadRequestRecord(
                 host = host,
@@ -219,38 +223,55 @@ object MediaUploadClient {
                 primaryRequestId = reqId
             }
 
-            val urls = mutableListOf<String>()
-            var imageError: String? = null
-            for (imageUri in imageUris) {
-                val imageResult = uploadVideoToCatbox(context, imageUri)
-                if (imageResult.isSuccess && !imageResult.getOrNull().isNullOrBlank()) {
-                    urls.add(imageResult.getOrNull()!!)
+            val imgResult = ImgchestUploader.uploadImagesDirect(
+                context = context,
+                uris = imageUris,
+                title = effectiveTitle
+            )
+
+            var effectiveHost = host
+            var finalUrls: List<String> = emptyList()
+            var finalError: String? = null
+
+            if (imgResult.isSuccess && !imgResult.getOrNull().isNullOrEmpty()) {
+                finalUrls = imgResult.getOrNull()!!
+            } else {
+                Log.w(TAG, "Imgchest image upload failed (${imgResult.exceptionOrNull()?.message}), falling back to Catbox...")
+                val catboxUrls = mutableListOf<String>()
+                for (u in imageUris) {
+                    val cbRes = uploadVideoToCatbox(context, u)
+                    if (cbRes.isSuccess) {
+                        catboxUrls.add(cbRes.getOrThrow())
+                    }
+                }
+                if (catboxUrls.isNotEmpty()) {
+                    effectiveHost = "catbox"
+                    finalUrls = catboxUrls
                 } else {
-                    imageError = imageResult.exceptionOrNull()?.message ?: "Catbox image upload failed"
-                    break
+                    finalError = imgResult.exceptionOrNull()?.message ?: "Image upload failed"
                 }
             }
 
-            if (imageError == null && urls.size == imageUris.size) {
-                allUploadedUrls.addAll(urls)
+            if (finalUrls.isNotEmpty()) {
+                allUploadedUrls.addAll(finalUrls)
                 updateUploadRequestRecord(
                     id = reqId,
                     status = "done",
-                    imageUrls = urls,
+                    imageUrls = finalUrls,
                     error = null
                 )
                 groups.add(
                     MediaGroupResult(
                         uploadRequestId = reqId,
-                        host = host,
+                        host = effectiveHost,
                         mediaType = mediaType,
                         fileCount = imageUris.size,
-                        urls = urls,
+                        urls = finalUrls,
                         status = "done"
                     )
                 )
             } else {
-                val err = imageError ?: "Catbox image upload failed"
+                val err = finalError ?: "Imgchest upload failed"
                 updateUploadRequestRecord(
                     id = reqId,
                     status = "failed",
@@ -260,7 +281,7 @@ object MediaUploadClient {
                 groups.add(
                     MediaGroupResult(
                         uploadRequestId = reqId,
-                        host = host,
+                        host = effectiveHost,
                         mediaType = mediaType,
                         fileCount = imageUris.size,
                         urls = emptyList(),
@@ -560,6 +581,14 @@ object MediaUploadClient {
         }
     }
 
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(25, TimeUnit.SECONDS)
+        .build()
+
+    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
     /**
      * Updates an upload_requests row in Supabase via REST API.
      */
@@ -572,17 +601,6 @@ object MediaUploadClient {
         if (id.isBlank()) return
         try {
             val endpoint = "$SUPABASE_URL/rest/v1/upload_requests?id=eq.$id"
-            val url = URL(endpoint)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "PATCH"
-                doOutput = true
-                connectTimeout = 15000
-                readTimeout = 15000
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("apikey", SUPABASE_KEY)
-                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
-            }
-
             val json = JSONObject().apply {
                 put("status", status)
                 if (imageUrls != null) {
@@ -595,19 +613,21 @@ object MediaUploadClient {
                 }
             }
 
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(json.toString()) }
+            val body = json.toString().toRequestBody(JSON_MEDIA_TYPE)
+            val request = Request.Builder()
+                .url(endpoint)
+                .patch(body)
+                .header("Content-Type", "application/json")
+                .header("apikey", SUPABASE_KEY)
+                .header("Authorization", "Bearer $SUPABASE_KEY")
+                .header("Prefer", "return=representation")
+                .build()
 
-            val code = conn.responseCode
-            val responseBody = if (code in 200..299) {
-                BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
-            } else {
-                conn.errorStream?.let {
-                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
-                } ?: "HTTP $code"
+            okHttpClient.newCall(request).execute().use { response ->
+                val code = response.code
+                val responseBody = response.body?.string().orEmpty()
+                Log.d(DEBUG_TAG, "updateUploadRequestRecord HTTP $code $responseBody")
             }
-            conn.disconnect()
-
-            Log.d(DEBUG_TAG, "HTTP $code $responseBody")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update upload_requests record: ${e.message}")
         }

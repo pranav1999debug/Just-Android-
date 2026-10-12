@@ -19,6 +19,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
 import java.util.UUID
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 object SupabaseClient {
 
@@ -30,10 +35,124 @@ object SupabaseClient {
     private val apiKey: String
         get() = BuildConfig.SUPABASE_KEY
 
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(25, TimeUnit.SECONDS)
+        .build()
+
+    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+    suspend fun executePatch(endpoint: String, jsonPayload: String, accessToken: String? = null): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val fullUrl = if (endpoint.startsWith("http")) endpoint else "$baseUrl/rest/v1/$endpoint"
+            val body = jsonPayload.toRequestBody(JSON_MEDIA_TYPE)
+
+            fun doPatch(authHeader: String): Pair<Int, String> {
+                val request = Request.Builder()
+                    .url(fullUrl)
+                    .patch(body)
+                    .header("apikey", apiKey)
+                    .header("Authorization", authHeader)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Prefer", "return=representation")
+                    .build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    return Pair(response.code, response.body?.string().orEmpty())
+                }
+            }
+
+            val initialHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey"
+            var (code, responseBody) = doPatch(initialHeader)
+
+            // If user token was expired or rejected, retry immediately with anon apiKey
+            if ((code == 401 || code == 403) && initialHeader != "Bearer $apiKey") {
+                Log.w(TAG, "executePatch: Token rejected ($code: $responseBody), falling back to apiKey")
+                val fallback = doPatch("Bearer $apiKey")
+                code = fallback.first
+                responseBody = fallback.second
+            }
+
+            if (code in 200..299) {
+                Result.success(responseBody)
+            } else {
+                Result.failure(Exception("HTTP $code: $responseBody"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "executePatch error on $endpoint", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun executeDelete(endpoint: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val fullUrl = if (endpoint.startsWith("http")) endpoint else "$baseUrl/rest/v1/$endpoint"
+
+            fun doDelete(authHeader: String): Pair<Int, String> {
+                val request = Request.Builder()
+                    .url(fullUrl)
+                    .delete()
+                    .header("apikey", apiKey)
+                    .header("Authorization", authHeader)
+                    .header("Accept", "application/json")
+                    .header("Prefer", "return=representation")
+                    .build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    return Pair(response.code, response.body?.string().orEmpty())
+                }
+            }
+
+            val initialHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey"
+            var (code, responseBody) = doDelete(initialHeader)
+
+            // If user token was expired or rejected, retry immediately with anon apiKey
+            if ((code == 401 || code == 403) && initialHeader != "Bearer $apiKey") {
+                Log.w(TAG, "executeDelete: Token rejected ($code: $responseBody), falling back to apiKey")
+                val fallback = doDelete("Bearer $apiKey")
+                code = fallback.first
+                responseBody = fallback.second
+            }
+
+            if (code in 200..299) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception("HTTP $code: $responseBody"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "executeDelete error on $endpoint", e)
+            Result.failure(e)
+        }
+    }
+
+    private fun setConnectionMethod(connection: HttpURLConnection, method: String) {
+        try {
+            connection.requestMethod = method
+        } catch (e: java.net.ProtocolException) {
+            var set = false
+            try {
+                val delegateField = connection.javaClass.getDeclaredField("delegate")
+                delegateField.isAccessible = true
+                val delegate = delegateField.get(connection) as? HttpURLConnection ?: connection
+                val methodField = HttpURLConnection::class.java.getDeclaredField("method")
+                methodField.isAccessible = true
+                methodField.set(delegate, method)
+                set = true
+            } catch (_: Exception) {}
+            if (!set) {
+                try {
+                    val methodField = HttpURLConnection::class.java.getDeclaredField("method")
+                    methodField.isAccessible = true
+                    methodField.set(connection, method)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     private fun openConnection(endpoint: String, method: String): HttpURLConnection {
         val fullUrl = if (endpoint.startsWith("http")) endpoint else "$baseUrl/rest/v1/$endpoint"
         val connection = URL(fullUrl).openConnection() as HttpURLConnection
-        connection.requestMethod = method
+        setConnectionMethod(connection, method)
         connection.connectTimeout = 15000
         connection.readTimeout = 15000
         connection.setRequestProperty("apikey", apiKey)
@@ -468,42 +587,37 @@ object SupabaseClient {
         }
     }
 
-    suspend fun updateRequestStatusInSupabase(id: String, status: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "RequestfromApp?id=eq.$id"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            val payload = JSONObject().apply {
-                put("status", status)
+    suspend fun updateRequestStatusInSupabase(id: String, status: String, link: String? = null, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("status", status)
+            if (!link.isNullOrBlank()) {
+                put("download_link", link)
             }
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-            val code = conn.responseCode
-            val responseBody = readResponseBody(conn, code)
-            conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
-        } catch (e: Exception) {
-            Log.e(TAG, "updateRequestStatusInSupabase error", e)
-            Result.failure(e)
         }
+        val result = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("REQUEST_WRITE_FAILED"))
     }
 
-    suspend fun deleteRequestFromSupabase(id: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "RequestfromApp?id=eq.$id"
-            val conn = openConnection(endpoint, "DELETE")
-                conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            val code = conn.responseCode
-            val responseBody = readResponseBody(conn, code)
-            conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
-        } catch (e: Exception) {
-            Log.e(TAG, "deleteRequestFromSupabase error", e)
-            Result.failure(e)
+    suspend fun updateRequestDetailsInSupabase(
+        id: String,
+        name: String,
+        message: String,
+        imageUrl: String?,
+        accessToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("name", name)
+            put("message", message)
+            if (imageUrl != null) {
+                put("image_url", imageUrl)
+            }
         }
+        val result = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("REQUEST_UPDATE_FAILED"))
+    }
+
+    suspend fun deleteRequestFromSupabase(id: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        executeDelete("RequestfromApp?id=eq.$id", accessToken)
     }
 
     suspend fun fetchCollections(): Result<List<CollectionEntity>> = withContext(Dispatchers.IO) {
@@ -1022,188 +1136,70 @@ object SupabaseClient {
     }
 
     suspend fun updatePost(post: PostEntity, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "posts?id=eq.${post.id}"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer $accessToken")
-
-            val payload = JSONObject().apply {
-                put("title", post.title)
-                put("description", post.description)
-                put("image_url", post.imageUrl)
-                put("link_url", post.linkUrl)
-                if (!post.premiumLinkUrl.isNullOrBlank()) {
-                    put("premium_link_url", post.premiumLinkUrl)
-                }
-                if (!post.directLinkUrl.isNullOrBlank()) {
-                    put("direct_link_url", post.directLinkUrl)
-                }
-                put("content_images", JSONArray(post.contentImages))
-                put("tags", JSONArray(post.tags))
-                put("is_free", post.isFree)
-                put("is_nsfw", post.isNsfw)
+        val payload = JSONObject().apply {
+            put("title", post.title)
+            put("description", post.description)
+            put("image_url", post.imageUrl)
+            put("link_url", post.linkUrl)
+            if (!post.premiumLinkUrl.isNullOrBlank()) {
+                put("premium_link_url", post.premiumLinkUrl)
             }
-
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-
-            val code = conn.responseCode
-            val responseBody = if (code in 200..299) {
-                conn.inputStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            } else {
-                conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (!post.directLinkUrl.isNullOrBlank()) {
+                put("direct_link_url", post.directLinkUrl)
             }
-            conn.disconnect()
-            if (code in 200..299) {
-                Result.success(true)
-            } else {
-                Result.failure(Exception("POST_UPDATE_FAILED ($code): $responseBody"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "updatePost error", e)
-            Result.failure(e)
+            put("content_images", JSONArray(post.contentImages))
+            put("tags", JSONArray(post.tags))
+            put("is_free", post.isFree)
+            put("is_nsfw", post.isNsfw)
         }
+        val result = executePatch("posts?id=eq.${post.id}", payload.toString(), accessToken)
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("POST_UPDATE_FAILED"))
     }
 
     suspend fun deletePost(postId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "posts?id=eq.$postId"
-            val conn = openConnection(endpoint, "DELETE")
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Log.e(TAG, "deletePost error", e)
-            Result.failure(e)
-        }
+        executeDelete("posts?id=eq.$postId")
     }
 
     suspend fun deleteCollection(collectionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "collections?id=eq.$collectionId"
-            val conn = openConnection(endpoint, "DELETE")
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Log.e(TAG, "deleteCollection error", e)
-            Result.failure(e)
-        }
+        executeDelete("collections?id=eq.$collectionId")
     }
 
     suspend fun updateUserTier(userId: String, tier: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "profiles?id=eq.$userId"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            val payload = JSONObject().apply {
-                put("tier", tier)
-            }
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Log.e(TAG, "updateUserTier error", e)
-            Result.failure(e)
+        val payload = JSONObject().apply {
+            put("tier", tier)
         }
+        val result = executePatch("profiles?id=eq.$userId", payload.toString())
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("USER_UPDATE_FAILED"))
     }
 
     suspend fun updateUserStatus(userId: String, status: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "profiles?id=eq.$userId"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            val payload = JSONObject().apply {
-                put("status", status)
-            }
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Log.e(TAG, "updateUserStatus error", e)
-            Result.failure(e)
+        val payload = JSONObject().apply {
+            put("status", status)
         }
+        val result = executePatch("profiles?id=eq.$userId", payload.toString())
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("USER_UPDATE_FAILED"))
     }
 
     suspend fun deleteUser(userId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "profiles?id=eq.$userId"
-            val conn = openConnection(endpoint, "DELETE")
-            val code = conn.responseCode
-            conn.disconnect()
-            Result.success(code in 200..299)
-        } catch (e: Exception) {
-            Log.e(TAG, "deleteUser error", e)
-            Result.failure(e)
-        }
+        executeDelete("profiles?id=eq.$userId")
     }
 
-    suspend fun fulfillRequestInSupabase(id: String, downloadLink: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "RequestfromApp?id=eq.$id"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            val payload = JSONObject().apply {
-                put("status", "delivered")
-                put("download_link", downloadLink)
-            }
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-            val code = conn.responseCode
-            val responseBody = readResponseBody(conn, code)
-            conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
-        } catch (e: Exception) {
-            Log.e(TAG, "fulfillRequestInSupabase error", e)
-            Result.failure(e)
+    suspend fun fulfillRequestInSupabase(id: String, downloadLink: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("status", "delivered")
+            put("download_link", downloadLink)
         }
+        val result = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("REQUEST_WRITE_FAILED"))
     }
 
-    suspend fun rejectRequestInSupabase(id: String, reason: String, accessToken: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "RequestfromApp?id=eq.$id"
-            val conn = openConnection(endpoint, "PATCH")
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            val payload = JSONObject().apply {
-                put("status", "rejected")
-                put("rejection_reason", reason)
-            }
-            val writer = OutputStreamWriter(conn.outputStream)
-            writer.write(payload.toString())
-            writer.flush()
-            writer.close()
-            val code = conn.responseCode
-            val responseBody = readResponseBody(conn, code)
-            conn.disconnect()
-            if (code in 200..299) Result.success(true) else Result.failure(Exception("REQUEST_WRITE_FAILED ($code): $responseBody"))
-        } catch (e: Exception) {
-            Log.e(TAG, "rejectRequestInSupabase error", e)
-            Result.failure(e)
+    suspend fun rejectRequestInSupabase(id: String, reason: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("status", "rejected")
+            put("rejection_reason", reason)
         }
-    }
-
-    private fun readResponseBody(conn: HttpURLConnection, code: Int): String {
-        return try {
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        } catch (_: Exception) {
-            ""
-        }
+        val result = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
+        if (result.isSuccess) Result.success(true) else Result.failure(result.exceptionOrNull() ?: Exception("REQUEST_WRITE_FAILED"))
     }
 
     private fun parseIsoToMillis(isoString: String): Long {

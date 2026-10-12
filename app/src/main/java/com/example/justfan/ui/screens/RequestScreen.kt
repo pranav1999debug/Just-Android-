@@ -26,9 +26,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserProfile
 import com.example.justfan.data.remote.BufferChannel
@@ -54,6 +57,8 @@ fun RequestScreen(
     onSyncRequests: () -> Unit = {},
     onSignInRequired: () -> Unit = {},
     onUserMismatch: () -> Unit = {},
+    onDeleteRequest: (String) -> Unit = {},
+    onEditRequest: (id: String, name: String, message: String, imageUrl: String?) -> Unit = { _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -77,6 +82,8 @@ fun RequestScreen(
     var isSubmitting by remember { mutableStateOf(false) }
     var showSuccessSnackbar by remember { mutableStateOf(false) }
     var previewImageUrl by remember { mutableStateOf<String?>(null) }
+    var requestToDelete by remember { mutableStateOf<RequestEntity?>(null) }
+    var requestToEdit by remember { mutableStateOf<RequestEntity?>(null) }
 
     // Smart Media Routing & Social Posting State
     var pendingMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
@@ -150,8 +157,8 @@ fun RequestScreen(
         if (uris.isNotEmpty()) {
             pendingMediaUris = uris
             selectedLocalUri = uris.firstOrNull()
-            // Prompt user: "Also post this to social media?"
-            showSocialPromptDialog = true
+            uploadError = null
+            executeUpload(uris, shareToSocial = false)
         }
     }
 
@@ -496,11 +503,24 @@ fun RequestScreen(
                                                 .background(Color.Black.copy(alpha = 0.2f)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            AsyncImage(
-                                                model = if (referenceImageUrl.isNotBlank()) referenceImageUrl else selectedLocalUri,
+                                            SubcomposeAsyncImage(
+                                                model = ImageRequest.Builder(LocalContext.current)
+                                                    .data(if (selectedLocalUri != null) selectedLocalUri else referenceImageUrl)
+                                                    .crossfade(true)
+                                                    .build(),
                                                 contentDescription = "Selected Reference",
                                                 contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
+                                                modifier = Modifier.fillMaxSize(),
+                                                loading = {
+                                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                                    }
+                                                },
+                                                error = {
+                                                    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+                                                        Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                                    }
+                                                }
                                             )
                                             if (isUploadingMedia) {
                                                 Box(
@@ -742,7 +762,7 @@ fun RequestScreen(
                     }
 
                     item {
-                        val isSubmitEnabled = modelName.isNotBlank() && notes.isNotBlank() && !isSubmitting && (hasUnlimited || remainingRequests > 0)
+                        val isSubmitEnabled = modelName.isNotBlank() && notes.isNotBlank() && !isSubmitting && !isUploadingMedia && (hasUnlimited || remainingRequests > 0)
                         Button(
                             onClick = {
                                 if (modelName.isNotBlank() && email.isNotBlank() && notes.isNotBlank()) {
@@ -760,6 +780,7 @@ fun RequestScreen(
                                             modelName = ""
                                             notes = ""
                                             referenceImageUrl = ""
+                                            selectedLocalUri = null
                                             showSuccessSnackbar = true
                                         } else {
                                             when (errorText) {
@@ -800,6 +821,14 @@ fun RequestScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Submitting...")
+                            } else if (isUploadingMedia) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Uploading Media...")
                             } else {
                                 Icon(Icons.Default.CloudUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -894,6 +923,18 @@ fun RequestScreen(
                                     .fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
+                                    // Top row: Title, By info, Status & Actions
+                                    val resolvedTitle = remember(req.name) {
+                                        when {
+                                            req.name.contains("instagram.com/reel", ignoreCase = true) -> "Instagram Reel Request"
+                                            req.name.contains("instagram.com", ignoreCase = true) -> "Instagram Request"
+                                            req.name.contains("onlyfans.com", ignoreCase = true) -> "OnlyFans Request"
+                                            req.name.contains("fansly.com", ignoreCase = true) -> "Fansly Request"
+                                            req.name.startsWith("http://") || req.name.startsWith("https://") -> "Community Creator Request"
+                                            else -> req.name
+                                        }
+                                    }
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -901,7 +942,7 @@ fun RequestScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = req.name,
+                                                text = resolvedTitle,
                                                 style = MaterialTheme.typography.titleMedium,
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onSurface
@@ -916,27 +957,56 @@ fun RequestScreen(
                                             }
                                         }
 
-                                        Surface(
-                                            color = when (req.status.lowercase()) {
-                                                "delivered" -> SuccessGreen.copy(alpha = 0.2f)
-                                                "in_progress" -> GoldAccent.copy(alpha = 0.2f)
-                                                "rejected" -> MaterialTheme.colorScheme.errorContainer
-                                                else -> MaterialTheme.colorScheme.primaryContainer
-                                            },
-                                            shape = RoundedCornerShape(6.dp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
-                                            Text(
-                                                text = req.status.replace("_", " ").uppercase(),
+                                            Surface(
                                                 color = when (req.status.lowercase()) {
-                                                    "delivered" -> SuccessGreen
-                                                    "in_progress" -> GoldAccent
-                                                    "rejected" -> MaterialTheme.colorScheme.error
-                                                    else -> MaterialTheme.colorScheme.primary
+                                                    "delivered", "replied" -> SuccessGreen.copy(alpha = 0.2f)
+                                                    "in_progress" -> GoldAccent.copy(alpha = 0.2f)
+                                                    "rejected" -> MaterialTheme.colorScheme.errorContainer
+                                                    else -> MaterialTheme.colorScheme.primaryContainer
                                                 },
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Black,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                            )
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = req.status.replace("_", " ").uppercase(),
+                                                    color = when (req.status.lowercase()) {
+                                                        "delivered", "replied" -> SuccessGreen
+                                                        "in_progress" -> GoldAccent
+                                                        "rejected" -> MaterialTheme.colorScheme.error
+                                                        else -> MaterialTheme.colorScheme.primary
+                                                    },
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                )
+                                            }
+
+                                            IconButton(
+                                                onClick = { requestToEdit = req },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = "Edit Request",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+
+                                            IconButton(
+                                                onClick = { requestToDelete = req },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.DeleteOutline,
+                                                    contentDescription = "Delete Request",
+                                                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
 
@@ -951,40 +1021,122 @@ fun RequestScreen(
                                         Spacer(modifier = Modifier.height(8.dp))
                                     }
 
-                                    // Imgchest Reference Image Preview
+                                    // Reference Media Preview (Image, Video or Social Link)
                                     if (!req.imageUrl.isNullOrBlank()) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(Color.Black.copy(alpha = 0.15f))
-                                                .clickable { previewImageUrl = req.imageUrl }
-                                                .padding(6.dp)
-                                        ) {
-                                            AsyncImage(
-                                                model = requestImageModel(req.imageUrl),
-                                                contentDescription = "Imgchest Reference",
-                                                contentScale = ContentScale.Crop,
+                                        val mediaUrl = req.imageUrl
+                                        val isSocialOrVideo = remember(mediaUrl) {
+                                            mediaUrl.contains("instagram.com") ||
+                                                mediaUrl.contains("onlyfans.com") ||
+                                                mediaUrl.contains("fansly.com") ||
+                                                mediaUrl.contains("t.me") ||
+                                                mediaUrl.endsWith(".mp4", ignoreCase = true)
+                                        }
+
+                                        if (isSocialOrVideo) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
                                                 modifier = Modifier
-                                                    .size(54.dp)
-                                                    .clip(RoundedCornerShape(6.dp))
-                                            )
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text("Imgchest Photo Reference", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                                }
-                                                Text(
-                                                    text = req.imageUrl,
-                                                    fontSize = 10.sp,
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                                                    .clickable {
+                                                        try {
+                                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(mediaUrl)))
+                                                        } catch (_: Exception) {}
+                                                    }
+                                                    .padding(10.dp)
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
                                                     color = MaterialTheme.colorScheme.primary,
-                                                    maxLines = 1
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Link,
+                                                            contentDescription = null,
+                                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = if (mediaUrl.contains("instagram.com/reel")) "Instagram Reel Link" else "Linked Social Media Reference",
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 12.sp,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Text(
+                                                        text = mediaUrl,
+                                                        fontSize = 11.sp,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = Icons.Default.OpenInNew,
+                                                    contentDescription = "Open Link",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp)
                                                 )
                                             }
-                                            Icon(Icons.Default.ZoomIn, contentDescription = "View Photo", modifier = Modifier.size(20.dp))
+                                        } else {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color.Black.copy(alpha = 0.15f))
+                                                    .clickable { previewImageUrl = mediaUrl }
+                                                    .padding(6.dp)
+                                            ) {
+                                                SubcomposeAsyncImage(
+                                                    model = ImageRequest.Builder(LocalContext.current)
+                                                        .data(mediaUrl)
+                                                        .crossfade(true)
+                                                        .build(),
+                                                    contentDescription = "Reference Media",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .size(54.dp)
+                                                        .clip(RoundedCornerShape(6.dp)),
+                                                    loading = {
+                                                        Box(
+                                                            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                                        }
+                                                    },
+                                                    error = {
+                                                        Box(
+                                                            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                                        }
+                                                    }
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Photo Reference", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                                    }
+                                                    Text(
+                                                        text = mediaUrl,
+                                                        fontSize = 10.sp,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                Icon(Icons.Default.ZoomIn, contentDescription = "View Photo", modifier = Modifier.size(20.dp))
+                                            }
                                         }
                                         Spacer(modifier = Modifier.height(8.dp))
                                     }
@@ -1008,7 +1160,7 @@ fun RequestScreen(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                         )
 
-                                        if (req.status == "delivered" && !req.downloadLink.isNullOrEmpty()) {
+                                        if ((req.status == "delivered" || req.status == "replied") && !req.downloadLink.isNullOrEmpty()) {
                                             Button(
                                                 onClick = {
                                                     try {
@@ -1034,6 +1186,110 @@ fun RequestScreen(
         }
     }
 
+    // Delete request confirmation dialog
+    if (requestToDelete != null) {
+        val target = requestToDelete!!
+        AlertDialog(
+            onDismissRequest = { requestToDelete = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = { Text("Delete Request", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Are you sure you want to delete this request (\"${target.name}\")? This will remove it from Supabase and your local storage.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteRequest(target.id)
+                        requestToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { requestToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Edit request dialog
+    if (requestToEdit != null) {
+        val target = requestToEdit!!
+        var editName by remember(target.id) { mutableStateOf(target.name) }
+        var editMessage by remember(target.id) { mutableStateOf(target.message) }
+        var editImageUrl by remember(target.id) { mutableStateOf(target.imageUrl.orEmpty()) }
+
+        AlertDialog(
+            onDismissRequest = { requestToEdit = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = { Text("Edit Request", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Creator / Model Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editMessage,
+                        onValueChange = { editMessage = it },
+                        label = { Text("Request Message / Notes") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editImageUrl,
+                        onValueChange = { editImageUrl = it },
+                        label = { Text("Reference Image URL") },
+                        placeholder = { Text("https://cdn.imgchest.com/files/...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onEditRequest(
+                            target.id,
+                            editName.trim(),
+                            editMessage.trim(),
+                            editImageUrl.trim().ifBlank { null }
+                        )
+                        requestToEdit = null
+                    }
+                ) {
+                    Text("Save Changes")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { requestToEdit = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     // Image lightbox preview dialog
     if (previewImageUrl != null) {
         AlertDialog(
@@ -1046,11 +1302,48 @@ fun RequestScreen(
                         .height(300.dp)
                         .clip(RoundedCornerShape(12.dp))
                 ) {
-                    AsyncImage(
-                        model = previewImageUrl,
+                    SubcomposeAsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(previewImageUrl)
+                            .crossfade(true)
+                            .build(),
                         contentDescription = "Full Preview",
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        loading = {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                        },
+                        error = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.BrokenImage, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(44.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Could not load image directly", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(
+                                    text = previewImageUrl.orEmpty(),
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                OutlinedButton(onClick = {
+                                    try {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(previewImageUrl)))
+                                    } catch (_: Exception) {}
+                                }) {
+                                    Text("Open in Browser", fontSize = 12.sp)
+                                }
+                            }
+                        }
                     )
                 }
             },
@@ -1159,12 +1452,4 @@ fun RequestScreen(
             isSubmitting = isSubmittingSocial
         )
     }
-}
-
-
-private fun requestImageModel(url: String?): String? {
-    if (url.isNullOrBlank()) return null
-    return if (url.contains("imgchest", ignoreCase = true)) {
-        "https://images.weserv.nl/?url=${Uri.encode(url)}"
-    } else url
 }

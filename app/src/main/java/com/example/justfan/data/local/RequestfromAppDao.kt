@@ -27,6 +27,9 @@ interface RequestfromAppDao {
     @Query("UPDATE RequestfromApp SET status = :status, downloadLink = :link, rejectionReason = :reason WHERE id = :id")
     suspend fun updateStatusWithReason(id: String, status: String, link: String?, reason: String? = null)
 
+    @Query("UPDATE RequestfromApp SET name = :name, message = :message, imageUrl = :imageUrl WHERE id = :id")
+    suspend fun updateDetails(id: String, name: String, message: String, imageUrl: String?)
+
     @Query("DELETE FROM RequestfromApp WHERE id = :id")
     suspend fun deleteRequest(id: String)
 

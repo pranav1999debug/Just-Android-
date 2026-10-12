@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.UserPreferences
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.ui.anim.isInAppAnimationsEnabled
+import com.example.justfan.ui.anim.setInAppAnimationsEnabled
 import com.example.justfan.ui.theme.AVAILABLE_THEMES
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
@@ -55,6 +57,7 @@ fun PreferencesScreen(
     var customUrlInput by remember { mutableStateOf("") }
     var wallpaperDimSlider by remember(preferences.wallpaperDim) { mutableFloatStateOf(preferences.wallpaperDim) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    var animationsEnabled by remember { mutableStateOf(isInAppAnimationsEnabled(context)) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -227,6 +230,29 @@ fun PreferencesScreen(
                                     onUpdateTheme(preferences.themeVariant, it)
                                 },
                                 modifier = Modifier.testTag("dark_mode_switch")
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Animations switch (Default On)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Animations", fontWeight = FontWeight.SemiBold)
+                                Text("Smooth transitions, physics springs, and motion depth", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = animationsEnabled,
+                                onCheckedChange = {
+                                    animationsEnabled = it
+                                    setInAppAnimationsEnabled(context, it)
+                                },
+                                modifier = Modifier.testTag("animations_switch")
                             )
                         }
 

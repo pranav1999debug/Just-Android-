@@ -146,11 +146,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         imageUrl: String?,
         onComplete: ((Boolean, String?) -> Unit)? = null
     ) {
-        val profile = userProfile.value
-        if (!profile.isSignedIn || profile.id == "guest_user" || profile.accessToken.isNullOrBlank()) {
-            onComplete?.invoke(false, "SIGN_IN_REQUIRED")
-            return
-        }
         viewModelScope.launch {
             try {
                 val res = repository.submitRequest(name, email, telegram, message, imageUrl)
@@ -175,6 +170,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateRequestStatus(id: String, status: String, link: String?) {
         viewModelScope.launch {
             repository.updateRequestStatus(id, status, link)
+        }
+    }
+
+    fun editRequest(id: String, name: String, message: String, imageUrl: String?) {
+        viewModelScope.launch {
+            repository.editRequest(id, name, message, imageUrl)
         }
     }
 

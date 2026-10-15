@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.justfan.data.local.AppDatabase
 import com.example.justfan.data.model.*
+import com.example.justfan.data.notification.OneSignalManager
 import com.example.justfan.data.repository.JustFanRepository
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -54,6 +55,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             userProfile.collect { profile ->
                 if (profile.isSignedIn && profile.id != "guest_user" && !profile.accessToken.isNullOrBlank()) {
                     fetchRequestQuota()
+                    OneSignalManager.login(profile.id)
                 } else {
                     _requestQuota.value = RequestQuota()
                 }
@@ -89,7 +91,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val remote = com.example.justfan.data.remote.SupabaseClient.fetchLatestAppVersion()
                 .getOrNull()
-            onResult(remote?.takeIf { isVersionNewer(it.version, currentVersion) && it.downloadLink.isNotBlank() })
+            onResult(remote?.takeIf { 
+                it.version.trim() != currentVersion.trim() && 
+                isVersionNewer(it.version.trim(), currentVersion.trim()) && 
+                it.downloadLink.isNotBlank() 
+            })
         }
     }
 
@@ -298,6 +304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOut(clearBiometric: Boolean = true) {
+        OneSignalManager.logout()
         repository.signOut(clearBiometric)
         _requestQuota.value = RequestQuota()
     }

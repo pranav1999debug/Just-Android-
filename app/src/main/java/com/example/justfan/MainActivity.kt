@@ -6,6 +6,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import com.example.justfan.data.notification.OneSignalManager
 import com.example.justfan.ui.JustFanAppRoot
 import com.example.justfan.ui.MainViewModel
 
@@ -16,6 +17,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        OneSignalManager.setupPushSubscriptionObserver(this)
         handleAuthIntent(intent)
         setContent {
             JustFanAppRoot(viewModel = viewModel)

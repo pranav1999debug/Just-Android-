@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
-import com.example.justfan.ui.components.ContentCard
+import com.example.justfan.ui.components.CompactPostCard
 import com.example.justfan.ui.components.RequestTicker
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.components.TrendingCarousel
@@ -226,25 +226,10 @@ fun HomeScreen(
                 }
             } else {
                 items(filteredPosts, key = { it.id }) { post ->
-                    val isFav = favoritePostIds.contains(post.id)
-                    ContentCard(
+                    CompactPostCard(
                         post = post,
-                        isFavorite = isFav,
                         onPostClick = { onPostClick(post.id) },
-                        onToggleFavorite = { onToggleFavorite(post.id) },
-                        // Lazy grids compose visible cards on demand; every visible video
-                        // starts muted autoplay whenever the home feed is active.
-                        autoPlay = isScreenActive,
-                        onDownloadClick = {
-                            onIncrementClicks(post.id)
-                            val targetUrl = if (post.linkUrl.isNotBlank()) post.linkUrl else post.imageUrl
-                            com.example.justfan.util.DownloadHelper.enqueueDownload(
-                                context = context,
-                                url = targetUrl,
-                                title = post.title,
-                                isPremium = !post.isFree
-                            )
-                        }
+                        autoPlay = isScreenActive
                     )
                 }
             }

@@ -165,7 +165,7 @@ object SupabaseClient {
 
     suspend fun fetchLatestAppVersion(): Result<AppVersion?> = withContext(Dispatchers.IO) {
         try {
-            val conn = openConnection("app_version?select=uid,version,download_link&order=version.desc&limit=1", "GET")
+            val conn = openConnection("app_version?select=uid,version,download_link&order=created_at.desc&limit=1", "GET")
             val code = conn.responseCode
             if (code !in 200..299) {
                 conn.disconnect()

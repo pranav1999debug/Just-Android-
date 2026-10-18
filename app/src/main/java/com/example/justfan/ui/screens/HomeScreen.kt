@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.components.CompactPostCard
+import com.example.justfan.ui.components.TrendingCarousel
 
 @Composable
 fun HomeScreen(
@@ -44,10 +45,11 @@ fun HomeScreen(
     isPaidOrLegendary: Boolean,
     onPostClick: (PostEntity) -> Unit,
     onToggleFavorite: (String) -> Unit,
+    externalSearchQuery: String = "",
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by remember(externalSearchQuery) { mutableStateOf(externalSearchQuery) }
     var selectedFilter by remember { mutableStateOf("All") }
 
     val filteredPosts = remember(posts, searchQuery, selectedFilter) {
@@ -114,6 +116,16 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
+                if (searchQuery.isBlank() && selectedFilter == "All") {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        TrendingCarousel(
+                            trendingPosts = posts.sortedByDescending { it.clicksCount }.take(6),
+                            onPostClick = { postId ->
+                                posts.find { it.id == postId }?.let(onPostClick)
+                            }
+                        )
+                    }
+                }
                 items(filteredPosts, key = { it.id }) { post ->
                     CompactPostCard(
                         post = post,

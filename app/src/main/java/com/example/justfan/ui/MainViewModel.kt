@@ -103,6 +103,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun signInWithGoogle(email: String, name: String): UserProfile {
+        return repository.signInWithGoogle(email, name)
+    }
+
+    fun signInWithPasskey(name: String): UserProfile {
+        return repository.signInWithPasskey(name)
+    }
+
     fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
         return repository.signInWithEmail(email, pass)
     }

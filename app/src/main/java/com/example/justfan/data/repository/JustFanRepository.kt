@@ -361,42 +361,66 @@ class JustFanRepository(private val context: Context) {
         return res
     }
 
-    fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
+    fun signInWithGoogle(email: String, name: String): UserProfile {
         val cleanEmail = email.trim().lowercase()
         val isRey = cleanEmail == "reytherapper12@gmail.com"
 
-        // If admin email, grant full Legendary admin rights immediately
-        if (isRey) {
-            val adminUser = UserProfile(
-                id = "a2d7bbad-c31f-4679-bf51-2d2684bb3216",
-                username = "reytherapper12 (Admin)",
-                email = cleanEmail,
-                isSignedIn = true,
-                authMethod = "password",
-                tier = "Legendary",
-                isAdmin = true,
-                proExpiresAt = Long.MAX_VALUE
-            )
-            _userProfile.value = adminUser
-            saveProfileToPrefs(adminUser)
-            syncUserDataOnLogin(adminUser)
-            return Result.success(adminUser)
-        }
-
-        val regularUser = UserProfile(
-            id = UUID.randomUUID().toString(),
-            username = cleanEmail.substringBefore("@"),
+        val user = UserProfile(
+            id = if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.randomUUID().toString(),
+            username = if (isRey) "reytherapper12 (Admin)" else name.ifBlank { cleanEmail.substringBefore("@") },
             email = cleanEmail,
             isSignedIn = true,
-            authMethod = "password",
+            authMethod = "google",
+            tier = if (isRey) "Legendary" else "Free",
+            isAdmin = isRey,
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
+        )
+        _userProfile.value = user
+        saveProfileToPrefs(user)
+        syncUserDataOnLogin(user)
+        return user
+    }
+
+    fun signInWithPasskey(name: String): UserProfile {
+        val cleanName = name.trim().ifBlank { "Passkey User" }
+        val user = UserProfile(
+            id = UUID.randomUUID().toString(),
+            username = cleanName,
+            email = "$cleanName@passkey.local",
+            isSignedIn = true,
+            authMethod = "passkey",
             tier = "Free",
             isAdmin = false,
             proExpiresAt = 0L
         )
-        _userProfile.value = regularUser
-        saveProfileToPrefs(regularUser)
-        syncUserDataOnLogin(regularUser)
-        return Result.success(regularUser)
+        _userProfile.value = user
+        saveProfileToPrefs(user)
+        syncUserDataOnLogin(user)
+        return user
+    }
+
+    fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
+        val cleanEmail = email.trim().lowercase()
+        val isRey = cleanEmail == "reytherapper12@gmail.com"
+
+        if (cleanEmail.isBlank()) {
+            return Result.failure(IllegalArgumentException("Please enter a valid email address"))
+        }
+
+        val user = UserProfile(
+            id = if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.randomUUID().toString(),
+            username = if (isRey) "reytherapper12 (Admin)" else cleanEmail.substringBefore("@"),
+            email = cleanEmail,
+            isSignedIn = true,
+            authMethod = "password",
+            tier = if (isRey) "Legendary" else "Free",
+            isAdmin = isRey,
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
+        )
+        _userProfile.value = user
+        saveProfileToPrefs(user)
+        syncUserDataOnLogin(user)
+        return Result.success(user)
     }
 
     fun signOut() {

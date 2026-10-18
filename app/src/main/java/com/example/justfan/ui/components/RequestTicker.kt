@@ -123,7 +123,7 @@ fun RequestTicker(
         AlertDialog(
             onDismissRequest = { selectedRequest = null },
             title = {
-                Text(text = req.name, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(text = req.name ?: "Fan Request", fontWeight = FontWeight.Bold, maxLines = 1)
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -288,7 +288,7 @@ private fun RequestChipItem(
         ) {
             // Circular Avatar
             val initials = remember(req.name) {
-                req.name.trim().take(1).uppercase().ifBlank { "R" }
+                req.name?.trim()?.take(1)?.uppercase()?.ifBlank { "R" } ?: "R"
             }
             val isDirectImage = remember(req.imageUrl) {
                 val url = req.imageUrl.orEmpty()
@@ -354,7 +354,7 @@ private fun RequestChipItem(
 
             Column(verticalArrangement = Arrangement.Center) {
                 Text(
-                    text = req.name,
+                    text = req.name ?: "Fan Request",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,

@@ -49,14 +49,22 @@ object SecretsStore {
         }
     }
 
+    suspend fun getOrNull(name: String, forceReload: Boolean = false): String? = withContext(Dispatchers.IO) {
+        try {
+            get(name, forceReload)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Reloads secrets from the Supabase REST API:
-     * GET {BuildConfig.SUPABASE_URL}/rest/v1/app_secrets?select=name,value&name=in.(imgchest_api_key,catbox_userhash)
+     * GET {BuildConfig.SUPABASE_URL}/rest/v1/app_secrets?select=name,value
      * Headers: apikey = BuildConfig.SUPABASE_KEY, Authorization = Bearer BuildConfig.SUPABASE_KEY
      */
     private fun reloadInternal() {
         val baseUrl = BuildConfig.SUPABASE_URL.trimEnd('/')
-        val endpoint = "$baseUrl/rest/v1/app_secrets?select=name,value&name=in.(imgchest_api_key,catbox_userhash)"
+        val endpoint = "$baseUrl/rest/v1/app_secrets?select=name,value"
         val url = URL(endpoint)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"

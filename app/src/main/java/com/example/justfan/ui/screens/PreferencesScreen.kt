@@ -1,854 +1,343 @@
 package com.example.justfan.ui.screens
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import com.example.justfan.data.model.UserPreferences
+import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
-import com.example.justfan.ui.anim.isInAppAnimationsEnabled
-import com.example.justfan.ui.anim.setInAppAnimationsEnabled
 import com.example.justfan.ui.theme.AVAILABLE_THEMES
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
-import java.text.SimpleDateFormat
-import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PreferencesScreen(
-    preferences: UserPreferences,
     userProfile: UserProfile,
-    requestQuota: com.example.justfan.data.model.RequestQuota = com.example.justfan.data.model.RequestQuota(),
-    onUpdateTheme: (String, Boolean) -> Unit,
-    onUpdateContentFilter: (String) -> Unit,
-    onAddPreferredTag: (String) -> Unit,
-    onRemovePreferredTag: (String) -> Unit,
-    onUpdatePlan: (String) -> Unit,
-    onUpdateWallpaper: (String?, Float) -> Unit = { _, _ -> },
-    onOpenAuth: () -> Unit = {},
-    onSignOut: () -> Unit = {},
-    onOpenAdmin: () -> Unit = {},
+    preferences: UserPreferencesState,
+    onUpdateTheme: (themeVariant: String, isDark: Boolean) -> Unit,
+    onUpdateWallpaper: (wallpaperUri: String?, dim: Float) -> Unit,
+    onSignInClick: () -> Unit,
+    onSignOutClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var newTagInput by remember { mutableStateOf("") }
-    var customUrlInput by remember { mutableStateOf("") }
-    var wallpaperDimSlider by remember(preferences.wallpaperDim) { mutableFloatStateOf(preferences.wallpaperDim) }
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var animationsEnabled by remember { mutableStateOf(isInAppAnimationsEnabled(context)) }
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val targetFile = java.io.File(context.filesDir, "user_wallpaper.jpg")
-                if (inputStream != null) {
-                    targetFile.outputStream().use { out ->
-                        inputStream.copyTo(out)
-                    }
-                    onUpdateWallpaper(targetFile.absolutePath, wallpaperDimSlider)
-                } else {
-                    onUpdateWallpaper(uri.toString(), wallpaperDimSlider)
-                }
-            } catch (e: Exception) {
-                onUpdateWallpaper(uri.toString(), wallpaperDimSlider)
-            }
-        }
+    var wallpaperUrlInput by remember(preferences.customWallpaperUri) {
+        mutableStateOf(preferences.customWallpaperUri ?: "")
+    }
+    var dimSlider by remember(preferences.wallpaperDim) {
+        mutableFloatStateOf(preferences.wallpaperDim)
     }
 
-    val presetWallpapers = listOf(
-        "Neon Cyber" to "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&q=80",
-        "Midnight Noir" to "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=1000&q=80",
-        "Sunset Glow" to "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1000&q=80",
-        "Anime Sakura" to "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=1000&q=80"
-    )
+    val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
+            userProfile.tier.equals("pro", ignoreCase = true) || userProfile.isAdmin
 
-    Scaffold(
-        containerColor = if (!preferences.customWallpaperUri.isNullOrBlank()) Color.Transparent else MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (!preferences.customWallpaperUri.isNullOrBlank()) Color.Black.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
-                ),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Preferences & Personalization", fontWeight = FontWeight.Bold)
-                    }
-                },
-                actions = {
-                    TextButton(onClick = onOpenAuth) {
-                        Icon(
-                            imageVector = if (userProfile.isSignedIn) Icons.Default.AccountCircle else Icons.Default.Login,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (userProfile.isSignedIn) userProfile.tier else "Sign In",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(bottom = 80.dp)
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // User Account & Tier Card
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (isPaidOrLegendary) Color(0xFF26200A) else MaterialTheme.colorScheme.surfaceVariant
+            ),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("user_account_card")
         ) {
-            // Sign in prompt banner if not signed in
-            if (!userProfile.isSignedIn) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isPaidOrLegendary) Icons.Default.Star else Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = Color.Black
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = if (userProfile.isSignedIn) userProfile.username else "Guest Visitor",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                text = if (userProfile.isSignedIn) userProfile.email else "Not logged in",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(28.dp)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Signed User Exclusive Perks",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Text(
-                                    text = "Sign in with Google, Passkey, or Email to unlock custom Themes and Uploaded Background Wallpapers!",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = onOpenAuth,
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Text("Sign In", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Theme & Color Section (Signed user option)
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Appearance & Themes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            }
-                            if (userProfile.isSignedIn) {
-                                Surface(
-                                    color = SuccessGreen.copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "UNLOCKED",
-                                        color = SuccessGreen,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Dark mode toggle
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("Dark Mode", fontWeight = FontWeight.SemiBold)
-                                Text("High contrast OLED dark theme", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(
-                                checked = preferences.isDarkMode,
-                                onCheckedChange = {
-                                    onUpdateTheme(preferences.themeVariant, it)
-                                },
-                                modifier = Modifier.testTag("dark_mode_switch")
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Animations switch (Default On)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Animations", fontWeight = FontWeight.SemiBold)
-                                Text("Smooth transitions, physics springs, and motion depth", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Switch(
-                                checked = animationsEnabled,
-                                onCheckedChange = {
-                                    animationsEnabled = it
-                                    setInAppAnimationsEnabled(context, it)
-                                },
-                                modifier = Modifier.testTag("animations_switch")
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Text("Accent Color Palette", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            items(AVAILABLE_THEMES) { themeOpt ->
-                                val isSelected = preferences.themeVariant == themeOpt.id
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier
-                                        .testTag("theme_color_${themeOpt.id}")
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            onUpdateTheme(themeOpt.id, preferences.isDarkMode)
-                                        }
-                                        .padding(4.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(36.dp)
-                                            .clip(CircleShape)
-                                            .background(themeOpt.color)
-                                            .border(
-                                                width = if (isSelected) 3.dp else 1.dp,
-                                                color = if (isSelected) Color.White else Color.Transparent,
-                                                shape = CircleShape
-                                            )
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = themeOpt.id.replaceFirstChar { it.uppercase() },
-                                        fontSize = 11.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Uploaded Background Wallpaper Section (Signed user option)
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Wallpaper, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Uploaded Background Wallpaper", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            }
-                            if (userProfile.isSignedIn) {
-                                Surface(
-                                    color = SuccessGreen.copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "UNLOCKED",
-                                        color = SuccessGreen,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Set a custom photo or wallpaper from your device gallery to personalize your JUSTFAN background.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = userProfile.tier.uppercase(),
+                            color = Color.Black,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
+                    }
+                }
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                        // Current Wallpaper Preview
-                        if (!preferences.customWallpaperUri.isNullOrBlank()) {
+                if (userProfile.isSignedIn) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Sync, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Preferences synced with database across all devices", fontSize = 11.sp, color = SuccessGreen)
+                        }
+                        OutlinedButton(
+                            onClick = onSignOutClick,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("sign_out_button")
+                        ) {
+                            Text("Sign Out", fontSize = 12.sp)
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = onSignInClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("sign_in_button")
+                    ) {
+                        Text("Log In or Connect Account to Sync Preferences", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Theme Customization Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.ColorLens, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "App Theme Accent",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "Select your accent color. Automatically updates across all your devices via the database.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(AVAILABLE_THEMES) { themeOpt ->
+                        val isSelected = preferences.themeVariant.equals(themeOpt.id, ignoreCase = true)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .testTag("theme_btn_${themeOpt.id}")
+                                .clickable {
+                                    onUpdateTheme(themeOpt.id, preferences.isDarkMode)
+                                }
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(130.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .size(46.dp)
+                                    .background(themeOpt.color, CircleShape)
+                                    .border(
+                                        width = if (isSelected) 3.dp else 1.dp,
+                                        color = if (isSelected) Color.White else Color.Transparent,
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
                             ) {
-                                AsyncImage(
-                                    model = preferences.customWallpaperUri,
-                                    contentDescription = "Current Wallpaper",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(Color.Black.copy(alpha = preferences.wallpaperDim))
-                                )
-                                Row(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(8.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = { onUpdateWallpaper(null, 0.65f) },
-                                        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Black.copy(alpha = 0.6f)),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color.Red, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Remove Wallpaper", color = Color.White, fontSize = 12.sp)
-                                    }
+                                if (isSelected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(20.dp))
                                 }
                             }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Wallpaper Dim Slider
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Wallpaper Dim / Overlay: ${(preferences.wallpaperDim * 100).toInt()}%",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Slider(
-                                value = preferences.wallpaperDim,
-                                onValueChange = { onUpdateWallpaper(preferences.customWallpaperUri, it) },
-                                valueRange = 0.2f..0.85f,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-
-                        // Upload button
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    photoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f).testTag("btn_upload_wallpaper")
-                            ) {
-                                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Choose from Gallery")
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // URL input option
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            OutlinedTextField(
-                                value = customUrlInput,
-                                onValueChange = { customUrlInput = it },
-                                placeholder = { Text("Or paste image URL (https://…)", fontSize = 12.sp) },
-                                singleLine = true,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    if (customUrlInput.isNotBlank()) {
-                                        onUpdateWallpaper(customUrlInput.trim(), wallpaperDimSlider)
-                                        customUrlInput = ""
-                                    }
-                                },
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Apply")
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Text("Or Select Curated Preset Wallpaper:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(presetWallpapers) { (name, url) ->
-                                val isSelected = preferences.customWallpaperUri == url
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            onUpdateWallpaper(url, wallpaperDimSlider)
-                                        }
-                                        .padding(2.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(width = 72.dp, height = 54.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .border(
-                                                width = if (isSelected) 2.dp else 1.dp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.4f),
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                    ) {
-                                        AsyncImage(
-                                            model = url,
-                                            contentDescription = name,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(name, fontSize = 10.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // User Membership Profile & 3 Tiers
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.AccountCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Membership & Tiers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            }
-                            val isStrictAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
-                            if (isStrictAdmin) {
-                                Surface(
-                                    color = Color(0xFFEF4444),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "ADMIN",
-                                        color = Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text("User: ${userProfile.username} ${if (userProfile.email.isNotBlank()) "(${userProfile.email})" else ""}", fontWeight = FontWeight.Medium)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Current Tier: ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Surface(
-                                color = when (userProfile.tier) {
-                                    "Legendary" -> GoldAccent
-                                    "Pro" -> MaterialTheme.colorScheme.primaryContainer
-                                    else -> MaterialTheme.colorScheme.surface
-                                },
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = userProfile.tier.uppercase(),
-                                    color = if (userProfile.tier == "Legendary") Color.Black else MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        val hasUnlimited = userProfile.tier == "Legendary" || userProfile.isProActive || requestQuota.unlimited
-                        val resetsDateFormatted = remember(requestQuota.resetsAt) {
-                            val raw = requestQuota.resetsAt
-                            if (raw.isNullOrBlank()) {
-                                "end of month"
-                            } else {
-                                try {
-                                    val inputFormats = listOf(
-                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US),
-                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
-                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
-                                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
-                                        SimpleDateFormat("yyyy-MM-dd", Locale.US)
-                                    )
-                                    var parsedDate: Date? = null
-                                    for (fmt in inputFormats) {
-                                        try {
-                                            parsedDate = fmt.parse(raw)
-                                            if (parsedDate != null) break
-                                        } catch (_: Exception) {}
-                                    }
-                                    if (parsedDate != null) {
-                                        SimpleDateFormat("MMM dd, yyyy", Locale.US).format(parsedDate)
-                                    } else {
-                                        raw.substringBefore("T")
-                                    }
-                                } catch (_: Exception) {
-                                    raw.substringBefore("T")
-                                }
-                            }
-                        }
-
-                        // Requests Allowance display
-                        val quotaDescription = when {
-                            userProfile.tier == "Legendary" -> "🌟 Unlimited requests forever (Lifetime VIP)"
-                            userProfile.isProActive -> {
-                                val expiresFormatted = if (userProfile.proExpiresAt > 0L && userProfile.proExpiresAt != Long.MAX_VALUE) {
-                                    val sdf = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-                                    "Expires: ${sdf.format(Date(userProfile.proExpiresAt))}"
-                                } else {
-                                    "Active 1 Month"
-                                }
-                                "⚡ Unlimited requests for 1 month ($expiresFormatted)"
-                            }
-                            hasUnlimited -> "✨ Unlimited requests"
-                            else -> "📝 ${requestQuota.remaining} of ${requestQuota.limit} requests left this month • Resets on $resetsDateFormatted"
-                        }
-
-                        Text(
-                            text = quotaDescription,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        val isStrictAdmin = userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
-                        if (isStrictAdmin) {
-                            Text("Admin User Tier Management:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                listOf("Free", "Pro", "Legendary").forEach { plan ->
-                                    val isSelected = userProfile.tier.equals(plan, ignoreCase = true)
-                                    OutlinedButton(
-                                        onClick = { onUpdatePlan(plan) },
-                                        colors = if (isSelected) ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else ButtonDefaults.outlinedButtonColors(),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text(plan, fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = onOpenAdmin,
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.AdminPanelSettings, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Open Admin Dashboard to Manage Users")
-                            }
-                        } else {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Text("Tier Assignment", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Membership tiers (Free, Pro, Legendary) are assigned and managed directly by the platform Administrator. Normal users cannot modify their own tier.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = onOpenAuth,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(if (userProfile.isSignedIn) "Account Info" else "Sign In")
-                            }
-
-                            if (userProfile.isSignedIn) {
-                                OutlinedButton(
-                                    onClick = onSignOut,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Sign Out")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Fingerprint Login Toggle
-            item {
-                var isBioEnabled by remember {
-                    mutableStateOf(com.example.justfan.util.BiometricAuthManager.isBiometricEnabled(context))
-                }
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text("Fingerprint login", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        text = if (isBioEnabled) "Enabled for ${com.example.justfan.util.BiometricAuthManager.getSavedAccountEmail(context) ?: "this device"}" else "Disabled (Shortcut for returning users)",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            Switch(
-                                checked = isBioEnabled,
-                                onCheckedChange = { checked ->
-                                    if (!checked) {
-                                        com.example.justfan.util.BiometricAuthManager.clearBiometricData(context)
-                                        isBioEnabled = false
-                                    } else {
-                                        if (userProfile.isSignedIn && !userProfile.refreshToken.isNullOrBlank()) {
-                                            val act = context as? androidx.fragment.app.FragmentActivity
-                                            if (act != null) {
-                                                com.example.justfan.util.BiometricAuthManager.promptEnableBiometric(
-                                                    activity = act,
-                                                    email = userProfile.email,
-                                                    refreshToken = userProfile.refreshToken!!,
-                                                    onSuccess = { isBioEnabled = true },
-                                                    onError = { /* ignored */ }
-                                                )
-                                            }
-                                        } else {
-                                            onOpenAuth()
-                                        }
-                                    }
-                                }
+                                text = themeOpt.name.split(" ").first(),
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
                         }
                     }
                 }
-            }
 
-            // Content Safety Filter
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Content Safety & Filter", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Content Filter Mode", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    text = if (preferences.contentFilter == "sfw") "SFW Only (Safe For Work)" else "All Content (Unrestricted)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    val next = if (preferences.contentFilter == "sfw") "nsfw" else "sfw"
-                                    onUpdateContentFilter(next)
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.testTag("filter_toggle_button")
-                            ) {
-                                Text(preferences.contentFilter.uppercase())
-                            }
-                        }
-                    }
+                    Text("Dark Mode", fontWeight = FontWeight.SemiBold)
+                    Switch(
+                        checked = preferences.isDarkMode,
+                        onCheckedChange = { onUpdateTheme(preferences.themeVariant, it) }
+                    )
                 }
             }
+        }
 
-            // Preferred Tags
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.LocalOffer, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Preferred Hashtags", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        }
+        // Custom Wallpaper Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Custom Background Wallpaper",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Content matching your preferred tags is prioritized on your feed.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                Text(
+                    text = "Personalize your app background with a custom wallpaper photo. Synced to your user profile in Supabase.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                OutlinedTextField(
+                    value = wallpaperUrlInput,
+                    onValueChange = { wallpaperUrlInput = it },
+                    label = { Text("Wallpaper Image URL") },
+                    placeholder = { Text("https://example.com/wallpaper.jpg") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("wallpaper_url_input"),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Background Dim Intensity: ${(dimSlider * 100).toInt()}%",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Slider(
+                    value = dimSlider,
+                    onValueChange = { dimSlider = it },
+                    valueRange = 0.2f..0.9f
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            val uri = wallpaperUrlInput.trim().ifBlank { null }
+                            onUpdateWallpaper(uri, dimSlider)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("apply_wallpaper_button")
+                    ) {
+                        Text("Apply & Sync to Database", fontWeight = FontWeight.Bold)
+                    }
+
+                    if (!preferences.customWallpaperUri.isNullOrBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                wallpaperUrlInput = ""
+                                onUpdateWallpaper(null, dimSlider)
+                            },
+                            shape = RoundedCornerShape(10.dp)
                         ) {
-                            preferences.preferredTags.forEach { tag ->
-                                InputChip(
-                                    selected = true,
-                                    onClick = { onRemovePreferredTag(tag) },
-                                    label = { Text("#$tag") },
-                                    trailingIcon = { Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp)) },
-                                    modifier = Modifier.testTag("pref_tag_$tag")
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = newTagInput,
-                                onValueChange = { newTagInput = it },
-                                placeholder = { Text("Add tag e.g. cosplay, noir…") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier
-                                    .testTag("add_tag_input")
-                                    .weight(1f)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    if (newTagInput.isNotBlank()) {
-                                        onAddPreferredTag(newTagInput)
-                                        newTagInput = ""
-                                    }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.testTag("add_tag_button")
-                            ) {
-                                Text("Add")
-                            }
+                            Text("Clear")
                         }
                     }
                 }

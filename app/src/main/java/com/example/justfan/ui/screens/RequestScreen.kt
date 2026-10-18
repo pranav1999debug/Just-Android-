@@ -2,1454 +2,348 @@ package com.example.justfan.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.AllInclusive
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
-import coil.request.ImageRequest
 import com.example.justfan.data.model.RequestEntity
+import com.example.justfan.data.model.RequestQuota
 import com.example.justfan.data.model.UserProfile
-import com.example.justfan.data.remote.BufferChannel
-import com.example.justfan.data.remote.MediaUploadClient
-import com.example.justfan.ui.components.SocialPostingBottomSheet
+import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
-import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RequestScreen(
     userProfile: UserProfile,
-    requestQuota: com.example.justfan.data.model.RequestQuota,
+    quota: RequestQuota,
     requests: List<RequestEntity>,
-    onSubmitRequest: (name: String, email: String, telegram: String?, message: String, imageUrl: String?, onResult: (Boolean, String?) -> Unit) -> Unit,
-    onViewGallery: () -> Unit,
-    onUpgradeClick: () -> Unit,
-    isSyncing: Boolean = false,
-    onSyncRequests: () -> Unit = {},
-    onSignInRequired: () -> Unit = {},
-    onUserMismatch: () -> Unit = {},
-    onDeleteRequest: (String) -> Unit = {},
-    onEditRequest: (id: String, name: String, message: String, imageUrl: String?) -> Unit = { _, _, _, _ -> },
+    initialIdea: String = "",
+    onSubmitRequest: (name: String, email: String, telegram: String?, message: String, image: String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var nameInput by remember(userProfile) { mutableStateOf(userProfile.username.ifBlank { "" }) }
+    var emailInput by remember(userProfile) { mutableStateOf(userProfile.email.ifBlank { "" }) }
+    var telegramInput by remember { mutableStateOf("") }
+    var messageInput by remember(initialIdea) { mutableStateOf(initialIdea) }
+    var imageUrlInput by remember { mutableStateOf("") }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) {
-        onSyncRequests()
-    }
+    val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
+            userProfile.tier.equals("pro", ignoreCase = true) || userProfile.isAdmin
 
-    var modelName by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf(userProfile.email) }
-    var telegram by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-    var referenceImageUrl by remember { mutableStateOf("") }
-    var selectedLocalUri by remember { mutableStateOf<Uri?>(null) }
-    var isUploadingMedia by remember { mutableStateOf(false) }
-    var uploadStatusText by remember { mutableStateOf("Uploading media...") }
-    var uploadError by remember { mutableStateOf<String?>(null) }
-    var submitErrorMessage by remember { mutableStateOf<String?>(null) }
-    var isSubmitting by remember { mutableStateOf(false) }
-    var showSuccessSnackbar by remember { mutableStateOf(false) }
-    var previewImageUrl by remember { mutableStateOf<String?>(null) }
-    var requestToDelete by remember { mutableStateOf<RequestEntity?>(null) }
-    var requestToEdit by remember { mutableStateOf<RequestEntity?>(null) }
-
-    // Smart Media Routing & Social Posting State
-    var pendingMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    var showSocialPromptDialog by remember { mutableStateOf(false) }
-    var showSocialPostingSheet by remember { mutableStateOf(false) }
-    var bufferChannels by remember { mutableStateOf<List<BufferChannel>>(emptyList()) }
-    var isLoadingChannels by remember { mutableStateOf(false) }
-    var channelLoadError by remember { mutableStateOf<String?>(null) }
-    var isGeneratingCaption by remember { mutableStateOf(false) }
-    var isSubmittingSocial by remember { mutableStateOf(false) }
-
-    fun loadChannels() {
-        isLoadingChannels = true
-        channelLoadError = null
-        coroutineScope.launch {
-            val res = MediaUploadClient.listBufferChannels()
-            isLoadingChannels = false
-            if (res.isSuccess) {
-                bufferChannels = res.getOrNull().orEmpty()
-            } else {
-                channelLoadError = res.exceptionOrNull()?.message ?: "Failed to load channels"
-            }
-        }
-    }
-
-    fun executeUpload(
-        uris: List<Uri>,
-        title: String? = null,
-        description: String? = null,
-        hashtags: String? = null,
-        channelId: String? = null,
-        mode: String = "addToQueue",
-        shareToSocial: Boolean = false
-    ) {
-        if (uris.isEmpty()) return
-        isUploadingMedia = true
-        uploadStatusText = if (shareToSocial) "Uploading & cross-posting to Buffer..." else "Uploading image..."
-        uploadError = null
-
-        coroutineScope.launch {
-            val result = MediaUploadClient.uploadMedia(
-                context = context,
-                uris = uris,
-                title = title ?: modelName.ifBlank { "JUSTFAN Request Reference" },
-                description = description,
-                hashtags = hashtags,
-                channelId = channelId,
-                mode = mode,
-                shareToSocial = shareToSocial,
-                userId = userProfile.id
-            )
-            isUploadingMedia = false
-            isSubmittingSocial = false
-
-            if (result.isSuccess) {
-                val resp = result.getOrNull()
-                val allUrls = resp?.groups?.flatMap { it.urls } ?: emptyList()
-                if (allUrls.isNotEmpty()) {
-                    referenceImageUrl = allUrls.first()
-                }
-                showSuccessSnackbar = true
-            } else {
-                uploadError = result.exceptionOrNull()?.message ?: "Upload failed"
-            }
-        }
-    }
-
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            pendingMediaUris = uris
-            selectedLocalUri = uris.firstOrNull()
-            uploadError = null
-            executeUpload(uris, shareToSocial = false)
-        }
-    }
-
-    val isLegendary = userProfile.tier == "Legendary" || userProfile.isAdmin
-    val isPro = userProfile.isProActive
-    val hasUnlimited = isLegendary || isPro || requestQuota.unlimited
-    val remainingRequests = if (hasUnlimited) 999 else requestQuota.remaining
-    val resetsDateFormatted = remember(requestQuota.resetsAt) {
-        val raw = requestQuota.resetsAt
-        if (raw.isNullOrBlank()) {
-            "end of month"
+    val myRequests = remember(requests, userProfile.email) {
+        if (userProfile.email.isNotBlank()) {
+            requests.filter { it.email.equals(userProfile.email, ignoreCase = true) }
         } else {
-            try {
-                val inputFormats = listOf(
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US),
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
-                    SimpleDateFormat("yyyy-MM-dd", Locale.US)
-                )
-                var parsedDate: Date? = null
-                for (fmt in inputFormats) {
-                    try {
-                        parsedDate = fmt.parse(raw)
-                        if (parsedDate != null) break
-                    } catch (_: Exception) {
-                    }
-                }
-                if (parsedDate != null) {
-                    val outFormat = SimpleDateFormat("MMM dd, yyyy", Locale.US)
-                    outFormat.format(parsedDate)
-                } else {
-                    raw.substringBefore("T")
-                }
-            } catch (_: Exception) {
-                raw.substringBefore("T")
-            }
+            requests.take(5)
         }
     }
 
-    Scaffold(
-        containerColor = Color.Transparent,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Content Request Hub", fontWeight = FontWeight.Bold)
-                    }
-                },
-                actions = {
-                    TextButton(onClick = onViewGallery) {
-                        Text("Gallery Archive →", color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = 16.dp)
-        ) {
-            // Subscription status bar
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(12.dp),
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Quota / Unlimited Status Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isPaidOrLegendary) Color(0xFF2A2208) else MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp)
+                    .testTag("request_quota_card")
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Tier: ${userProfile.tier}${if (userProfile.isAdmin) " (Admin)" else ""}",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isLegendary) GoldAccent else if (isPro) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            if (hasUnlimited) {
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Icon(Icons.Default.Verified, contentDescription = null, tint = if (isLegendary) GoldAccent else MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                        Text(
-                            text = when {
-                                hasUnlimited -> "Unlimited"
-                                else -> "${requestQuota.remaining} of ${requestQuota.limit} requests left this month"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        if (!hasUnlimited) {
-                            Text(
-                                text = "Resets on $resetsDateFormatted",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    if (!isLegendary) {
-                        Button(
-                            onClick = onUpgradeClick,
-                            colors = ButtonDefaults.buttonColors(containerColor = if (isPro) GoldAccent else MaterialTheme.colorScheme.primary, contentColor = if (isPro) Color.Black else Color.White),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(if (isPro) "Upgrade Legendary" else "Upgrade", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-
-            // Supabase Live Database Connection Banner
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(SuccessGreen)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "Supabase Live Database",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    color = SuccessGreen.copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "RequestfromApp TABLE",
-                                        color = SuccessGreen,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Black,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                            }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isPaidOrLegendary) Icons.Default.AllInclusive else Icons.Default.Star,
+                                contentDescription = null,
+                                tint = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "zlboyxbqppoimhhbvrax.supabase.co • ${requests.size} Requests Connected",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 10.sp,
-                                maxLines = 1
+                                text = if (isPaidOrLegendary) "UNLIMITED REQUESTS" else "REQUEST QUOTA",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 14.sp,
+                                color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Surface(
+                            color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = if (isPaidOrLegendary) "LEGENDARY TIER" else "${quota.remaining} LEFT",
+                                color = Color.Black,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
                     }
 
-                    FilledTonalButton(
-                        onClick = onSyncRequests,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("btn_sync_requests_supabase")
-                    ) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Syncing...", fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = if (isPaidOrLegendary) {
+                            "As a Legendary subscriber, your requests are processed with top priority with no monthly limits."
                         } else {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Sync",
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Sync", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                            "Free tier includes 3 requests per month. Upgrade to Legendary or Pro for unlimited requests and direct media downloads."
+                        },
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
+        }
 
-            // Tabs
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = MaterialTheme.colorScheme.background,
+        // New Request Form Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("Submit Request", fontWeight = FontWeight.SemiBold) },
-                    modifier = Modifier.testTag("tab_submit_request")
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("Live Requests (${requests.size})", fontWeight = FontWeight.SemiBold) },
-                    modifier = Modifier.testTag("tab_my_requests")
-                )
-            }
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Submit a Custom Content Request",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
 
-            Spacer(modifier = Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("Your Name or Alias") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-            if (selectedTab == 0) {
-                // Submit Request Form
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 80.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    item {
-                        OutlinedTextField(
-                            value = modelName,
-                            onValueChange = { modelName = it },
-                            label = { Text("Creator / Model Name or Social Handle *") },
-                            placeholder = { Text("e.g. Aria Nova or @arianova") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .testTag("request_input_name")
-                                .fillMaxWidth()
-                        )
-                    }
+                    OutlinedTextField(
+                        value = emailInput,
+                        onValueChange = { emailInput = it },
+                        label = { Text("Email (for receiving fulfillment)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    item {
-                        OutlinedTextField(
-                            value = email,
-                            onValueChange = { email = it },
-                            label = { Text("Notification Email *") },
-                            placeholder = { Text("your@email.com") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .testTag("request_input_email")
-                                .fillMaxWidth()
-                        )
-                    }
+                    OutlinedTextField(
+                        value = telegramInput,
+                        onValueChange = { telegramInput = it },
+                        label = { Text("Telegram Username (Optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    item {
-                        OutlinedTextField(
-                            value = telegram,
-                            onValueChange = { telegram = it },
-                            label = { Text("Telegram Username (Optional)") },
-                            placeholder = { Text("@yourtelegram") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .testTag("request_input_telegram")
-                                .fillMaxWidth()
-                        )
-                    }
+                    OutlinedTextField(
+                        value = messageInput,
+                        onValueChange = { messageInput = it },
+                        label = { Text("Request Details (Shoot, theme, model, outfit…)") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(110.dp)
+                            .testTag("request_message_input"),
+                        maxLines = 4
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    // Reference Photo: Gallery Picker with Imgchest API Upload
-                    item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.AddPhotoAlternate,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "Media Upload & Routing (Imgchest / Catbox)",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                    }
+                    OutlinedTextField(
+                        value = imageUrlInput,
+                        onValueChange = { imageUrlInput = it },
+                        label = { Text("Reference Photo URL (Optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
 
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.primaryContainer,
-                                        shape = RoundedCornerShape(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "Auto-Routing",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                if (selectedLocalUri != null || referenceImageUrl.isNotBlank()) {
-                                    // Preview of chosen image
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(80.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(Color.Black.copy(alpha = 0.2f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            SubcomposeAsyncImage(
-                                                model = ImageRequest.Builder(LocalContext.current)
-                                                    .data(if (selectedLocalUri != null) selectedLocalUri else referenceImageUrl)
-                                                    .crossfade(true)
-                                                    .build(),
-                                                contentDescription = "Selected Reference",
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize(),
-                                                loading = {
-                                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                                                    }
-                                                },
-                                                error = {
-                                                    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
-                                                        Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                                    }
-                                                }
-                                            )
-                                            if (isUploadingMedia) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .background(Color.Black.copy(alpha = 0.6f)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    CircularProgressIndicator(
-                                                        modifier = Modifier.size(28.dp),
-                                                        strokeWidth = 3.dp,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.width(12.dp))
-
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            if (isUploadingMedia) {
-                                                Text(
-                                                    text = uploadStatusText,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 12.sp,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                                Text(
-                                                    text = "Uploading securely to cloud hosting...",
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            } else if (referenceImageUrl.isNotBlank()) {
-                                                val hostLabel = when {
-                                                    referenceImageUrl.contains("imgchest") -> "Uploaded to Imgchest ✓"
-                                                    referenceImageUrl.contains("uguu") -> "Uploaded securely ✓"
-                                                    referenceImageUrl.contains("catbox") || referenceImageUrl.contains("litter") -> "Uploaded to Catbox ✓"
-                                                    referenceImageUrl.contains("tmpfiles") -> "Uploaded securely ✓"
-                                                    else -> "Uploaded ✓"
-                                                }
-                                                Surface(
-                                                    color = SuccessGreen.copy(alpha = 0.2f),
-                                                    shape = RoundedCornerShape(4.dp)
-                                                ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    ) {
-                                                        Icon(
-                                                            Icons.Default.CheckCircle,
-                                                            contentDescription = null,
-                                                            tint = SuccessGreen,
-                                                            modifier = Modifier.size(12.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text(
-                                                            text = hostLabel,
-                                                            color = SuccessGreen,
-                                                            fontSize = 10.sp,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                Text(
-                                                    text = referenceImageUrl,
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 1
-                                                )
-                                            }
-
-                                            Spacer(modifier = Modifier.height(6.dp))
-
-                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        mediaPickerLauncher.launch(
-                                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                                        )
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                                    shape = RoundedCornerShape(6.dp)
-                                                ) {
-                                                    Text("Change", fontSize = 11.sp)
-                                                }
-
-                                                TextButton(
-                                                    onClick = {
-                                                        selectedLocalUri = null
-                                                        referenceImageUrl = ""
-                                                        pendingMediaUris = emptyList()
-                                                        uploadError = null
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                                                ) {
-                                                    Text("Remove", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Empty state: Upload button
-                                    Button(
-                                        onClick = {
-                                            mediaPickerLauncher.launch(
-                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(8.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.primary),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("btn_pick_imgchest_image")
-                                    ) {
-                                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Select Images or Videos to Upload", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    }
-                                }
-
-                                if (uploadError != null) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = uploadError!!,
-                                        color = MaterialTheme.colorScheme.error,
-                                        fontSize = 11.sp
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                OutlinedTextField(
-                                    value = referenceImageUrl,
-                                    onValueChange = { referenceImageUrl = it },
-                                    label = { Text("Direct Link (Imgchest or Image URL)") },
-                                    placeholder = { Text("https://cdn.imgchest.com/files/...") },
-                                    singleLine = true,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .testTag("request_input_image")
-                                        .fillMaxWidth()
+                    Button(
+                        onClick = {
+                            if (emailInput.isNotBlank() && messageInput.isNotBlank()) {
+                                onSubmitRequest(
+                                    nameInput.ifBlank { "Fan Member" },
+                                    emailInput.trim(),
+                                    telegramInput.ifBlank { null },
+                                    messageInput.trim(),
+                                    imageUrlInput.ifBlank { null }
                                 )
-                            }
-                        }
-                    }
-
-                    item {
-                        OutlinedTextField(
-                            value = notes,
-                            onValueChange = { notes = it },
-                            label = { Text("Request Details / Outfit / Theme *") },
-                            placeholder = { Text("Describe specific shoot, theme, outfit or set requested…") },
-                            minLines = 3,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .testTag("request_input_notes")
-                                .fillMaxWidth()
-                        )
-                    }
-
-                    if (showSuccessSnackbar) {
-                        item {
-                            Surface(
-                                color = SuccessGreen.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Your request was successfully submitted to the team!",
-                                        color = SuccessGreen,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (submitErrorMessage != null) {
-                        item {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = submitErrorMessage!!,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (!hasUnlimited && remainingRequests <= 0) {
-                        item {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Monthly limit reached on this device or account. Resets on $resetsDateFormatted, or upgrade for unlimited.",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onErrorContainer
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Button(
-                                        onClick = onUpgradeClick,
-                                        colors = ButtonDefaults.buttonColors(containerColor = GoldAccent, contentColor = Color.Black),
-                                        shape = RoundedCornerShape(8.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("Upgrade for Unlimited", fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    item {
-                        val isSubmitEnabled = modelName.isNotBlank() && notes.isNotBlank() && !isSubmitting && !isUploadingMedia && (hasUnlimited || remainingRequests > 0)
-                        Button(
-                            onClick = {
-                                if (modelName.isNotBlank() && email.isNotBlank() && notes.isNotBlank()) {
-                                    isSubmitting = true
-                                    submitErrorMessage = null
-                                    onSubmitRequest(
-                                        modelName.trim(),
-                                        email.trim(),
-                                        telegram.trim().ifBlank { null },
-                                        notes.trim(),
-                                        referenceImageUrl.trim().ifBlank { null }
-                                    ) { success, errorText ->
-                                        isSubmitting = false
-                                        if (success) {
-                                            modelName = ""
-                                            notes = ""
-                                            referenceImageUrl = ""
-                                            selectedLocalUri = null
-                                            showSuccessSnackbar = true
-                                        } else {
-                                            when (errorText) {
-                                                "SIGN_IN_REQUIRED" -> {
-                                                    onSignInRequired()
-                                                }
-                                                "DEVICE_REQUIRED" -> {
-                                                    submitErrorMessage = "Device check failed, update the app"
-                                                }
-                                                "LIMIT_REACHED" -> {
-                                                    onSyncRequests()
-                                                    submitErrorMessage = "Monthly limit reached on this device or account. Resets on $resetsDateFormatted, or upgrade for unlimited."
-                                                }
-                                                "USER_MISMATCH" -> {
-                                                    onUserMismatch()
-                                                }
-                                                else -> {
-                                                    submitErrorMessage = errorText ?: "Failed to submit request"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = isSubmitEnabled,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                            modifier = Modifier
-                                .testTag("submit_request_button")
-                                .fillMaxWidth()
-                                .height(50.dp)
-                        ) {
-                            if (isSubmitting) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Submitting...")
-                            } else if (isUploadingMedia) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Uploading Media...")
+                                statusMessage = "Request submitted successfully! Admin will review it shortly. ✓"
+                                messageInput = ""
+                                imageUrlInput = ""
                             } else {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (hasUnlimited || remainingRequests > 0) "Submit to Supabase Database" else "Monthly limit reached. Resets on $resetsDateFormatted or Upgrade for unlimited",
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
+                                statusMessage = "Please enter an email and request details."
                             }
-                        }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                            contentColor = Color.Black
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("submit_request_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("SUBMIT REQUEST", fontWeight = FontWeight.Bold)
+                    }
+
+                    if (statusMessage != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = statusMessage!!,
+                            color = if (statusMessage!!.contains("✓")) SuccessGreen else DangerRed,
+                            fontSize = 12.sp
+                        )
                     }
                 }
-            } else {
-                // Live Supabase Requests List
-                if (requests.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = 80.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(24.dp)
+            }
+        }
+
+        // Past Requests Section
+        item {
+            Text(
+                text = "Recent Community & Personal Requests (${myRequests.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (myRequests.isEmpty()) {
+            item {
+                Text(
+                    text = "No previous requests logged yet.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp
+                )
+            }
+        } else {
+            items(myRequests, key = { it.id }) { req ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Inbox,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.size(64.dp)
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "No requests found yet",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                text = req.name ?: req.email.substringBefore("@"),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
                             )
+
+                            val (statusColor, statusIcon) = when (req.status.lowercase()) {
+                                "approved", "fulfilled" -> Pair(SuccessGreen, Icons.Default.CheckCircle)
+                                "rejected" -> Pair(DangerRed, Icons.Default.Warning)
+                                else -> Pair(GoldAccent, Icons.Default.HourglassEmpty)
+                            }
+
+                            Surface(color = statusColor.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(statusIcon, contentDescription = null, tint = statusColor, modifier = Modifier.size(12.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(req.status.uppercase(), color = statusColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(text = req.message, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+
+                        if (!req.downloadLink.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink.trim()))
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = GoldAccent, contentColor = Color.Black),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("DOWNLOAD FULFILLED MEDIA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        if (!req.rejectionReason.isNullOrBlank()) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Pull live records directly from the Supabase requests table or submit a new request.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                text = "Admin Note: ${req.rejectionReason}",
+                                fontSize = 11.sp,
+                                color = DangerRed
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(onClick = onSyncRequests) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Sync from Supabase")
-                                }
-                                OutlinedButton(onClick = { selectedTab = 0 }) {
-                                    Text("Submit New Request")
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 80.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        item {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Connected Supabase Records (${requests.size})",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                TextButton(onClick = onSyncRequests) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Refresh", fontSize = 12.sp)
-                                }
-                            }
-                        }
-
-                        items(requests, key = { it.id }) { req ->
-                            Card(
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                modifier = Modifier
-                                    .testTag("request_item_${req.id}")
-                                    .fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    // Top row: Title, By info, Status & Actions
-                                    val resolvedTitle = remember(req.name) {
-                                        when {
-                                            req.name.contains("instagram.com/reel", ignoreCase = true) -> "Instagram Reel Request"
-                                            req.name.contains("instagram.com", ignoreCase = true) -> "Instagram Request"
-                                            req.name.contains("onlyfans.com", ignoreCase = true) -> "OnlyFans Request"
-                                            req.name.contains("fansly.com", ignoreCase = true) -> "Fansly Request"
-                                            req.name.startsWith("http://") || req.name.startsWith("https://") -> "Community Creator Request"
-                                            else -> req.name
-                                        }
-                                    }
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = resolvedTitle,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            if (req.email.isNotBlank()) {
-                                                Text(
-                                                    text = "By: ${req.email}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    fontSize = 11.sp
-                                                )
-                                            }
-                                        }
-
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Surface(
-                                                color = when (req.status.lowercase()) {
-                                                    "delivered", "replied" -> SuccessGreen.copy(alpha = 0.2f)
-                                                    "in_progress" -> GoldAccent.copy(alpha = 0.2f)
-                                                    "rejected" -> MaterialTheme.colorScheme.errorContainer
-                                                    else -> MaterialTheme.colorScheme.primaryContainer
-                                                },
-                                                shape = RoundedCornerShape(6.dp)
-                                            ) {
-                                                Text(
-                                                    text = req.status.replace("_", " ").uppercase(),
-                                                    color = when (req.status.lowercase()) {
-                                                        "delivered", "replied" -> SuccessGreen
-                                                        "in_progress" -> GoldAccent
-                                                        "rejected" -> MaterialTheme.colorScheme.error
-                                                        else -> MaterialTheme.colorScheme.primary
-                                                    },
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Black,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                                )
-                                            }
-
-                                            IconButton(
-                                                onClick = { requestToEdit = req },
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Edit Request",
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-
-                                            IconButton(
-                                                onClick = { requestToDelete = req },
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.DeleteOutline,
-                                                    contentDescription = "Delete Request",
-                                                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Spacer(modifier = Modifier.height(8.dp))
-
-                                    if (!req.message.isBlank()) {
-                                        Text(
-                                            text = req.message,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                    }
-
-                                    // Reference Media Preview (Image, Video or Social Link)
-                                    if (!req.imageUrl.isNullOrBlank()) {
-                                        val mediaUrl = req.imageUrl
-                                        val isSocialOrVideo = remember(mediaUrl) {
-                                            mediaUrl.contains("instagram.com") ||
-                                                mediaUrl.contains("onlyfans.com") ||
-                                                mediaUrl.contains("fansly.com") ||
-                                                mediaUrl.contains("t.me") ||
-                                                mediaUrl.endsWith(".mp4", ignoreCase = true)
-                                        }
-
-                                        if (isSocialOrVideo) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
-                                                    .clickable {
-                                                        try {
-                                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(mediaUrl)))
-                                                        } catch (_: Exception) {}
-                                                    }
-                                                    .padding(10.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(36.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.Link,
-                                                            contentDescription = null,
-                                                            tint = MaterialTheme.colorScheme.onPrimary,
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = if (mediaUrl.contains("instagram.com/reel")) "Instagram Reel Link" else "Linked Social Media Reference",
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 12.sp,
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                    Text(
-                                                        text = mediaUrl,
-                                                        fontSize = 11.sp,
-                                                        color = MaterialTheme.colorScheme.primary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                Icon(
-                                                    imageVector = Icons.Default.OpenInNew,
-                                                    contentDescription = "Open Link",
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        } else {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .background(Color.Black.copy(alpha = 0.15f))
-                                                    .clickable { previewImageUrl = mediaUrl }
-                                                    .padding(6.dp)
-                                            ) {
-                                                SubcomposeAsyncImage(
-                                                    model = ImageRequest.Builder(LocalContext.current)
-                                                        .data(mediaUrl)
-                                                        .crossfade(true)
-                                                        .build(),
-                                                    contentDescription = "Reference Media",
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier
-                                                        .size(54.dp)
-                                                        .clip(RoundedCornerShape(6.dp)),
-                                                    loading = {
-                                                        Box(
-                                                            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                                        }
-                                                    },
-                                                    error = {
-                                                        Box(
-                                                            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer),
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                                                        }
-                                                    }
-                                                )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Photo Reference", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                                    }
-                                                    Text(
-                                                        text = mediaUrl,
-                                                        fontSize = 10.sp,
-                                                        color = MaterialTheme.colorScheme.primary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                Icon(Icons.Default.ZoomIn, contentDescription = "View Photo", modifier = Modifier.size(20.dp))
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                    }
-
-                                    // Footer with date and actions
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        val dateStr = remember(req.createdAt) {
-                                            try {
-                                                SimpleDateFormat("MMM dd, yyyy • HH:mm", Locale.getDefault()).format(Date(req.createdAt))
-                                            } catch (_: Exception) {
-                                                ""
-                                            }
-                                        }
-                                        Text(
-                                            text = if (dateStr.isNotBlank()) dateStr else "ID: ${req.id.take(8)}",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                        )
-
-                                        if ((req.status == "delivered" || req.status == "replied") && !req.downloadLink.isNullOrEmpty()) {
-                                            Button(
-                                                onClick = {
-                                                    try {
-                                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.downloadLink)))
-                                                    } catch (_: Exception) {}
-                                                },
-                                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
-                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                shape = RoundedCornerShape(6.dp)
-                                            ) {
-                                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text("View Delivery", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    // Delete request confirmation dialog
-    if (requestToDelete != null) {
-        val target = requestToDelete!!
-        AlertDialog(
-            onDismissRequest = { requestToDelete = null },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error
-                )
-            },
-            title = { Text("Delete Request", fontWeight = FontWeight.Bold) },
-            text = {
-                Text("Are you sure you want to delete this request (\"${target.name}\")? This will remove it from Supabase and your local storage.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteRequest(target.id)
-                        requestToDelete = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { requestToDelete = null }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Edit request dialog
-    if (requestToEdit != null) {
-        val target = requestToEdit!!
-        var editName by remember(target.id) { mutableStateOf(target.name) }
-        var editMessage by remember(target.id) { mutableStateOf(target.message) }
-        var editImageUrl by remember(target.id) { mutableStateOf(target.imageUrl.orEmpty()) }
-
-        AlertDialog(
-            onDismissRequest = { requestToEdit = null },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Edit,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            },
-            title = { Text("Edit Request", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    OutlinedTextField(
-                        value = editName,
-                        onValueChange = { editName = it },
-                        label = { Text("Creator / Model Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = editMessage,
-                        onValueChange = { editMessage = it },
-                        label = { Text("Request Message / Notes") },
-                        minLines = 2,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = editImageUrl,
-                        onValueChange = { editImageUrl = it },
-                        label = { Text("Reference Image URL") },
-                        placeholder = { Text("https://cdn.imgchest.com/files/...") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onEditRequest(
-                            target.id,
-                            editName.trim(),
-                            editMessage.trim(),
-                            editImageUrl.trim().ifBlank { null }
-                        )
-                        requestToEdit = null
-                    }
-                ) {
-                    Text("Save Changes")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { requestToEdit = null }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Image lightbox preview dialog
-    if (previewImageUrl != null) {
-        AlertDialog(
-            onDismissRequest = { previewImageUrl = null },
-            title = { Text("Reference Image", fontWeight = FontWeight.Bold) },
-            text = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(300.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                ) {
-                    SubcomposeAsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(previewImageUrl)
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = "Full Preview",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize(),
-                        loading = {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator()
-                            }
-                        },
-                        error = {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(Icons.Default.BrokenImage, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(44.dp))
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Could not load image directly", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text(
-                                    text = previewImageUrl.orEmpty(),
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                OutlinedButton(onClick = {
-                                    try {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(previewImageUrl)))
-                                    } catch (_: Exception) {}
-                                }) {
-                                    Text("Open in Browser", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { previewImageUrl = null }) {
-                    Text("Close")
-                }
-            }
-        )
-    }
-
-    // Social Posting Confirmation Prompt Dialog
-    if (showSocialPromptDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                showSocialPromptDialog = false
-                pendingMediaUris = emptyList()
-            },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Share,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            },
-            title = {
-                Text(
-                    text = "Also post this to social media?",
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Text(
-                    text = "Would you like to cross-post this media to your connected Buffer social accounts with an optional AI-generated caption?"
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showSocialPromptDialog = false
-                        showSocialPostingSheet = true
-                        loadChannels()
-                    },
-                    modifier = Modifier.testTag("prompt_social_yes")
-                ) {
-                    Text("Yes")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(
-                    onClick = {
-                        showSocialPromptDialog = false
-                        executeUpload(pendingMediaUris, shareToSocial = false)
-                    },
-                    modifier = Modifier.testTag("prompt_social_no")
-                ) {
-                    Text("No, just upload")
-                }
-            }
-        )
-    }
-
-    // Social Posting Bottom Sheet
-    if (showSocialPostingSheet) {
-        SocialPostingBottomSheet(
-            channels = bufferChannels,
-            isLoadingChannels = isLoadingChannels,
-            channelLoadError = channelLoadError,
-            onReloadChannels = { loadChannels() },
-            onDismissRequest = {
-                showSocialPostingSheet = false
-                // If user dismisses sheet, still complete upload without social posting
-                if (!isUploadingMedia && referenceImageUrl.isBlank()) {
-                    executeUpload(pendingMediaUris, shareToSocial = false)
-                }
-            },
-            onGenerateCaption = { captionTitle, onResult ->
-                isGeneratingCaption = true
-                coroutineScope.launch {
-                    val capRes = MediaUploadClient.generateCaption(captionTitle)
-                    isGeneratingCaption = false
-                    if (capRes.isSuccess) {
-                        val cap = capRes.getOrNull()
-                        if (cap != null) {
-                            onResult(cap.description, cap.hashtags.joinToString(" "))
-                        }
-                    } else {
-                        uploadError = capRes.exceptionOrNull()?.message ?: "Failed to generate caption"
-                    }
-                }
-            },
-            isGeneratingCaption = isGeneratingCaption,
-            onSubmit = { postTitle, postDesc, postTags, postChannelId, postMode ->
-                isSubmittingSocial = true
-                showSocialPostingSheet = false
-                executeUpload(
-                    uris = pendingMediaUris,
-                    title = postTitle,
-                    description = postDesc,
-                    hashtags = postTags,
-                    channelId = postChannelId,
-                    mode = postMode,
-                    shareToSocial = true
-                )
-            },
-            isSubmitting = isSubmittingSocial
-        )
     }
 }

@@ -23,7 +23,7 @@ object GeminiAiHelper {
      * using the Google Gemini API (gemini-3.5-flash with fallback models and smart local fallback).
      */
     suspend fun generateDescriptionAndHashtags(title: String): Result<GeneratedContentDetails> = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
+        val apiKey = try { BuildConfig.GEMINI_API_KEY } catch (_: Throwable) { "" }
         if (apiKey.isBlank()) {
             return@withContext Result.success(fallbackGenerate(title))
         }

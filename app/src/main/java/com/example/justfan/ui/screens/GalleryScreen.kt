@@ -91,7 +91,7 @@ fun GalleryScreen(
                                         com.example.justfan.util.DownloadHelper.enqueueDownload(
                                             context = context,
                                             url = link,
-                                            title = req.name,
+                                            title = req.name ?: "Download",
                                             isPremium = false
                                         )
                                     }
@@ -105,7 +105,7 @@ fun GalleryScreen(
                                 ) {
                                     AsyncImage(
                                         model = req.imageUrl,
-                                        contentDescription = req.name,
+                                        contentDescription = req.name ?: "Delivered request",
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()
                                     )
@@ -128,7 +128,7 @@ fun GalleryScreen(
 
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Text(
-                                        text = req.name,
+                                        text = req.name ?: "Fan Request",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold,
                                         maxLines = 1

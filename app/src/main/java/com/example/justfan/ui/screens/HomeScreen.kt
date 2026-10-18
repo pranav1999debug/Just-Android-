@@ -2,243 +2,137 @@ package com.example.justfan.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.pullrefresh.PullRefreshIndicator
-import androidx.compose.material.pullrefresh.pullRefresh
-import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.PostEntity
-import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.ui.components.CompactPostCard
-import com.example.justfan.ui.components.RequestTicker
-import com.example.justfan.ui.components.TopHeader
-import com.example.justfan.ui.components.TrendingCarousel
 
-@OptIn(androidx.compose.material.ExperimentalMaterialApi::class)
 @Composable
 fun HomeScreen(
     posts: List<PostEntity>,
-    trendingPosts: List<PostEntity>,
-    requests: List<RequestEntity>,
-    favoritePostIds: Set<String>,
-    contentFilter: String,
-    onPostClick: (String) -> Unit,
+    favoriteIds: Set<String>,
+    isPaidOrLegendary: Boolean,
+    onPostClick: (PostEntity) -> Unit,
     onToggleFavorite: (String) -> Unit,
-    onIncrementClicks: (String) -> Unit,
-    onNotificationsClick: () -> Unit,
-    onAdminClick: () -> Unit,
-    onPricingClick: () -> Unit,
-    onViewGallery: () -> Unit,
-    isSyncing: Boolean = false,
-    onSyncClick: () -> Unit = {},
-    userProfile: com.example.justfan.data.model.UserProfile? = null,
-    onAuthClick: () -> Unit = {},
-    hasCustomWallpaper: Boolean = false,
-    isScreenActive: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var searchQuery by remember { mutableStateOf("") }
-    var selectedTag by remember { mutableStateOf("All") }
-    var shuffleSeed by remember { mutableIntStateOf(0) }
+    var selectedFilter by remember { mutableStateOf("All") }
 
-    val tagsList = remember(posts) {
-        val dynamicTags = posts
-            .flatMap { it.tags }
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .take(20)
-        listOf("All", "Free Only") + dynamicTags
-    }
+    val filteredPosts = remember(posts, searchQuery, selectedFilter) {
+        posts.filter { post ->
+            val matchesSearch = searchQuery.isBlank() ||
+                    post.title.contains(searchQuery, ignoreCase = true) ||
+                    post.description.contains(searchQuery, ignoreCase = true)
 
-    // Filter posts
-    val filteredPosts = remember(posts, searchQuery, selectedTag, contentFilter, shuffleSeed) {
-        var result = posts
-        if (contentFilter == "sfw") {
-            result = result.filter { !it.isNsfw }
-        }
-        if (selectedTag == "Free Only") {
-            result = result.filter { it.isFree }
-        } else if (selectedTag != "All") {
-            result = result.filter { post ->
-                post.tags.any { it.equals(selectedTag, ignoreCase = true) }
+            val matchesFilter = when (selectedFilter) {
+                "Free" -> post.isFree
+                "Premium" -> !post.isFree
+                "Video" -> post.linkUrl.contains(".mp4") || post.imageUrl.contains(".mp4")
+                else -> true
             }
+
+            matchesSearch && matchesFilter
         }
-        if (searchQuery.isNotBlank()) {
-            val q = searchQuery.trim().lowercase()
-            result = result.filter { post ->
-                post.title.lowercase().contains(q) ||
-                        post.description.lowercase().contains(q) ||
-                        post.author.lowercase().contains(q) ||
-                        post.tags.any { it.lowercase().contains(q) }
-            }
-        }
-        if (shuffleSeed > 0) {
-            result = result.shuffled()
-        }
-        result
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        TopHeader(
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            onNotificationsClick = onNotificationsClick,
-            onAdminClick = onAdminClick,
-            onPricingClick = onPricingClick,
-            unreadNotificationsCount = 0,
-            isSyncing = isSyncing,
-            onSyncClick = onSyncClick,
-            userProfile = userProfile,
-            onAuthClick = onAuthClick,
-            hasCustomWallpaper = hasCustomWallpaper
-        )
+        // Search & Filter
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search exclusive galleries…") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("home_search_input"),
+                singleLine = true
+            )
 
-        val pullRefreshState = rememberPullRefreshState(refreshing = isSyncing, onRefresh = onSyncClick)
-        Box(modifier = Modifier.fillMaxSize().pullRefresh(pullRefreshState)) {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 160.dp),
-            contentPadding = PaddingValues(bottom = 80.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp)
-        ) {
-            // Live Delivered Requests Ticker (Top of Everything, only if real delivered requests exist)
-            if (requests.any { it.status.equals("delivered", true) || it.status.equals("replied", true) }) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    RequestTicker(
-                        requests = requests,
-                        onViewGallery = onViewGallery
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Trending Carousel
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                TrendingCarousel(
-                    trendingPosts = trendingPosts,
-                    onPostClick = onPostClick
-                )
-            }
-
-            // Discover Bar & Shuffle
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = "Discover",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Discover Feed",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = { shuffleSeed++ },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("shuffle_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Shuffle", fontSize = 12.sp)
-                    }
-                }
-            }
-
-            // Tag Filter Chips
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
-                ) {
-                    items(tagsList) { tag ->
-                        val isSelected = selectedTag == tag
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { selectedTag = tag },
-                            label = { Text(text = if (tag == "All") "All" else "#$tag") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.testTag("tag_chip_$tag")
-                        )
-                    }
-                }
-            }
-
-            // Posts Grid
-            if (filteredPosts.isEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No content found matching your filter.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-            } else {
-                items(filteredPosts, key = { it.id }) { post ->
-                    CompactPostCard(
-                        post = post,
-                        onPostClick = { onPostClick(post.id) },
-                        autoPlay = isScreenActive
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("All", "Free", "Premium", "Video").forEach { filter ->
+                    FilterChip(
+                        selected = selectedFilter == filter,
+                        onClick = { selectedFilter = filter },
+                        label = { Text(filter, fontSize = 12.sp) }
                     )
                 }
             }
         }
-            PullRefreshIndicator(
-                refreshing = isSyncing,
-                state = pullRefreshState,
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
+
+        // Post Grid
+        if (filteredPosts.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No galleries found matching your filter.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 300.dp),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(filteredPosts, key = { it.id }) { post ->
+                    CompactPostCard(
+                        post = post,
+                        isFavorite = post.id in favoriteIds,
+                        isPaidOrLegendary = isPaidOrLegendary,
+                        onCardClick = { onPostClick(post) },
+                        onToggleFavorite = { onToggleFavorite(post.id) },
+                        onDirectDownloadClick = {
+                            val url = post.directLinkUrl?.ifBlank { null } ?: post.linkUrl
+                            if (url.isNotBlank()) {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()))
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    )
+                }
+            }
         }
     }
 }

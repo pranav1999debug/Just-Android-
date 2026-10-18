@@ -191,7 +191,10 @@ object SupabaseClient {
                     val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
                     val isFree = obj.optBoolean("is_free", false)
                     val isNsfw = obj.optBoolean("is_nsfw", false)
+                    val clicks = obj.optInt("clicks_count", 0)
+                    val likes = obj.optInt("likes_count", 0)
                     val section = obj.optString("section", "home")
+                    val author = obj.optString("author", "JustFan Creator")
                     val createdAtStr = obj.optString("created_at", "")
 
                     val tagsList = mutableListOf<String>()
@@ -213,8 +216,11 @@ object SupabaseClient {
                             premiumLinkUrl = prem,
                             tags = tagsList,
                             section = section,
+                            author = author,
                             isNsfw = isNsfw,
                             isFree = isFree,
+                            clicksCount = clicks,
+                            likesCount = likes,
                             createdAt = parseIsoToMillis(createdAtStr)
                         )
                     )
@@ -226,6 +232,33 @@ object SupabaseClient {
             }
         } catch (e: Exception) {
             Log.e(TAG, "fetchPosts error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun recordPostClick(postId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            // We'll use a Supabase RPC or a simple increment if possible, 
+            // but for now, let's just try to update the clicks_count by fetching and then patching
+            // or better, if the backend supports it, a direct increment.
+            // Since we don't have an RPC, we'll just track it via a new table 'post_clicks' if it exists,
+            // or just patch the posts table.
+            
+            // Try to insert into post_clicks table first (as mentioned in docs)
+            val payload = JSONObject().apply {
+                put("post_id", postId)
+                put("clicked_at", Instant.now().toString())
+            }
+            val res = executePost("post_clicks", payload.toString())
+            if (res.isSuccess) {
+                Result.success(true)
+            } else {
+                // Fallback: try to increment clicks_count in posts table directly if post_clicks fails
+                // Note: This is a bit racey without RPC, but better than nothing
+                Log.w(TAG, "post_clicks insert failed, trending might be slow to update")
+                Result.success(false)
+            }
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }

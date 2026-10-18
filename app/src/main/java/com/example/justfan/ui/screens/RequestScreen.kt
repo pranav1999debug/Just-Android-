@@ -1,7 +1,7 @@
 package com.example.justfan.ui.screens
 
-import android.content.Intent
-import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Send
@@ -28,8 +29,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,9 +53,11 @@ import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.RequestQuota
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
+import kotlinx.coroutines.launch
 
 @Composable
 fun RequestScreen(
@@ -63,12 +69,33 @@ fun RequestScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var nameInput by remember(userProfile) { mutableStateOf(userProfile.username.ifBlank { "" }) }
     var emailInput by remember(userProfile) { mutableStateOf(userProfile.email.ifBlank { "" }) }
     var telegramInput by remember { mutableStateOf("") }
     var messageInput by remember(initialIdea) { mutableStateOf(initialIdea) }
     var imageUrlInput by remember { mutableStateOf("") }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var isUploading by remember { mutableStateOf(false) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                isUploading = true
+                statusMessage = "Uploading image to Imgchest..."
+                val result = ImgchestUploader.uploadImageDirect(context, it, "JUSTFAN Request Reference")
+                if (result.isSuccess) {
+                    imageUrlInput = result.getOrNull() ?: ""
+                    statusMessage = "Image uploaded successfully! ✓"
+                } else {
+                    statusMessage = "Upload failed: ${result.exceptionOrNull()?.message}"
+                }
+                isUploading = false
+            }
+        }
+    }
 
     val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
             userProfile.tier.equals("pro", ignoreCase = true) || userProfile.isAdmin
@@ -209,8 +236,26 @@ fun RequestScreen(
                         onValueChange = { imageUrlInput = it },
                         label = { Text("Reference Photo URL (Optional)") },
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        singleLine = true,
+                        trailingIcon = {
+                            if (isUploading) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                IconButton(onClick = { photoPickerLauncher.launch("image/*") }) {
+                                    Icon(Icons.Default.CloudUpload, contentDescription = "Upload Image")
+                                }
+                            }
+                        }
                     )
+
+                    if (imageUrlInput.isBlank() && !isUploading) {
+                        Text(
+                            text = "Or upload a photo directly to get a URL",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(16.dp))
 

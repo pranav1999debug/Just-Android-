@@ -219,28 +219,40 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             favoriteIds = favoriteIds,
                             isPaidOrLegendary = isPaidOrLegendary,
                             externalSearchQuery = globalSearchQuery,
-                            onPostClick = { navigateTo(AppScreen.PostDetail(it)) },
+                            onPostClick = {
+                                viewModel.recordPostClick(it.id)
+                                navigateTo(AppScreen.PostDetail(it))
+                            },
                             onToggleFavorite = { viewModel.toggleFavorite(it) }
                         )
                         is AppScreen.Categories -> CategoriesScreen(
                             posts = posts,
                             onPostClick = { postId ->
-                                posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
+                                posts.find { it.id == postId }?.let {
+                                    viewModel.recordPostClick(it.id)
+                                    navigateTo(AppScreen.PostDetail(it))
+                                }
                             }
                         )
                         is AppScreen.Free -> FreeScreen(
                             freePosts = posts.filter { it.isFree },
                             favoritePostIds = favoriteIds,
                             onPostClick = { postId ->
-                                posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
+                                posts.find { it.id == postId }?.let {
+                                    viewModel.recordPostClick(it.id)
+                                    navigateTo(AppScreen.PostDetail(it))
+                                }
                             },
                             onToggleFavorite = { viewModel.toggleFavorite(it) },
-                            onIncrementClicks = {}
+                            onIncrementClicks = { viewModel.recordPostClick(it) }
                         )
                         is AppScreen.Trending -> TrendingScreen(
                             trendingPosts = posts.sortedByDescending { it.clicksCount },
                             onPostClick = { postId ->
-                                posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
+                                posts.find { it.id == postId }?.let {
+                                    viewModel.recordPostClick(it.id)
+                                    navigateTo(AppScreen.PostDetail(it))
+                                }
                             }
                         )
                         is AppScreen.Requests -> RequestScreen(

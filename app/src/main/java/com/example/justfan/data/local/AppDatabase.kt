@@ -36,6 +36,12 @@ interface PostDao {
 
     @Query("DELETE FROM posts WHERE id = :id")
     suspend fun deletePost(id: String)
+
+    @Query("UPDATE posts SET clicksCount = clicksCount + 1 WHERE id = :id")
+    suspend fun incrementClicks(id: String)
+
+    @Query("UPDATE posts SET likesCount = likesCount + 1 WHERE id = :id")
+    suspend fun incrementLikes(id: String)
 }
 
 @Dao

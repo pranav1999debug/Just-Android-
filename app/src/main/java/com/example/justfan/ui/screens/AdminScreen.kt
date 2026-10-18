@@ -486,7 +486,10 @@ fun AdminUploadPostTab(
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var imageUrl by remember { mutableStateOf("") }
+    var adsLinkUrl by remember { mutableStateOf("") }
+    var premiumLinkUrl by remember { mutableStateOf("") }
     var directLinkUrl by remember { mutableStateOf("") }
+    var author by remember { mutableStateOf("JustFan Creator") }
     var tagsInput by remember { mutableStateOf("Exclusive, VIP, Glamour") }
     var isFree by remember { mutableStateOf(false) }
 
@@ -511,6 +514,15 @@ fun AdminUploadPostTab(
 
         item {
             OutlinedTextField(
+                value = author,
+                onValueChange = { author = it },
+                label = { Text("Author / Creator Name") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
                 label = { Text("Description") },
@@ -525,8 +537,32 @@ fun AdminUploadPostTab(
             OutlinedTextField(
                 value = imageUrl,
                 onValueChange = { imageUrl = it },
-                label = { Text("Image or Video Preview URL") },
+                label = { Text("Preview Image/Video URL (Main Thumbnail)") },
                 placeholder = { Text("https://cdn.imgchest.com/...jpg") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            Text("Download Link Configuration (3 Buttons)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        }
+
+        item {
+            OutlinedTextField(
+                value = adsLinkUrl,
+                onValueChange = { adsLinkUrl = it },
+                label = { Text("1. Download (Ads) Link") },
+                placeholder = { Text("Ad-supported link (e.g. Catbox/TeraBox)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                value = premiumLinkUrl,
+                onValueChange = { premiumLinkUrl = it },
+                label = { Text("2. Premium Link (VIP Users)") },
+                placeholder = { Text("High-speed link for VIP/Pro users") },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -535,8 +571,8 @@ fun AdminUploadPostTab(
             OutlinedTextField(
                 value = directLinkUrl,
                 onValueChange = { directLinkUrl = it },
-                label = { Text("Direct Download Media Link (for Paid / Legendary Users)") },
-                placeholder = { Text("https://example.com/download/full_set.zip") },
+                label = { Text("3. Direct Download Link (Pro/Admin Only)") },
+                placeholder = { Text("Instant direct file mirror") },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -573,9 +609,11 @@ fun AdminUploadPostTab(
                         val post = PostEntity(
                             id = UUID.randomUUID().toString(),
                             title = title.trim(),
+                            author = author.trim(),
                             description = description.trim(),
                             imageUrl = imageUrl.trim(),
-                            linkUrl = directLinkUrl.trim().ifBlank { imageUrl.trim() },
+                            linkUrl = adsLinkUrl.trim().ifBlank { imageUrl.trim() },
+                            premiumLinkUrl = premiumLinkUrl.trim().ifBlank { null },
                             directLinkUrl = directLinkUrl.trim().ifBlank { null },
                             tags = tags,
                             isFree = isFree,

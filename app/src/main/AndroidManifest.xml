@@ -19,17 +19,27 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.JustFan">
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.JustFan">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
+       <activity
+    android:name=".MainActivity"
+    android:exported="true"
+    android:launchMode="singleTop"
+    android:label="@string/app_name"
+    android:theme="@style/Theme.JustFan">
 
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+    <!-- Normal app icon launch -->
+    <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+    </intent-filter>
+
+    <!-- Open links to the website -->
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" android:host="www.lustyfan.online" />
+    </intent-filter>
+</activity>
     </application>
 
 </manifest>

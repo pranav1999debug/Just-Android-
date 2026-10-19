@@ -45,7 +45,7 @@
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="justfan" android:host="auth" />
+        <data android:scheme="justfan" android:host="auth-callback" />
     </intent-filter>
 </activity>
     </application>

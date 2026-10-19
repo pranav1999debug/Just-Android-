@@ -1,5 +1,7 @@
 package com.example.justfan.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -66,6 +69,7 @@ fun RequestScreen(
     requests: List<RequestEntity>,
     initialIdea: String = "",
     onSubmitRequest: (name: String, email: String, telegram: String?, message: String, image: String?) -> Unit,
+    onNavigateToPricing: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -259,35 +263,65 @@ fun RequestScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Button(
-                        onClick = {
-                            if (emailInput.isNotBlank() && messageInput.isNotBlank()) {
-                                onSubmitRequest(
-                                    nameInput.ifBlank { "Fan Member" },
-                                    emailInput.trim(),
-                                    telegramInput.ifBlank { null },
-                                    messageInput.trim(),
-                                    imageUrlInput.ifBlank { null }
+                    val isQuotaExhausted = !isPaidOrLegendary && quota.used >= 3
+
+                    if (isQuotaExhausted) {
+                        Surface(
+                            color = DangerRed.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "Monthly limit reached (3/3 requests). Free users are restricted to 3 requests per cycle.",
+                                    color = DangerRed,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
-                                statusMessage = "Request submitted successfully! Admin will review it shortly. ✓"
-                                messageInput = ""
-                                imageUrlInput = ""
-                            } else {
-                                statusMessage = "Please enter an email and request details."
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = onNavigateToPricing,
+                                    colors = ButtonDefaults.buttonColors(containerColor = GoldAccent, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth().testTag("btn_upgrade_quota_interceptor")
+                                ) {
+                                    Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Upgrade to Pro / Legendary for Unlimited Requests", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
-                            contentColor = Color.Black
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("submit_request_button")
-                    ) {
-                        Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("SUBMIT REQUEST", fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                if (emailInput.isNotBlank() && messageInput.isNotBlank()) {
+                                    onSubmitRequest(
+                                        nameInput.ifBlank { "Fan Member" },
+                                        emailInput.trim(),
+                                        telegramInput.ifBlank { null },
+                                        messageInput.trim(),
+                                        imageUrlInput.ifBlank { null }
+                                    )
+                                    statusMessage = "Request submitted successfully! Admin will review it shortly. ✓"
+                                    messageInput = ""
+                                    imageUrlInput = ""
+                                } else {
+                                    statusMessage = "Please enter an email and request details."
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("submit_request_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("SUBMIT REQUEST", fontWeight = FontWeight.Bold)
+                        }
                     }
 
                     if (statusMessage != null) {

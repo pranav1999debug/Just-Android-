@@ -52,11 +52,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.AVAILABLE_THEMES
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
+import kotlinx.coroutines.launch
 
 @Composable
 fun PreferencesScreen(
@@ -288,10 +293,79 @@ fun PreferencesScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // Device Storage Gallery Picker Handle
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+                var isUploadingWallpaper by remember { mutableStateOf(false) }
+
+                val galleryPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                    contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+                ) { uri ->
+                    if (uri != null) {
+                        coroutineScope.launch {
+                            isUploadingWallpaper = true
+                            val uploadRes = ImgchestUploader.uploadImageDirect(
+                                context = context,
+                                imageUri = uri,
+                                title = "Wallpaper ${userProfile.username}"
+                            )
+                            isUploadingWallpaper = false
+                            val finalUrl = if (uploadRes.isSuccess && !uploadRes.getOrNull().isNullOrBlank()) {
+                                uploadRes.getOrThrow()
+                            } else {
+                                try {
+                                    val safeKey = userProfile.email.ifBlank { "guest" }.replace(Regex("[^a-zA-Z0-9]"), "_")
+                                    val localFile = java.io.File(context.filesDir, "wallpaper_$safeKey.jpg")
+                                    context.contentResolver.openInputStream(uri)?.use { input ->
+                                        localFile.outputStream().use { output -> input.copyTo(output) }
+                                    }
+                                    android.net.Uri.fromFile(localFile).toString()
+                                } catch (_: Exception) {
+                                    uri.toString()
+                                }
+                            }
+                            wallpaperUrlInput = finalUrl
+                            onUpdateWallpaper(finalUrl, dimSlider)
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            galleryPickerLauncher.launch(
+                                androidx.activity.result.PickVisualMediaRequest(
+                                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                )
+                            )
+                        },
+                        enabled = !isUploadingWallpaper,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("pick_wallpaper_gallery_btn")
+                    ) {
+                        if (isUploadingWallpaper) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Uploading Wallpaper...", fontSize = 13.sp)
+                        } else {
+                            Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Pick Wallpaper from Device Gallery", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 OutlinedTextField(
                     value = wallpaperUrlInput,
                     onValueChange = { wallpaperUrlInput = it },
-                    label = { Text("Wallpaper Image URL") },
+                    label = { Text("Or Paste Wallpaper Image URL") },
                     placeholder = { Text("https://example.com/wallpaper.jpg") },
                     modifier = Modifier
                         .fillMaxWidth()

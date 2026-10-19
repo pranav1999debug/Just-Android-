@@ -170,8 +170,34 @@ object SupabaseClient {
         }
     }
 
+    private fun fetchPostClickCounts(): Map<String, Int> {
+        val map = mutableMapOf<String, Int>()
+        try {
+            val conn = openConnection("post_click_counts?select=post_id,clicks_count&order=clicks_count.desc&limit=1000", "GET")
+            if (conn.responseCode in 200..299) {
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val pid = obj.optString("post_id", "")
+                    val count = obj.optInt("clicks_count", 0)
+                    if (pid.isNotBlank()) {
+                        map[pid] = count
+                    }
+                }
+            } else {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchPostClickCounts warning", e)
+        }
+        return map
+    }
+
     suspend fun fetchPosts(limit: Int = 1000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
+            val clickCountsMap = fetchPostClickCounts()
             val endpoint = "posts?select=*&order=created_at.desc&limit=$limit"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
@@ -191,7 +217,7 @@ object SupabaseClient {
                     val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
                     val isFree = obj.optBoolean("is_free", false)
                     val isNsfw = obj.optBoolean("is_nsfw", false)
-                    val clicks = obj.optInt("clicks_count", 0)
+                    val clicks = clickCountsMap[id] ?: obj.optInt("clicks_count", 0)
                     val likes = obj.optInt("likes_count", 0)
                     val section = obj.optString("section", "home")
                     val author = obj.optString("author", "JustFan Creator")
@@ -205,6 +231,15 @@ object SupabaseClient {
                         }
                     }
 
+                    val contentImagesList = mutableListOf<String>()
+                    val contentImgsArr = obj.optJSONArray("content_images")
+                    if (contentImgsArr != null) {
+                        for (j in 0 until contentImgsArr.length()) {
+                            val url = contentImgsArr.optString(j, "").trim()
+                            if (url.isNotEmpty()) contentImagesList.add(url)
+                        }
+                    }
+
                     list.add(
                         PostEntity(
                             id = id,
@@ -214,6 +249,7 @@ object SupabaseClient {
                             linkUrl = link,
                             directLinkUrl = direct,
                             premiumLinkUrl = prem,
+                            contentImages = contentImagesList,
                             tags = tagsList,
                             section = section,
                             author = author,
@@ -236,33 +272,6 @@ object SupabaseClient {
         }
     }
 
-    suspend fun recordPostClick(postId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            // We'll use a Supabase RPC or a simple increment if possible, 
-            // but for now, let's just try to update the clicks_count by fetching and then patching
-            // or better, if the backend supports it, a direct increment.
-            // Since we don't have an RPC, we'll just track it via a new table 'post_clicks' if it exists,
-            // or just patch the posts table.
-            
-            // Try to insert into post_clicks table first (as mentioned in docs)
-            val payload = JSONObject().apply {
-                put("post_id", postId)
-                put("clicked_at", Instant.now().toString())
-            }
-            val res = executePost("post_clicks", payload.toString())
-            if (res.isSuccess) {
-                Result.success(true)
-            } else {
-                // Fallback: try to increment clicks_count in posts table directly if post_clicks fails
-                // Note: This is a bit racey without RPC, but better than nothing
-                Log.w(TAG, "post_clicks insert failed, trending might be slow to update")
-                Result.success(false)
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
     suspend fun insertPost(post: PostEntity, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("id", post.id)
@@ -272,6 +281,7 @@ object SupabaseClient {
             put("link_url", post.linkUrl)
             if (!post.directLinkUrl.isNullOrBlank()) put("direct_link_url", post.directLinkUrl)
             if (!post.premiumLinkUrl.isNullOrBlank()) put("premium_link_url", post.premiumLinkUrl)
+            if (post.contentImages.isNotEmpty()) put("content_images", JSONArray(post.contentImages))
             put("is_free", post.isFree)
             put("is_nsfw", post.isNsfw)
             put("section", post.section)
@@ -279,6 +289,42 @@ object SupabaseClient {
         }
         val res = executePost("posts", payload.toString(), accessToken)
         if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("INSERT_FAILED"))
+    }
+
+    suspend fun updatePost(post: PostEntity, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("title", post.title)
+            put("description", post.description)
+            put("image_url", post.imageUrl)
+            put("link_url", post.linkUrl)
+            if (!post.directLinkUrl.isNullOrBlank()) put("direct_link_url", post.directLinkUrl)
+            if (!post.premiumLinkUrl.isNullOrBlank()) put("premium_link_url", post.premiumLinkUrl)
+            if (post.contentImages.isNotEmpty()) put("content_images", JSONArray(post.contentImages))
+            put("is_free", post.isFree)
+            put("is_nsfw", post.isNsfw)
+            put("section", post.section)
+            put("tags", JSONArray(post.tags))
+        }
+        val res = executePatch("posts?id=eq.${post.id}", payload.toString(), accessToken)
+        if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("UPDATE_FAILED"))
+    }
+
+    suspend fun deletePost(postId: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        executeDelete("posts?id=eq.$postId", accessToken)
+    }
+
+    suspend fun recordPostClick(postId: String, userId: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            // Insert click event into post_clicks table (schema: id, post_id) which triggers post_click_counts increment
+            val clickPayload = JSONObject().apply {
+                put("post_id", postId)
+            }
+            val res = executePost("post_clicks", clickPayload.toString())
+            Result.success(res.isSuccess)
+        } catch (e: Exception) {
+            Log.w(TAG, "recordPostClick notice", e)
+            Result.success(false)
+        }
     }
 
     suspend fun fetchRequests(): Result<List<RequestEntity>> = withContext(Dispatchers.IO) {
@@ -488,7 +534,7 @@ object SupabaseClient {
 
             val now = Instant.now()
             val expiresAtStr = when (tier.lowercase()) {
-                "pro" -> now.plus(30, java.time.temporal.ChronoUnit.DAYS).toString()
+                "pro" -> now.plus(31, java.time.temporal.ChronoUnit.DAYS).toString()
                 "legendary" -> Instant.parse("2099-12-31T23:59:59Z").toString()
                 else -> null
             }
@@ -548,6 +594,26 @@ object SupabaseClient {
         }
     }
 
+    suspend fun updateUserStatus(userId: String, status: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val resolvedUuid = if (userId.contains("@")) resolveUserUuid(userId) ?: userId else userId
+            val payload = JSONObject().apply {
+                put("status", status)
+                put("updated_at", Instant.now().toString())
+            }
+            val res = executePatch("profiles?id=eq.$resolvedUuid", payload.toString(), accessToken)
+            if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("UPDATE_STATUS_FAILED"))
+        } catch (e: Exception) {
+            Log.e(TAG, "updateUserStatus error", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setUserBlocked(userId: String, isBlocked: Boolean, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+        val status = if (isBlocked) "Suspended" else "Active"
+        updateUserStatus(userId, status, accessToken)
+    }
+
     suspend fun fetchUserPreferences(userId: String, accessToken: String? = null): Result<RemoteUserPreferences?> = withContext(Dispatchers.IO) {
         try {
             val resolvedUuid = if (userId.contains("@")) resolveUserUuid(userId) ?: userId else userId
@@ -565,8 +631,17 @@ object SupabaseClient {
                     if (array.length() > 0) {
                         val obj = array.getJSONObject(0)
                         val theme = if (obj.has("theme") && !obj.isNull("theme")) obj.optString("theme") else null
+                        val themeVariant = if (obj.has("theme_variant") && !obj.isNull("theme_variant")) obj.optString("theme_variant") else null
                         val wallpaper = if (obj.has("wallpaper_url") && !obj.isNull("wallpaper_url")) obj.optString("wallpaper_url") else null
-                        return@withContext Result.success(RemoteUserPreferences(theme = theme, wallpaperUrl = wallpaper))
+                        val overlay = if (obj.has("wallpaper_overlay") && !obj.isNull("wallpaper_overlay")) obj.optDouble("wallpaper_overlay", 0.65).toFloat() else null
+                        return@withContext Result.success(
+                            RemoteUserPreferences(
+                                theme = theme,
+                                theme_variant = themeVariant,
+                                wallpaper_url = wallpaper,
+                                wallpaper_overlay = overlay
+                            )
+                        )
                     }
                     Result.success(null)
                 } else {
@@ -582,7 +657,9 @@ object SupabaseClient {
     suspend fun saveUserPreferences(
         userId: String,
         theme: String,
-        wallpaperUrl: String?,
+        themeVariant: String? = null,
+        wallpaperUrl: String? = null,
+        wallpaperOverlay: Float? = null,
         accessToken: String? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
@@ -611,10 +688,16 @@ object SupabaseClient {
             val payload = JSONObject().apply {
                 put("user_id", resolvedUuid)
                 put("theme", theme)
+                if (!themeVariant.isNullOrBlank()) {
+                    put("theme_variant", themeVariant)
+                }
                 if (!wallpaperUrl.isNullOrBlank()) {
                     put("wallpaper_url", wallpaperUrl)
                 } else {
                     put("wallpaper_url", JSONObject.NULL)
+                }
+                if (wallpaperOverlay != null) {
+                    put("wallpaper_overlay", wallpaperOverlay.toDouble())
                 }
                 put("updated_at", now)
             }
@@ -628,7 +711,7 @@ object SupabaseClient {
             }
 
             if (result.isSuccess) {
-                Log.i(TAG, "saveUserPreferences succeeded for $resolvedUuid: theme=$theme, wallpaper=$wallpaperUrl")
+                Log.i(TAG, "saveUserPreferences succeeded for $resolvedUuid: theme=$theme, variant=$themeVariant, wallpaper=$wallpaperUrl")
                 Result.success(true)
             } else {
                 Log.w(TAG, "saveUserPreferences warning: ${result.exceptionOrNull()?.message}")
@@ -729,8 +812,62 @@ object SupabaseClient {
         val accessToken: String,
         val refreshToken: String? = null,
         val userId: String,
-        val email: String
+        val email: String,
+        val isAdmin: Boolean = email.trim().equals("reytherapper12@gmail.com", ignoreCase = true)
     )
+
+    fun evaluateIsAdmin(email: String?): Boolean {
+        return email?.trim().equals("reytherapper12@gmail.com", ignoreCase = true)
+    }
+
+    fun extractUserFromJwt(accessToken: String): Triple<String?, String?, String?> {
+        return try {
+            val parts = accessToken.split(".")
+            if (parts.size >= 2) {
+                val payloadJson = String(
+                    android.util.Base64.decode(
+                        parts[1],
+                        android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
+                    )
+                )
+                val obj = JSONObject(payloadJson)
+                val uid = obj.optString("sub", "").ifBlank { null }
+                val email = obj.optString("email", "").ifBlank { null }
+                val meta = obj.optJSONObject("user_metadata")
+                val name = meta?.optString("full_name", meta.optString("name", ""))?.ifBlank { null }
+                Triple(uid, email, name)
+            } else {
+                Triple(null, null, null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "extractUserFromJwt failed", e)
+            Triple(null, null, null)
+        }
+    }
+
+    suspend fun handleGoogleAuthSession(
+        email: String,
+        accessToken: String? = null,
+        refreshToken: String? = null,
+        userId: String? = null
+    ): Result<AuthSession> = withContext(Dispatchers.IO) {
+        val jwtInfo = if (!accessToken.isNullOrBlank()) extractUserFromJwt(accessToken) else Triple(null, null, null)
+        val cleanEmail = (jwtInfo.second ?: email).trim().lowercase()
+        val isAdmin = evaluateIsAdmin(cleanEmail)
+        val uid = jwtInfo.first
+            ?: userId
+            ?: resolveUserUuid(cleanEmail)
+            ?: if (isAdmin) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+        val session = AuthSession(
+            accessToken = accessToken ?: apiKey,
+            refreshToken = refreshToken,
+            userId = uid,
+            email = cleanEmail,
+            isAdmin = isAdmin
+        )
+        Log.i(TAG, "Google Auth Session: $cleanEmail -> isAdmin=$isAdmin")
+        Result.success(session)
+    }
 
     suspend fun signInWithEmailPassword(email: String, password: String): Result<AuthSession> = withContext(Dispatchers.IO) {
         try {
@@ -743,6 +880,7 @@ object SupabaseClient {
                 .url(endpoint)
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .header("apikey", apiKey)
+                .header("Content-Type", "application/json")
                 .build()
             okHttpClient.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
@@ -752,10 +890,81 @@ object SupabaseClient {
                     val refresh = json.optString("refresh_token", null)
                     val userObj = json.getJSONObject("user")
                     val uid = userObj.getString("id")
-                    val em = userObj.optString("email", email)
-                    Result.success(AuthSession(accessToken = token, refreshToken = refresh, userId = uid, email = em))
+                    val em = userObj.optString("email", email.trim().lowercase())
+                    val isAdmin = evaluateIsAdmin(em)
+                    Result.success(AuthSession(accessToken = token, refreshToken = refresh, userId = uid, email = em, isAdmin = isAdmin))
                 } else {
                     Result.failure(Exception("AUTH_FAILED: $body"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun signUpWithEmailPassword(email: String, password: String, username: String = ""): Result<AuthSession?> = withContext(Dispatchers.IO) {
+        try {
+            val cleanEmail = email.trim().lowercase()
+            val endpoint = "$baseUrl/auth/v1/signup"
+            val payload = JSONObject().apply {
+                put("email", cleanEmail)
+                put("password", password)
+                if (username.isNotBlank()) {
+                    put("data", JSONObject().apply { put("username", username) })
+                }
+            }
+            val request = Request.Builder()
+                .url(endpoint)
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("apikey", apiKey)
+                .header("Content-Type", "application/json")
+                .build()
+            okHttpClient.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) {
+                    val json = JSONObject(body)
+                    if (json.has("access_token") && !json.isNull("access_token")) {
+                        val token = json.getString("access_token")
+                        val refresh = json.optString("refresh_token", null)
+                        val userObj = json.optJSONObject("user")
+                        val uid = userObj?.optString("id") ?: UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+                        Result.success(AuthSession(accessToken = token, refreshToken = refresh, userId = uid, email = cleanEmail, isAdmin = evaluateIsAdmin(cleanEmail)))
+                    } else {
+                        Result.success(null)
+                    }
+                } else {
+                    Result.failure(Exception("SIGNUP_FAILED: $body"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun refreshAccessToken(refreshToken: String): Result<AuthSession> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "$baseUrl/auth/v1/token?grant_type=refresh_token"
+            val payload = JSONObject().apply {
+                put("refresh_token", refreshToken)
+            }
+            val request = Request.Builder()
+                .url(endpoint)
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("apikey", apiKey)
+                .header("Content-Type", "application/json")
+                .build()
+            okHttpClient.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) {
+                    val json = JSONObject(body)
+                    val token = json.getString("access_token")
+                    val refresh = json.optString("refresh_token", refreshToken)
+                    val userObj = json.optJSONObject("user")
+                    val uid = userObj?.optString("id") ?: ""
+                    val em = userObj?.optString("email") ?: ""
+                    Result.success(AuthSession(accessToken = token, refreshToken = refresh, userId = uid, email = em, isAdmin = evaluateIsAdmin(em)))
+                } else {
+                    Result.failure(Exception("REFRESH_FAILED: $body"))
                 }
             }
         } catch (e: Exception) {

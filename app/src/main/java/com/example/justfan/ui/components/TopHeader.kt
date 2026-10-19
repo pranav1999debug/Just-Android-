@@ -37,8 +37,6 @@ fun TopHeader(
     hasCustomWallpaper: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    var searchVisible by remember { mutableStateOf(false) }
-
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -67,7 +65,7 @@ fun TopHeader(
                         color = if (userProfile?.tier == "Legendary") GoldAccent.copy(alpha = 0.25f) else MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(4.dp)
                     ) {
-                        val isRealAdmin = userProfile?.isAdmin == true && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                        val isRealAdmin = userProfile?.isAdmin == true || userProfile?.email.equals("reytherapper12@gmail.com", ignoreCase = true)
                         Text(
                             text = if (isRealAdmin) "ADMIN" else (userProfile?.tier?.uppercase() ?: "VIP"),
                             color = if (userProfile?.tier == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
@@ -85,11 +83,26 @@ fun TopHeader(
                 )
             }
 
-            // Right Action Icons (Notifications & Account Pill)
+            // Right Action Icons (Admin, Notifications & Account Pill)
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val isRealAdmin = userProfile?.isAdmin == true || userProfile?.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                if (isRealAdmin) {
+                    IconButton(
+                        onClick = onAdminClick,
+                        modifier = Modifier.size(36.dp).testTag("header_admin_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shield,
+                            contentDescription = "Admin Dashboard",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
                 // 1. Notifications Bell with Badge
                 Box {
                     IconButton(

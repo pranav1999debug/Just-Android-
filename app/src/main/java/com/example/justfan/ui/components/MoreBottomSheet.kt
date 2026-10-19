@@ -26,14 +26,15 @@ fun MoreBottomSheet(
     onGalleryClick: () -> Unit,
     onMembershipClick: () -> Unit,
     onActivityClick: () -> Unit,
-    onAdminClick: () -> Unit,
+    onAdminClick: () -> Unit = {},
     onSettingsClick: () -> Unit,
+    onUploadGalleryClick: () -> Unit = {},
     isAdmin: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
-        containerColor = Color(0xFF0F172A), // Dark slate matching user mockup
+        containerColor = Color(0xFF0F172A),
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
         dragHandle = null,
         modifier = modifier
@@ -116,17 +117,7 @@ fun MoreBottomSheet(
                 onClick = onActivityClick
             )
 
-            // 6. Admin (Only displayed for platform administrator)
-            if (isAdmin) {
-                MoreMenuItem(
-                    icon = Icons.Default.Shield,
-                    title = "Admin",
-                    testTag = "more_item_admin",
-                    onClick = onAdminClick
-                )
-            }
-
-            // 7. Settings
+            // 6. Settings
             MoreMenuItem(
                 icon = Icons.Default.Settings,
                 title = "Settings",
@@ -157,7 +148,7 @@ private fun MoreMenuItem(
         Icon(
             imageVector = icon,
             contentDescription = title,
-            tint = Color(0xFF38BDF8), // Cyan matching screenshot
+            tint = Color(0xFF38BDF8),
             modifier = Modifier.size(24.dp)
         )
         Spacer(modifier = Modifier.width(18.dp))

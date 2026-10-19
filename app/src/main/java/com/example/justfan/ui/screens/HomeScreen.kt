@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.components.CompactPostCard
+import com.example.justfan.ui.components.DiscoverSection
 import com.example.justfan.ui.components.TrendingCarousel
 
 @Composable
@@ -41,6 +42,7 @@ fun HomeScreen(
     isPaidOrLegendary: Boolean,
     onPostClick: (PostEntity) -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onDownloadClick: (PostEntity) -> Unit = {},
     externalSearchQuery: String = "",
     modifier: Modifier = Modifier
 ) {
@@ -66,11 +68,11 @@ fun HomeScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Filter chips (search bar is in TopHeader)
+        // Filter chips (Search box is positioned only in TopHeader)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             listOf("All", "Free", "Premium", "Video").forEach { filter ->
@@ -95,22 +97,39 @@ fun HomeScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 300.dp),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                columns = GridCells.Adaptive(minSize = 160.dp),
+                contentPadding = PaddingValues(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 if (searchQuery.isBlank() && selectedFilter == "All") {
                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
-                        TrendingCarousel(
-                            trendingPosts = posts.sortedByDescending { it.clicksCount }.take(6),
-                            onPostClick = { postId ->
-                                posts.find { it.id == postId }?.let(onPostClick)
+                        Column {
+                            // 1. Trending Carousel: Top 10 calculated by historical click table values
+                            TrendingCarousel(
+                                trendingPosts = posts.sortedByDescending { it.clicksCount }.take(10),
+                                onPostClick = { postId ->
+                                    posts.find { it.id == postId }?.let(onPostClick)
+                                }
+                            )
+
+                            // 2. Discover Section: Below trending, auto-scrolling random old post discovery container
+                            val historicalPosts = remember(posts) {
+                                posts.shuffled(kotlin.random.Random(1337)).take(12)
                             }
-                        )
+                            DiscoverSection(
+                                historicalPosts = historicalPosts,
+                                onPostClick = { postId ->
+                                    posts.find { it.id == postId }?.let(onPostClick)
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                     }
                 }
+
                 items(filteredPosts, key = { it.id }) { post ->
                     CompactPostCard(
                         post = post,
@@ -119,6 +138,8 @@ fun HomeScreen(
                         onCardClick = { onPostClick(post) },
                         onToggleFavorite = { onToggleFavorite(post.id) },
                         onDirectDownloadClick = {
+                            // Intercept the download action to asynchronously increment click count
+                            onDownloadClick(post)
                             val url = post.directLinkUrl?.ifBlank { null } ?: post.linkUrl
                             if (url.isNotBlank()) {
                                 try {

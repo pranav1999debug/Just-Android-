@@ -296,21 +296,37 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                 posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
                             }
                         )
-                        is AppScreen.Admin -> AdminScreen(
-                            users = users,
-                            requests = requests,
-                            onUpdateUserTier = { idOrEmail, tier ->
-                                viewModel.updateUserTier(idOrEmail, tier)
-                            },
-                            onUpdateRequestStatus = { id, status, link, reason ->
-                                viewModel.updateRequestStatus(id, status, link, reason)
-                            },
-                            onDeleteRequest = { viewModel.deleteRequest(it) },
-                            onCreatePost = { post ->
-                                viewModel.createPost(post) { _, _ -> }
-                            },
-                            onRefresh = { viewModel.refreshAll() }
-                        )
+                        is AppScreen.Admin -> {
+                            if (isOwnerOrAdmin) {
+                                AdminScreen(
+                                    users = users,
+                                    requests = requests,
+                                    onUpdateUserTier = { idOrEmail, tier ->
+                                        viewModel.updateUserTier(idOrEmail, tier)
+                                    },
+                                    onUpdateRequestStatus = { id, status, link, reason ->
+                                        viewModel.updateRequestStatus(id, status, link, reason)
+                                    },
+                                    onDeleteRequest = { viewModel.deleteRequest(it) },
+                                    onCreatePost = { post, onResult ->
+                                        viewModel.createPost(post, onResult)
+                                    },
+                                    onRefresh = { viewModel.refreshAll() }
+                                )
+                            } else {
+                                HomeScreen(
+                                    posts = posts,
+                                    favoriteIds = favoriteIds,
+                                    isPaidOrLegendary = isPaidOrLegendary,
+                                    externalSearchQuery = globalSearchQuery,
+                                    onPostClick = {
+                                        viewModel.recordPostClick(it.id)
+                                        navigateTo(AppScreen.PostDetail(it))
+                                    },
+                                    onToggleFavorite = { viewModel.toggleFavorite(it) }
+                                )
+                            }
+                        }
                         is AppScreen.Themes -> PreferencesScreen(
                             userProfile = userProfile,
                             preferences = preferences,
@@ -324,7 +340,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             onSignOutClick = { viewModel.signOut() }
                         )
                         is AppScreen.PostDetail -> PostDetailScreen(
-                            post = scr.post,
+                            post = posts.find { it.id == scr.post.id } ?: scr.post,
                             allPosts = posts,
                             comments = emptyList(),
                             isFavorite = scr.post.id in favoriteIds,
@@ -334,7 +350,13 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             onToggleFavorite = { viewModel.toggleFavorite(scr.post.id) },
                             onAddComment = { /* In-app discussion */ },
                             onSelectPost = { postId ->
-                                posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
+                                posts.find { it.id == postId }?.let {
+                                    viewModel.recordPostClick(it.id)
+                                    navigateTo(AppScreen.PostDetail(it))
+                                }
+                            },
+                            onDownloadClick = { postId, _ ->
+                                viewModel.recordDownloadClick(postId)
                             }
                         )
                     }

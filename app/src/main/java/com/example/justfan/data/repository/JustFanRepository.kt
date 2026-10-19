@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 class JustFanRepository(private val context: Context) {
@@ -50,6 +51,8 @@ class JustFanRepository(private val context: Context) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val validThemeVariants = setOf("cyan", "purple", "crimson", "emerald", "gold", "rose")
+
     init {
         scope.launch {
             syncData()
@@ -62,9 +65,9 @@ class JustFanRepository(private val context: Context) {
 
     private fun loadProfileFromPrefs(): UserProfile {
         val isSignedIn = prefs.getBoolean("user_signed_in", false)
-        val email = prefs.getString("user_email", "") ?: ""
+        val email = (prefs.getString("user_email", "") ?: "").trim().lowercase()
         val isRey = email.equals("reytherapper12@gmail.com", ignoreCase = true)
-        val tier = prefs.getString("user_tier", "Free") ?: "Free"
+        val tier = prefs.getString("user_tier", if (isRey && isSignedIn) "Legendary" else "Free") ?: "Free"
 
         return UserProfile(
             id = prefs.getString("user_id", "guest_user") ?: "guest_user",
@@ -72,29 +75,40 @@ class JustFanRepository(private val context: Context) {
             email = email,
             isSignedIn = isSignedIn,
             authMethod = prefs.getString("user_auth_method", "guest") ?: "guest",
-            tier = tier,
+            tier = if (isRey && isSignedIn) "Legendary" else tier,
             isAdmin = isRey && isSignedIn,
             proExpiresAt = prefs.getLong("user_pro_expires_at", 0L),
-            accessToken = prefs.getString("user_access_token", null),
-            refreshToken = prefs.getString("user_refresh_token", null),
+            accessToken = prefs.getString("user_access_token", null) ?: prefs.getString("cached_token_$email", null),
+            refreshToken = prefs.getString("user_refresh_token", null) ?: prefs.getString("cached_refresh_$email", null),
             customWallpaperUri = prefs.getString("user_wallpaper_uri", null)
         )
     }
 
     private fun saveProfileToPrefs(profile: UserProfile) {
-        prefs.edit()
+        val cleanEmail = profile.email.trim().lowercase()
+        val editor = prefs.edit()
             .putBoolean("user_signed_in", profile.isSignedIn)
             .putString("user_id", profile.id)
             .putString("user_username", profile.username)
-            .putString("user_email", profile.email)
+            .putString("user_email", cleanEmail)
             .putString("user_auth_method", profile.authMethod)
             .putString("user_tier", profile.tier)
-            .putBoolean("user_is_admin", profile.isAdmin)
+            .putBoolean("user_is_admin", profile.isAdmin && cleanEmail == "reytherapper12@gmail.com")
             .putLong("user_pro_expires_at", profile.proExpiresAt)
             .putString("user_access_token", profile.accessToken)
             .putString("user_refresh_token", profile.refreshToken)
             .putString("user_wallpaper_uri", profile.customWallpaperUri)
-            .apply()
+
+        if (profile.isSignedIn && cleanEmail.isNotBlank()) {
+            editor.putString("cached_uid_$cleanEmail", profile.id)
+            if (!profile.accessToken.isNullOrBlank()) {
+                editor.putString("cached_token_$cleanEmail", profile.accessToken)
+            }
+            if (!profile.refreshToken.isNullOrBlank()) {
+                editor.putString("cached_refresh_$cleanEmail", profile.refreshToken)
+            }
+        }
+        editor.apply()
     }
 
     private fun loadPreferencesFromPrefs(): UserPreferencesState {
@@ -106,13 +120,36 @@ class JustFanRepository(private val context: Context) {
         )
     }
 
-    private fun savePreferencesToPrefs(state: UserPreferencesState) {
-        prefs.edit()
+    private fun savePreferencesToPrefs(state: UserPreferencesState, accountEmail: String? = _userProfile.value.email) {
+        val editor = prefs.edit()
             .putString("pref_theme_variant", state.themeVariant)
             .putBoolean("pref_dark_mode", state.isDarkMode)
             .putString("pref_wallpaper_uri", state.customWallpaperUri)
             .putFloat("pref_wallpaper_dim", state.wallpaperDim)
-            .apply()
+
+        val cleanEmail = accountEmail?.trim()?.lowercase().orEmpty()
+        if (cleanEmail.isNotBlank() && _userProfile.value.isSignedIn) {
+            editor
+                .putBoolean("account_pref_saved_$cleanEmail", true)
+                .putString("account_pref_variant_$cleanEmail", state.themeVariant)
+                .putBoolean("account_pref_dark_$cleanEmail", state.isDarkMode)
+                .putString("account_pref_wallpaper_$cleanEmail", state.customWallpaperUri)
+                .putFloat("account_pref_dim_$cleanEmail", state.wallpaperDim)
+        }
+        editor.apply()
+    }
+
+    private fun loadAccountPreferences(email: String): UserPreferencesState? {
+        val cleanEmail = email.trim().lowercase()
+        if (cleanEmail.isBlank() || !prefs.getBoolean("account_pref_saved_$cleanEmail", false)) {
+            return null
+        }
+        return UserPreferencesState(
+            themeVariant = prefs.getString("account_pref_variant_$cleanEmail", "cyan") ?: "cyan",
+            isDarkMode = prefs.getBoolean("account_pref_dark_$cleanEmail", true),
+            customWallpaperUri = prefs.getString("account_pref_wallpaper_$cleanEmail", null),
+            wallpaperDim = prefs.getFloat("account_pref_dim_$cleanEmail", 0.65f)
+        )
     }
 
     fun updateTheme(themeVariant: String, isDark: Boolean) {
@@ -123,11 +160,14 @@ class JustFanRepository(private val context: Context) {
         val currentProfile = _userProfile.value
         if (currentProfile.isSignedIn && currentProfile.id != "guest_user") {
             scope.launch {
+                val activeToken = ensureValidAccessToken(currentProfile)
                 SupabaseClient.saveUserPreferences(
                     userId = currentProfile.id,
-                    theme = themeVariant,
+                    theme = if (isDark) "dark" else "light",
+                    themeVariant = themeVariant,
                     wallpaperUrl = updated.customWallpaperUri,
-                    accessToken = currentProfile.accessToken
+                    wallpaperOverlay = updated.wallpaperDim,
+                    accessToken = activeToken
                 )
             }
         }
@@ -145,20 +185,42 @@ class JustFanRepository(private val context: Context) {
         val currentProfile = _userProfile.value
         if (currentProfile.isSignedIn && currentProfile.id != "guest_user") {
             scope.launch {
+                val activeToken = ensureValidAccessToken(currentProfile)
                 SupabaseClient.saveUserPreferences(
                     userId = currentProfile.id,
-                    theme = updatedPref.themeVariant,
+                    theme = if (updatedPref.isDarkMode) "dark" else "light",
+                    themeVariant = updatedPref.themeVariant,
                     wallpaperUrl = wallpaperUri,
-                    accessToken = currentProfile.accessToken
+                    wallpaperOverlay = dim,
+                    accessToken = activeToken
                 )
             }
         }
     }
 
+    private suspend fun ensureValidAccessToken(profile: UserProfile): String? {
+        val currentToken = profile.accessToken
+        val refresh = profile.refreshToken ?: prefs.getString("cached_refresh_${profile.email.trim().lowercase()}", null)
+        if (!refresh.isNullOrBlank()) {
+            val refreshed = SupabaseClient.refreshAccessToken(refresh).getOrNull()
+            if (refreshed != null && refreshed.accessToken.isNotBlank()) {
+                val updated = _userProfile.value.copy(
+                    accessToken = refreshed.accessToken,
+                    refreshToken = refreshed.refreshToken ?: refresh,
+                    id = if (refreshed.userId.isNotBlank()) refreshed.userId else profile.id
+                )
+                _userProfile.value = updated
+                saveProfileToPrefs(updated)
+                return refreshed.accessToken
+            }
+        }
+        return currentToken
+    }
+
     suspend fun syncData() {
         _isRefreshing.value = true
         try {
-            // 1. Sync Posts
+            // 1. Sync Posts (includes click counts from post_click_counts)
             val postsResult = SupabaseClient.fetchPosts()
             if (postsResult.isSuccess) {
                 val remotePosts = postsResult.getOrNull().orEmpty()
@@ -193,18 +255,33 @@ class JustFanRepository(private val context: Context) {
 
     fun syncUserDataOnLogin(profile: UserProfile) {
         if (!profile.isSignedIn || profile.id == "guest_user") return
+        val cleanEmail = profile.email.trim().lowercase()
+
+        // 0. Immediately restore saved per-account preferences so theme & wallpaper apply right away
+        val cachedAccountPref = loadAccountPreferences(cleanEmail)
+        if (cachedAccountPref != null) {
+            _preferences.value = cachedAccountPref
+            savePreferencesToPrefs(cachedAccountPref, cleanEmail)
+            if (!cachedAccountPref.customWallpaperUri.isNullOrBlank()) {
+                _userProfile.value = _userProfile.value.copy(customWallpaperUri = cachedAccountPref.customWallpaperUri)
+                saveProfileToPrefs(_userProfile.value)
+            }
+        }
+
         scope.launch {
             try {
-                val isRey = profile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                val isRey = cleanEmail.equals("reytherapper12@gmail.com", ignoreCase = true)
+                val activeToken = ensureValidAccessToken(_userProfile.value)
+                val activeUserId = _userProfile.value.id
 
                 // 1. Sync subscription tier from Supabase subscriptions table
-                val subResult = SupabaseClient.fetchUserSubscription(profile.id, profile.accessToken)
+                val subResult = SupabaseClient.fetchUserSubscription(activeUserId, activeToken)
                 val remoteTier = subResult.getOrNull()
-                if (!remoteTier.isNullOrBlank()) {
-                    val isPro = remoteTier.equals("pro", ignoreCase = true)
-                    val isLegendary = remoteTier.equals("legendary", ignoreCase = true) || isRey
+                if (!remoteTier.isNullOrBlank() || isRey) {
+                    val isPro = remoteTier?.equals("pro", ignoreCase = true) == true
+                    val isLegendary = remoteTier?.equals("legendary", ignoreCase = true) == true || isRey
                     val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L) else 0L
-                    val finalTier = if (isLegendary) "Legendary" else if (isPro) "Pro" else remoteTier
+                    val finalTier = if (isLegendary) "Legendary" else if (isPro) "Pro" else (remoteTier ?: "Free")
 
                     val updatedProfile = _userProfile.value.copy(
                         tier = finalTier,
@@ -213,33 +290,50 @@ class JustFanRepository(private val context: Context) {
                     )
                     _userProfile.value = updatedProfile
                     saveProfileToPrefs(updatedProfile)
-                    userDao.updateUserTier(profile.id, finalTier)
-                    Log.i("JustFanRepository", "Synced remote subscription plan: $finalTier for ${profile.email}")
+                    userDao.updateUserTier(activeUserId, finalTier)
                 }
 
                 // 2. Sync theme & wallpaper from Supabase user_preferences table
-                val prefResult = SupabaseClient.fetchUserPreferences(profile.id, profile.accessToken)
+                val prefResult = SupabaseClient.fetchUserPreferences(activeUserId, activeToken)
                 val remotePref = prefResult.getOrNull()
                 if (remotePref != null) {
                     var newPref = _preferences.value
-                    if (!remotePref.theme.isNullOrBlank()) {
-                        newPref = newPref.copy(themeVariant = remotePref.theme)
+                    val resolvedVariant = when {
+                        !remotePref.themeVariant.isNullOrBlank() && remotePref.themeVariant.lowercase() in validThemeVariants ->
+                            remotePref.themeVariant.lowercase()
+                        !remotePref.theme.isNullOrBlank() && remotePref.theme.lowercase() in validThemeVariants ->
+                            remotePref.theme.lowercase()
+                        else -> newPref.themeVariant
                     }
+                    val resolvedDark = when (remotePref.theme?.lowercase()) {
+                        "light" -> false
+                        "dark" -> true
+                        else -> newPref.isDarkMode
+                    }
+                    newPref = newPref.copy(
+                        themeVariant = resolvedVariant,
+                        isDarkMode = resolvedDark
+                    )
                     if (!remotePref.wallpaperUrl.isNullOrBlank()) {
                         newPref = newPref.copy(customWallpaperUri = remotePref.wallpaperUrl)
                         _userProfile.value = _userProfile.value.copy(customWallpaperUri = remotePref.wallpaperUrl)
                         saveProfileToPrefs(_userProfile.value)
                     }
+                    if (remotePref.wallpaperOverlay != null) {
+                        newPref = newPref.copy(wallpaperDim = remotePref.wallpaperOverlay)
+                    }
                     _preferences.value = newPref
-                    savePreferencesToPrefs(newPref)
-                    Log.i("JustFanRepository", "Loaded remote preferences: theme=${remotePref.theme}, wallpaper=${remotePref.wallpaperUrl}")
-                } else if (_preferences.value.themeVariant != "cyan" || _preferences.value.customWallpaperUri != null) {
-                    // Only seed if current local preferences are NOT defaults
+                    savePreferencesToPrefs(newPref, cleanEmail)
+                    Log.i("JustFanRepository", "Loaded remote preferences: variant=$resolvedVariant, dark=$resolvedDark, wallpaper=${remotePref.wallpaperUrl}")
+                } else if (cachedAccountPref != null || _preferences.value.themeVariant != "cyan" || _preferences.value.customWallpaperUri != null) {
+                    val currentPref = _preferences.value
                     SupabaseClient.saveUserPreferences(
-                        userId = profile.id,
-                        theme = _preferences.value.themeVariant,
-                        wallpaperUrl = _preferences.value.customWallpaperUri,
-                        accessToken = profile.accessToken
+                        userId = activeUserId,
+                        theme = if (currentPref.isDarkMode) "dark" else "light",
+                        themeVariant = currentPref.themeVariant,
+                        wallpaperUrl = currentPref.customWallpaperUri,
+                        wallpaperOverlay = currentPref.wallpaperDim,
+                        accessToken = activeToken
                     )
                 }
 
@@ -265,10 +359,8 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun updateUserTier(userId: String, newTier: String) {
-        // 1. Update local database immediately
         userDao.updateUserTier(userId, newTier)
 
-        // If the updated user is currently logged in, update their local session
         val current = _userProfile.value
         if (current.id == userId || current.email.equals(userId, ignoreCase = true)) {
             val isRey = current.email.equals("reytherapper12@gmail.com", ignoreCase = true)
@@ -284,9 +376,8 @@ class JustFanRepository(private val context: Context) {
             saveProfileToPrefs(updated)
         }
 
-        // 2. Sync to Supabase subscriptions table in background
         scope.launch {
-            val adminToken = current.accessToken
+            val adminToken = ensureValidAccessToken(current)
             val res = SupabaseClient.updateUserTier(userId, newTier, adminToken)
             if (res.isSuccess) {
                 Log.i("JustFanRepository", "Remote subscription updated for $userId to $newTier")
@@ -327,10 +418,11 @@ class JustFanRepository(private val context: Context) {
     suspend fun updateRequestStatus(id: String, status: String, link: String?, reason: String? = null) {
         requestDao.updateStatus(id, status, link, reason)
         scope.launch {
+            val token = ensureValidAccessToken(_userProfile.value)
             if (status == "rejected" && !reason.isNullOrBlank()) {
-                SupabaseClient.rejectRequestInSupabase(id, reason, _userProfile.value.accessToken)
+                SupabaseClient.rejectRequestInSupabase(id, reason, token)
             } else {
-                SupabaseClient.updateRequestStatusInSupabase(id, status, link, _userProfile.value.accessToken)
+                SupabaseClient.updateRequestStatusInSupabase(id, status, link, token)
             }
         }
     }
@@ -338,7 +430,8 @@ class JustFanRepository(private val context: Context) {
     suspend fun deleteRequest(id: String) {
         requestDao.deleteRequest(id)
         scope.launch {
-            SupabaseClient.deleteRequestFromSupabase(id, _userProfile.value.accessToken)
+            val token = ensureValidAccessToken(_userProfile.value)
+            SupabaseClient.deleteRequestFromSupabase(id, token)
         }
     }
 
@@ -353,36 +446,76 @@ class JustFanRepository(private val context: Context) {
     suspend fun isFavorite(postId: String): Boolean = favoriteDao.isFavorite(postId)
 
     suspend fun recordPostClick(postId: String) {
-        // 1. Update local database
         postDao.incrementClicks(postId)
-        
-        // 2. Sync to Supabase in background
         scope.launch {
-            SupabaseClient.recordPostClick(postId)
+            SupabaseClient.recordPostClick(postId, _userProfile.value.id)
         }
+    }
+
+    suspend fun recordDownloadClick(postId: String) {
+        recordPostClick(postId)
     }
 
     suspend fun createPost(post: PostEntity): Result<Boolean> {
-        val res = SupabaseClient.insertPost(post, _userProfile.value.accessToken)
-        if (res.isSuccess) {
-            postDao.insertPost(post)
-        }
+        // Always insert into local Room DB immediately so UI reflects the new post
+        postDao.insertPost(post)
+        val token = ensureValidAccessToken(_userProfile.value)
+        val res = SupabaseClient.insertPost(post, token)
         return res
     }
 
-    fun signInWithGoogle(email: String, name: String): UserProfile {
-        val cleanEmail = email.trim().lowercase()
+    suspend fun updatePost(post: PostEntity): Result<Boolean> {
+        postDao.insertPost(post)
+        val token = ensureValidAccessToken(_userProfile.value)
+        return SupabaseClient.updatePost(post, token)
+    }
+
+    suspend fun deletePost(postId: String): Result<Boolean> {
+        postDao.deletePost(postId)
+        val token = ensureValidAccessToken(_userProfile.value)
+        return SupabaseClient.deletePost(postId, token)
+    }
+
+    suspend fun setUserBlocked(userId: String, isBlocked: Boolean): Result<Boolean> {
+        val status = if (isBlocked) "Suspended" else "Active"
+        userDao.updateUserStatus(userId, status)
+        val token = ensureValidAccessToken(_userProfile.value)
+        return SupabaseClient.setUserBlocked(userId, isBlocked, token)
+    }
+
+    fun signInWithGoogle(
+        email: String,
+        name: String,
+        accessToken: String? = null,
+        refreshToken: String? = null,
+        userId: String? = null
+    ): UserProfile {
+        val jwtInfo = if (!accessToken.isNullOrBlank()) SupabaseClient.extractUserFromJwt(accessToken) else Triple(null, null, null)
+        val cleanEmail = (jwtInfo.second ?: email).trim().lowercase()
         val isRey = cleanEmail == "reytherapper12@gmail.com"
+        val resolvedName = (jwtInfo.third ?: name).ifBlank { cleanEmail.substringBefore("@") }
+
+        val cachedToken = accessToken ?: prefs.getString("cached_token_$cleanEmail", null)
+        val cachedRefresh = refreshToken ?: prefs.getString("cached_refresh_$cleanEmail", null)
+        val resolvedUid = jwtInfo.first
+            ?: userId
+            ?: prefs.getString("cached_uid_$cleanEmail", null)
+            ?: if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+
+        val cachedWallpaper = loadAccountPreferences(cleanEmail)?.customWallpaperUri
 
         val user = UserProfile(
-            id = if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.randomUUID().toString(),
-            username = if (isRey) "reytherapper12 (Admin)" else name.ifBlank { cleanEmail.substringBefore("@") },
+            id = resolvedUid,
+            username = if (isRey) "reytherapper12 (Admin)" else resolvedName,
             email = cleanEmail,
             isSignedIn = true,
             authMethod = "google",
             tier = if (isRey) "Legendary" else "Free",
             isAdmin = isRey,
-            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L,
+            accessToken = cachedToken,
+            refreshToken = cachedRefresh,
+            customWallpaperUri = cachedWallpaper
         )
         _userProfile.value = user
         saveProfileToPrefs(user)
@@ -392,15 +525,20 @@ class JustFanRepository(private val context: Context) {
 
     fun signInWithPasskey(name: String): UserProfile {
         val cleanName = name.trim().ifBlank { "Passkey User" }
+        val cleanEmail = "${cleanName.lowercase().replace(" ", "")}@passkey.local"
+        val resolvedUid = prefs.getString("cached_uid_$cleanEmail", null)
+            ?: UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+
         val user = UserProfile(
-            id = UUID.randomUUID().toString(),
+            id = resolvedUid,
             username = cleanName,
-            email = "$cleanName@passkey.local",
+            email = cleanEmail,
             isSignedIn = true,
             authMethod = "passkey",
             tier = "Free",
             isAdmin = false,
-            proExpiresAt = 0L
+            proExpiresAt = 0L,
+            customWallpaperUri = loadAccountPreferences(cleanEmail)?.customWallpaperUri
         )
         _userProfile.value = user
         saveProfileToPrefs(user)
@@ -408,42 +546,72 @@ class JustFanRepository(private val context: Context) {
         return user
     }
 
-    fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
+    suspend fun authenticateWithEmail(
+        email: String,
+        pass: String,
+        isSignUp: Boolean = false,
+        username: String = ""
+    ): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
-        if (cleanEmail.isBlank()) {
+        if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
             return Result.failure(IllegalArgumentException("Please enter a valid email address"))
         }
-
-        // We'll use a coroutine to call Supabase auth, but for simplicity in this flow,
-        // we'll assume the caller handles the result.
-        // Actually, the current function signature is synchronous. 
-        // I'll make it use a runBlocking or similar if needed, but better to keep it consistent.
-        
-        val isRey = cleanEmail == "reytherapper12@gmail.com"
-        
-        // IMPORTANT: In a real app, we should call SupabaseClient.signInWithEmailPassword(email, pass)
-        // Since we are in a pair-programming session and want to fix the "auto access", 
-        // we'll at least require a password for the admin account if we don't have full async flow here.
-        
-        if (isRey && pass != "Admin@123") { // Temporary credential for admin if not using full Supabase Auth yet
-             // In a real scenario, this would be verified by Supabase
-             // For now, let's just ensure it's not "auto access"
+        if (pass.length < 6) {
+            return Result.failure(IllegalArgumentException("Password must be at least 6 characters"))
         }
 
+        val isRey = cleanEmail == "reytherapper12@gmail.com"
+        var session: SupabaseClient.AuthSession? = null
+
+        if (isSignUp) {
+            val signUpRes = SupabaseClient.signUpWithEmailPassword(cleanEmail, pass, username)
+            session = signUpRes.getOrNull()
+        }
+
+        if (session == null) {
+            val signInRes = SupabaseClient.signInWithEmailPassword(cleanEmail, pass)
+            if (signInRes.isSuccess) {
+                session = signInRes.getOrNull()
+            } else if (isRey) {
+                // Admin account must authenticate with valid Supabase credentials
+                return Result.failure(
+                    Exception("Invalid password for admin account ($cleanEmail). Please enter your Supabase account password or sign in with Google.")
+                )
+            }
+        }
+
+        val resolvedUid = session?.userId
+            ?: SupabaseClient.resolveUserUuid(cleanEmail)
+            ?: prefs.getString("cached_uid_$cleanEmail", null)
+            ?: if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+
+        val resolvedToken = session?.accessToken ?: prefs.getString("cached_token_$cleanEmail", null)
+        val resolvedRefresh = session?.refreshToken ?: prefs.getString("cached_refresh_$cleanEmail", null)
+        val cachedWallpaper = loadAccountPreferences(cleanEmail)?.customWallpaperUri
+
         val user = UserProfile(
-            id = if (isRey) "a2d7bbad-c31f-4679-bf51-2d2684bb3216" else UUID.randomUUID().toString(),
-            username = if (isRey) "reytherapper12 (Admin)" else cleanEmail.substringBefore("@"),
+            id = resolvedUid,
+            username = if (isRey) "reytherapper12 (Admin)" else username.ifBlank { cleanEmail.substringBefore("@") },
             email = cleanEmail,
             isSignedIn = true,
             authMethod = "password",
             tier = if (isRey) "Legendary" else "Free",
             isAdmin = isRey,
-            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L
+            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L,
+            accessToken = resolvedToken,
+            refreshToken = resolvedRefresh,
+            customWallpaperUri = cachedWallpaper
         )
         _userProfile.value = user
         saveProfileToPrefs(user)
         syncUserDataOnLogin(user)
         return Result.success(user)
+    }
+
+    fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
+        return runBlocking(Dispatchers.IO) {
+            authenticateWithEmail(email, pass, isSignUp = false)
+        }
     }
 
     fun signOut() {
@@ -460,8 +628,19 @@ class JustFanRepository(private val context: Context) {
         _userProfile.value = guest
         saveProfileToPrefs(guest)
 
-        val defaultPref = _preferences.value.copy(themeVariant = "cyan", customWallpaperUri = null)
+        // Reset active UI session preferences without deleting saved per-account preferences
+        val defaultPref = UserPreferencesState(
+            themeVariant = "cyan",
+            isDarkMode = true,
+            customWallpaperUri = null,
+            wallpaperDim = 0.65f
+        )
         _preferences.value = defaultPref
-        savePreferencesToPrefs(defaultPref)
+        prefs.edit()
+            .putString("pref_theme_variant", defaultPref.themeVariant)
+            .putBoolean("pref_dark_mode", defaultPref.isDarkMode)
+            .putString("pref_wallpaper_uri", null)
+            .putFloat("pref_wallpaper_dim", defaultPref.wallpaperDim)
+            .apply()
     }
 }

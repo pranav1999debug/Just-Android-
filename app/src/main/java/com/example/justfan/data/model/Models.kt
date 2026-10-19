@@ -73,8 +73,19 @@ data class UserProfile(
     val refreshToken: String? = null,
     val customWallpaperUri: String? = null
 ) {
+    // Pro User (10 USDT): Unrestricted media upload generation valid for 31 rolling calendar cycle days
+    val isProValid: Boolean
+        get() = tier.equals("Pro", ignoreCase = true) && (proExpiresAt == 0L || proExpiresAt > System.currentTimeMillis())
+
+    // Legendary User (20 USDT): Absolute lifetime unconditional access check flags
+    val isLegendaryValid: Boolean
+        get() = tier.equals("Legendary", ignoreCase = true) || isAdmin || email.equals("reytherapper12@gmail.com", ignoreCase = true)
+
+    val isPaidOrLegendary: Boolean
+        get() = isLegendaryValid || isProValid
+
     val isProActive: Boolean
-        get() = tier.equals("Pro", ignoreCase = true) || tier.equals("Legendary", ignoreCase = true)
+        get() = isPaidOrLegendary
 }
 
 data class UserPreferencesState(
@@ -85,8 +96,13 @@ data class UserPreferencesState(
 )
 
 data class RemoteUserPreferences(
-    val theme: String?,
-    val wallpaperUrl: String?
+    val theme: String? = null,
+    val theme_variant: String? = null,
+    val wallpaper_url: String? = null,
+    val wallpaper_overlay: Float? = null,
+    val themeVariant: String? = theme_variant,
+    val wallpaperUrl: String? = wallpaper_url,
+    val wallpaperOverlay: Float? = wallpaper_overlay
 )
 
 data class RequestQuota(

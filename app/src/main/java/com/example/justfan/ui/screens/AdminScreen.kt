@@ -53,12 +53,21 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.UserEntity
+import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 @Composable
@@ -68,7 +77,7 @@ fun AdminScreen(
     onUpdateUserTier: (userIdOrEmail: String, newTier: String) -> Unit,
     onUpdateRequestStatus: (id: String, status: String, link: String?, reason: String?) -> Unit,
     onDeleteRequest: (id: String) -> Unit,
-    onCreatePost: (PostEntity) -> Unit,
+    onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -139,10 +148,16 @@ fun AdminScreen(
                 onRefresh = onRefresh
             )
             2 -> AdminUploadPostTab(
-                onCreatePost = { post ->
-                    onCreatePost(post)
-                    notificationFeedback = "Gallery '${post.title}' published to Supabase! ✓"
-                    selectedTab = 0
+                onCreatePost = { post, onDone ->
+                    onCreatePost(post) { success, err ->
+                        onDone(success, err)
+                        if (success) {
+                            notificationFeedback = "Gallery '${post.title}' uploaded to Supabase posts table! ✓"
+                            onRefresh()
+                        } else {
+                            notificationFeedback = "Saved locally. Supabase DB notice: ${err ?: "Sign in with Supabase email/password or Google OAuth to write to remote DB"}"
+                        }
+                    }
                 }
             )
         }
@@ -481,17 +496,43 @@ fun AdminRequestsTab(
 
 @Composable
 fun AdminUploadPostTab(
-    onCreatePost: (PostEntity) -> Unit
+    onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var imageUrl by remember { mutableStateOf("") }
+    var extraImagesInput by remember { mutableStateOf("") }
     var adsLinkUrl by remember { mutableStateOf("") }
     var premiumLinkUrl by remember { mutableStateOf("") }
     var directLinkUrl by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("JustFan Creator") }
     var tagsInput by remember { mutableStateOf("Exclusive, VIP, Glamour") }
     var isFree by remember { mutableStateOf(false) }
+    var isUploadingImg by remember { mutableStateOf(false) }
+    var isPublishing by remember { mutableStateOf(false) }
+    var statusBanner by remember { mutableStateOf<String?>(null) }
+
+    val coverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                isUploadingImg = true
+                statusBanner = "Uploading cover image to Imgchest API..."
+                val res = ImgchestUploader.uploadImageDirect(context, it, title.ifBlank { "JUSTFAN Gallery Cover" })
+                isUploadingImg = false
+                if (res.isSuccess) {
+                    val url = res.getOrNull().orEmpty()
+                    imageUrl = url
+                    statusBanner = "Cover image uploaded to Imgchest: $url ✓"
+                } else {
+                    statusBanner = "Imgchest upload error: ${res.exceptionOrNull()?.message}"
+                }
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -500,15 +541,37 @@ fun AdminUploadPostTab(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text("Upload New Exclusive Media Gallery", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Upload New Exclusive Media Gallery",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (statusBanner != null) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = statusBanner!!,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
         }
 
         item {
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("Post Title") },
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Post Title *") },
+                modifier = Modifier.fillMaxWidth().testTag("admin_post_title_input")
             )
         }
 
@@ -534,26 +597,58 @@ fun AdminUploadPostTab(
         }
 
         item {
-            OutlinedTextField(
-                value = imageUrl,
-                onValueChange = { imageUrl = it },
-                label = { Text("Preview Image/Video URL (Main Thumbnail)") },
-                placeholder = { Text("https://cdn.imgchest.com/...jpg") },
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { coverPickerLauncher.launch("image/*") },
+                    enabled = !isUploadingImg,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("admin_upload_imgchest_btn")
+                ) {
+                    if (isUploadingImg) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Uploading to Imgchest...")
+                    } else {
+                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Upload Cover Image via Imgchest API")
+                    }
+                }
+
+                OutlinedTextField(
+                    value = imageUrl,
+                    onValueChange = { imageUrl = it },
+                    label = { Text("Preview Image/Video URL (Main Thumbnail) *") },
+                    placeholder = { Text("https://cdn.imgchest.com/...jpg") },
+                    modifier = Modifier.fillMaxWidth().testTag("admin_post_image_input")
+                )
+
+                OutlinedTextField(
+                    value = extraImagesInput,
+                    onValueChange = { extraImagesInput = it },
+                    label = { Text("Additional Gallery Image/Video URLs (comma-separated)") },
+                    placeholder = { Text("https://cdn.imgchest.com/1.jpg, https://cdn.imgchest.com/2.jpg") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
 
         item {
-            Text("Download Link Configuration (3 Buttons)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(
+                "3 Fields for 3 Action Buttons (Post Detail Page)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
 
         item {
             OutlinedTextField(
                 value = adsLinkUrl,
                 onValueChange = { adsLinkUrl = it },
-                label = { Text("1. Download (Ads) Link") },
-                placeholder = { Text("Ad-supported link (e.g. Catbox/TeraBox)") },
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Button 1: Download (Ads) Link (link_url) *") },
+                placeholder = { Text("Free / Ad-supported link (e.g. Linkvertise / TeraBox / PasteIt)") },
+                modifier = Modifier.fillMaxWidth().testTag("admin_post_ads_link_input")
             )
         }
 
@@ -561,9 +656,9 @@ fun AdminUploadPostTab(
             OutlinedTextField(
                 value = premiumLinkUrl,
                 onValueChange = { premiumLinkUrl = it },
-                label = { Text("2. Premium Link (VIP Users)") },
-                placeholder = { Text("High-speed link for VIP/Pro users") },
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Button 2: Premium Link (premium_link_url)") },
+                placeholder = { Text("VIP / Premium high-speed link") },
+                modifier = Modifier.fillMaxWidth().testTag("admin_post_premium_link_input")
             )
         }
 
@@ -571,9 +666,9 @@ fun AdminUploadPostTab(
             OutlinedTextField(
                 value = directLinkUrl,
                 onValueChange = { directLinkUrl = it },
-                label = { Text("3. Direct Download Link (Pro/Admin Only)") },
-                placeholder = { Text("Instant direct file mirror") },
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Button 3: Direct Download Link (direct_link_url)") },
+                placeholder = { Text("Pro / Admin direct mirror link (e.g. Mega / TeraBox)") },
+                modifier = Modifier.fillMaxWidth().testTag("admin_post_direct_link_input")
             )
         }
 
@@ -592,7 +687,10 @@ fun AdminUploadPostTab(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = if (isFree) "Free for All Users" else "Premium (VIP Subscribers Only)", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (isFree) "Free for All Users" else "Premium (VIP Subscribers Only)",
+                    fontWeight = FontWeight.Bold
+                )
                 FilterChip(
                     selected = isFree,
                     onClick = { isFree = !isFree },
@@ -604,29 +702,70 @@ fun AdminUploadPostTab(
         item {
             Button(
                 onClick = {
-                    if (title.isNotBlank() && imageUrl.isNotBlank()) {
-                        val tags = tagsInput.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                        val post = PostEntity(
-                            id = UUID.randomUUID().toString(),
-                            title = title.trim(),
-                            author = author.trim(),
-                            description = description.trim(),
-                            imageUrl = imageUrl.trim(),
-                            linkUrl = adsLinkUrl.trim().ifBlank { imageUrl.trim() },
-                            premiumLinkUrl = premiumLinkUrl.trim().ifBlank { null },
-                            directLinkUrl = directLinkUrl.trim().ifBlank { null },
-                            tags = tags,
-                            isFree = isFree,
-                            createdAt = System.currentTimeMillis()
-                        )
-                        onCreatePost(post)
+                    if (title.isBlank() || imageUrl.isBlank()) {
+                        statusBanner = "Please provide at least a Post Title and Preview Image URL."
+                        return@Button
+                    }
+                    isPublishing = true
+                    statusBanner = "Publishing post to Supabase database..."
+                    val tags = tagsInput.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    val galleryUrls = buildList {
+                        add(imageUrl.trim())
+                        extraImagesInput.split(",").map { it.trim() }.filter { it.isNotBlank() }.forEach { add(it) }
+                    }.distinct()
+                    val resolvedAdsLink = adsLinkUrl.trim().ifBlank { imageUrl.trim() }
+                    val resolvedPremiumLink = premiumLinkUrl.trim().ifBlank { resolvedAdsLink }
+                    val resolvedDirectLink = directLinkUrl.trim().ifBlank { resolvedAdsLink }
+
+                    val post = PostEntity(
+                        id = UUID.randomUUID().toString(),
+                        title = title.trim(),
+                        author = author.trim().ifBlank { "JustFan Creator" },
+                        description = description.trim().ifBlank {
+                            "Explore exclusive high-resolution previews and premium showcase content for ${title.trim()}."
+                        },
+                        imageUrl = imageUrl.trim(),
+                        linkUrl = resolvedAdsLink,
+                        premiumLinkUrl = resolvedPremiumLink,
+                        directLinkUrl = resolvedDirectLink,
+                        contentImages = galleryUrls,
+                        tags = tags,
+                        section = "home",
+                        isNsfw = true,
+                        isFree = isFree,
+                        createdAt = System.currentTimeMillis()
+                    )
+                    onCreatePost(post) { success, err ->
+                        isPublishing = false
+                        if (success) {
+                            title = ""
+                            description = ""
+                            imageUrl = ""
+                            extraImagesInput = ""
+                            adsLinkUrl = ""
+                            premiumLinkUrl = ""
+                            directLinkUrl = ""
+                            statusBanner = "Published '${post.title}' to Supabase database! ✓"
+                        } else {
+                            statusBanner = "Saved locally. Remote DB status: ${err ?: "Requires Supabase Auth session"}"
+                        }
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                enabled = !isPublishing,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = Color.Black
+                ),
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().testTag("admin_publish_post_btn")
             ) {
-                Text("PUBLISH GALLERY TO DATABASE", fontWeight = FontWeight.Bold)
+                if (isPublishing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.Black)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("PUBLISHING TO SUPABASE...", fontWeight = FontWeight.Bold)
+                } else {
+                    Text("PUBLISH GALLERY TO DATABASE", fontWeight = FontWeight.Bold)
+                }
             }
         }
     }

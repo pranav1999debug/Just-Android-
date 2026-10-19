@@ -79,7 +79,15 @@ fun PostDetailScreen(
     var isDescExpanded by remember { mutableStateOf(false) }
 
     val images = remember(post) {
-        if (post.contentImages.isNotEmpty()) post.contentImages else listOf(post.imageUrl)
+        val list = mutableListOf<String>()
+        if (post.imageUrl.isNotBlank()) list.add(post.imageUrl)
+        for (img in post.contentImages) {
+            val trimmed = img.trim()
+            if (trimmed.isNotBlank() && trimmed != post.imageUrl && !list.contains(trimmed)) {
+                list.add(trimmed)
+            }
+        }
+        if (list.isEmpty()) listOf(post.imageUrl) else list
     }
 
     val similarPosts = remember(post, allPosts) {
@@ -289,9 +297,46 @@ fun PostDetailScreen(
                 }
             }
 
-            // Title, Author, Tags
+            // Title, Author, Tags, Section & Meta
             item {
                 Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            color = if (post.isFree) Color(0xFF10B981) else GoldAccent,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = if (post.isFree) "FREE" else "PREMIUM",
+                                color = Color.Black,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "SECTION: ${post.section.uppercase()}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Text(
+                            text = "ID: ${post.id.take(8)}",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
                     Text(
                         text = post.title,
                         style = MaterialTheme.typography.headlineSmall,

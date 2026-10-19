@@ -44,6 +44,10 @@ import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
 
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.aspectRatio
+
 @Composable
 fun CompactPostCard(
     post: PostEntity,
@@ -58,12 +62,14 @@ fun CompactPostCard(
             post.imageUrl.contains(".mp4") || post.imageUrl.contains(".webm")
 
     Card(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .graphicsLayer(scaleX = 0.9f, scaleY = 0.9f)
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(12.dp))
             .testTag("post_card_${post.id}")
             .clickable { onCardClick() }
     ) {

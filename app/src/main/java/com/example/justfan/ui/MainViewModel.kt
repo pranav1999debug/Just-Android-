@@ -92,7 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createPost(post: PostEntity, onResult: (Boolean, String?) -> Unit) {
+    fun createPost(post: PostEntity, onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
         viewModelScope.launch {
             val res = repository.createPost(post)
             if (res.isSuccess) {
@@ -103,8 +103,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun signInWithGoogle(email: String, name: String): UserProfile {
-        return repository.signInWithGoogle(email, name)
+    fun signInWithGoogle(
+        email: String,
+        name: String,
+        accessToken: String? = null,
+        refreshToken: String? = null,
+        userId: String? = null
+    ): UserProfile {
+        return repository.signInWithGoogle(email, name, accessToken, refreshToken, userId)
     }
 
     fun signInWithPasskey(name: String): UserProfile {
@@ -113,6 +119,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun signInWithEmail(email: String, pass: String): Result<UserProfile> {
         return repository.signInWithEmail(email, pass)
+    }
+
+    fun authenticateWithEmail(
+        email: String,
+        pass: String,
+        isSignUp: Boolean = false,
+        username: String = "",
+        onResult: (Result<UserProfile>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val res = repository.authenticateWithEmail(email, pass, isSignUp, username)
+            onResult(res)
+        }
+    }
+
+    fun recordPostClick(postId: String) {
+        viewModelScope.launch {
+            repository.recordPostClick(postId)
+        }
+    }
+
+    fun recordDownloadClick(postId: String) {
+        viewModelScope.launch {
+            repository.recordDownloadClick(postId)
+        }
+    }
+
+    fun updatePost(post: PostEntity, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.updatePost(post)
+            onResult(res.isSuccess)
+        }
+    }
+
+    fun deletePost(postId: String, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.deletePost(postId)
+            onResult(res.isSuccess)
+        }
+    }
+
+    fun setUserBlocked(userId: String, isBlocked: Boolean, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.setUserBlocked(userId, isBlocked)
+            onResult(res.isSuccess)
+        }
     }
 
     fun signOut() {

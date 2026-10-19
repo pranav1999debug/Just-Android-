@@ -7,7 +7,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -28,8 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.data.remote.SecretsStore
 import com.example.justfan.ui.theme.GoldAccent
-import com.example.justfan.ui.theme.SuccessGreen
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -112,7 +111,6 @@ fun AuthDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 if (userProfile.isSignedIn) {
-                    // Signed In Account Profile View
                     SignedInProfileView(
                         userProfile = userProfile,
                         requestQuota = requestQuota,
@@ -126,7 +124,6 @@ fun AuthDialog(
                         }
                     )
                 } else if (!savedBioEmail.isNullOrBlank() && !useStandardLogin) {
-                    // Saved Biometric Fingerprint Login View
                     FingerprintSignInView(
                         email = savedBioEmail,
                         errorMessage = loginErrorMessage,
@@ -164,7 +161,6 @@ fun AuthDialog(
                         }
                     )
                 } else {
-                    // Sign In Options
                     SignInFormView(
                         externalErrorMessage = loginErrorMessage,
                         onSignInWithGoogle = { email, name ->
@@ -200,7 +196,6 @@ private fun SignedInProfileView(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Avatar + Tier Badge
         Box(contentAlignment = Alignment.BottomEnd) {
             Box(
                 modifier = Modifier
@@ -250,7 +245,6 @@ private fun SignedInProfileView(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Subscription Tier & Request Quota Card
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(14.dp),
@@ -267,7 +261,7 @@ private fun SignedInProfileView(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (userProfile.isAdmin) {
+                    if (userProfile.isAdmin && userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)) {
                         Surface(
                             color = Color(0xFFEF4444),
                             shape = RoundedCornerShape(4.dp)
@@ -303,7 +297,6 @@ private fun SignedInProfileView(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 val hasUnlimited = userProfile.tier == "Legendary" || userProfile.isProActive || requestQuota.unlimited
-                // Requests Allowance Text
                 val requestText = when {
                     userProfile.tier == "Legendary" -> "✨ Unlimited requests forever (Lifetime VIP)"
                     userProfile.isProActive -> {
@@ -340,7 +333,6 @@ private fun SignedInProfileView(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Upgrade / Change Tier CTA
         if (userProfile.tier != "Legendary") {
             Button(
                 onClick = onUpgradeClick,
@@ -358,7 +350,6 @@ private fun SignedInProfileView(
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        // Switch Account Button
         Button(
             onClick = onSignOut,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
@@ -367,12 +358,11 @@ private fun SignedInProfileView(
         ) {
             Icon(Icons.Default.AccountCircle, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Switch Account / Sign In with Google")
+            Text("Switch Account")
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Sign Out Button
         OutlinedButton(
             onClick = onSignOut,
             shape = RoundedCornerShape(10.dp),
@@ -475,7 +465,8 @@ private fun SignInFormView(
     onSignInWithPasskey: (name: String) -> Unit,
     onSignInWithEmail: (email: String, pass: String) -> Result<UserProfile>
 ) {
-    var selectedMethod by remember { mutableIntStateOf(0) } // 0: Google, 1: Passkey, 2: Email/Pass
+    // Only standard user sign-in methods: 0: Google, 1: Email, 2: Passkey (No Admin tab or auto-access)
+    var selectedMethod by remember { mutableIntStateOf(0) }
 
     var emailInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
@@ -501,7 +492,7 @@ private fun SignInFormView(
             }
         }
 
-        // Method Selector Tabs
+        // Method Selector Tabs (Standard User Methods Only)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -509,7 +500,7 @@ private fun SignInFormView(
                 .padding(4.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            listOf("Google", "Passkey", "Email").forEachIndexed { idx, label ->
+            listOf("Google", "Email", "Passkey").forEachIndexed { idx, label ->
                 val isSelected = selectedMethod == idx
                 Box(
                     modifier = Modifier
@@ -537,9 +528,8 @@ private fun SignInFormView(
 
         when (selectedMethod) {
             0 -> {
-                // Google Sign In
+                // 1. Google Sign-In Tab
                 var customGoogleEmail by remember { mutableStateOf("") }
-                var isCustomInputVisible by remember { mutableStateOf(false) }
                 val context = androidx.compose.ui.platform.LocalContext.current
 
                 val accountPickerLauncher = rememberLauncherForActivityResult(
@@ -548,8 +538,9 @@ private fun SignInFormView(
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val accountName = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
                         if (!accountName.isNullOrBlank()) {
-                            val name = accountName.substringBefore("@").replaceFirstChar { it.uppercase() }
-                            onSignInWithGoogle(accountName, name)
+                            val clean = accountName.trim()
+                            val name = clean.substringBefore("@").replaceFirstChar { it.uppercase() }
+                            onSignInWithGoogle(clean, name)
                         }
                     }
                 }
@@ -559,48 +550,42 @@ private fun SignInFormView(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Sign in with your Google account to unlock theme settings, cloud synced favorites, and unlimited requests.",
+                        text = "Sign in with your Google account to sync favorites, preferences, and membership.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // 1. Official Google OAuth Browser Flow
+                    // Browser Google OAuth via Supabase (returns full JWT session)
                     Button(
                         onClick = {
-                            val oauthUrl = "https://zlboyxbqppoimhhbvrax.supabase.co/auth/v1/authorize?provider=google&redirect_to=justfan://auth"
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(oauthUrl))
-                            context.startActivity(intent)
+                            try {
+                                val oauthUrl = "${com.example.justfan.BuildConfig.SUPABASE_URL.trimEnd('/')}/auth/v1/authorize?provider=google&redirect_to=justfan://auth-callback"
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(oauthUrl))
+                                context.startActivity(browserIntent)
+                            } catch (e: Exception) {
+                                errorMessage = "Unable to open browser for Google OAuth."
+                            }
                         },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color.Black
-                        ),
                         shape = RoundedCornerShape(12.dp),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("btn_google_oauth_signin")
+                            .height(48.dp)
+                            .testTag("btn_google_oauth_browser")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.AccountCircle,
-                            contentDescription = "Google",
-                            tint = Color(0xFF4285F4),
-                            modifier = Modifier.size(24.dp)
+                            imageVector = Icons.Default.Public,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Sign in with Google (OAuth)",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Continue with Google (OAuth)", fontWeight = FontWeight.Bold)
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    // 2. Device Google Account Picker (Native Android)
+                    // Choose Google Account on Android Device
                     OutlinedButton(
                         onClick = {
                             try {
@@ -615,7 +600,7 @@ private fun SignInFormView(
                                 )
                                 accountPickerLauncher.launch(intent)
                             } catch (_: Exception) {
-                                isCustomInputVisible = true
+                                errorMessage = "Please enter your Gmail address below"
                             }
                         },
                         shape = RoundedCornerShape(12.dp),
@@ -636,89 +621,70 @@ private fun SignInFormView(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    if (!isCustomInputVisible) {
-                        TextButton(
-                            onClick = { isCustomInputVisible = true },
-                            modifier = Modifier.fillMaxWidth().testTag("btn_toggle_custom_email")
-                        ) {
-                            Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Enter Another Gmail / Google Account Manually", fontSize = 12.sp)
-                        }
-                    } else {
-                        OutlinedTextField(
-                            value = customGoogleEmail,
-                            onValueChange = { customGoogleEmail = it },
-                            label = { Text("Enter Google/Gmail Address") },
-                            placeholder = { Text("e.g. yourname@gmail.com") },
-                            singleLine = true,
-                            leadingIcon = {
-                                Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF4285F4))
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("input_custom_google_email")
+                    Text(
+                        text = "— OR ENTER GOOGLE / GMAIL ADDRESS —",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = customGoogleEmail,
+                        onValueChange = {
+                            customGoogleEmail = it
+                            errorMessage = null
+                        },
+                        label = { Text("Google / Gmail Address") },
+                        placeholder = { Text("e.g. name@gmail.com") },
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF4285F4))
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_custom_google_email")
+                    )
+
+                    if (errorMessage != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = errorMessage ?: "",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                val email = customGoogleEmail.trim()
-                                if (email.contains("@")) {
-                                    val name = email.substringBefore("@").replaceFirstChar { it.uppercase() }
-                                    onSignInWithGoogle(email, name)
-                                }
-                            },
-                            enabled = customGoogleEmail.trim().contains("@"),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth().testTag("btn_submit_custom_google_email")
-                        ) {
-                            Text("Sign In With Google", fontWeight = FontWeight.Bold)
-                        }
                     }
-                }
-            }
-            1 -> {
-                // Passkey Sign In
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Fingerprint,
-                        contentDescription = "Passkey",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(48.dp)
-                    )
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = "Device Passkey & Biometrics",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Use your device fingerprint, face unlock, or screen lock passkey to sign in without passwords.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     Button(
                         onClick = {
-                            onSignInWithPasskey("Device Passkey Verified")
+                            val email = customGoogleEmail.trim()
+                            if (!email.contains("@")) {
+                                errorMessage = "Please enter a valid Google email address"
+                                return@Button
+                            }
+                            val name = email.substringBefore("@").replaceFirstChar { it.uppercase() }
+                            onSignInWithGoogle(email, name)
                         },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth().testTag("btn_passkey_signin")
+                        enabled = customGoogleEmail.trim().contains("@"),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("btn_submit_custom_google_email")
                     ) {
-                        Icon(Icons.Default.Key, contentDescription = null)
+                        Icon(Icons.Default.Check, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Verify with Device Passkey", fontWeight = FontWeight.Bold)
+                        Text("Sign In with Google", fontWeight = FontWeight.Bold)
                     }
                 }
             }
-            2 -> {
-                // Email & Password
+
+            1 -> {
+                // 2. Email & Password Tab
                 Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = emailInput,
@@ -727,7 +693,7 @@ private fun SignInFormView(
                             errorMessage = null
                         },
                         label = { Text("Email Address") },
-                        placeholder = { Text("e.g. reytherapper12@gmail.com") },
+                        placeholder = { Text("Enter your email") },
                         leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
@@ -769,37 +735,7 @@ private fun SignInFormView(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Quick Fill Admin button
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                emailInput = "reytherapper12@gmail.com"
-                                passwordInput = "Pranav19ranjan97"
-                                errorMessage = null
-                            }
-                            .padding(8.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Fill Admin (reytherapper12@gmail.com)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Button(
                         onClick = {
@@ -807,15 +743,65 @@ private fun SignInFormView(
                                 errorMessage = "Please enter an email address."
                                 return@Button
                             }
-                            val res = onSignInWithEmail(emailInput, passwordInput)
+                            if (passwordInput.isBlank()) {
+                                errorMessage = "Please enter your password."
+                                return@Button
+                            }
+                            val res = onSignInWithEmail(emailInput.trim(), passwordInput)
                             if (res.isFailure) {
                                 errorMessage = res.exceptionOrNull()?.message ?: "Sign-in failed."
                             }
                         },
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth().testTag("btn_email_signin")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("btn_email_signin")
                     ) {
                         Text("Sign In / Sign Up", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            2 -> {
+                // 3. Passkey Sign In
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Fingerprint,
+                        contentDescription = "Passkey",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(48.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Device Passkey & Biometrics",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Use your device fingerprint, face unlock, or screen lock passkey to sign in without passwords.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            onSignInWithPasskey("Device Passkey Verified")
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("btn_passkey_signin")
+                    ) {
+                        Icon(Icons.Default.Key, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verify with Device Passkey", fontWeight = FontWeight.Bold)
                     }
                 }
             }

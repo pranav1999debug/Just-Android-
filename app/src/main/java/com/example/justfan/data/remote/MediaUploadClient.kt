@@ -116,14 +116,58 @@ object MediaUploadClient {
     }
 
     /**
-     * Generates a description and hashtags given a title using Gemini AI with fallback.
+     * Generates a description and hashtags given a title using Groq AI via the generate-caption Edge Function,
+     * with smart fallback to Gemini and local generator.
      */
     suspend fun generateCaption(title: String): Result<GeneratedCaption> = withContext(Dispatchers.IO) {
+        // 1. Try Groq-powered generate-caption edge function
+        try {
+            val url = URL("$BASE_FUNCTIONS_URL/generate-caption")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("apikey", SUPABASE_KEY)
+                setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+                connectTimeout = 15000
+                readTimeout = 20000
+                doOutput = true
+            }
+
+            val payload = JSONObject().apply {
+                put("title", title.trim())
+            }
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+
+            val code = conn.responseCode
+            if (code in 200..299) {
+                val responseText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+                conn.disconnect()
+                val json = JSONObject(responseText)
+                val desc = json.optString("description", "")
+                val tagsArr = json.optJSONArray("hashtags")
+                val tagsList = mutableListOf<String>()
+                if (tagsArr != null) {
+                    for (i in 0 until tagsArr.length()) {
+                        tagsList.add(tagsArr.getString(i))
+                    }
+                }
+                if (desc.isNotBlank()) {
+                    Log.i(TAG, "Groq generated caption successfully for \"$title\"")
+                    return@withContext Result.success(GeneratedCaption(description = desc, hashtags = tagsList))
+                }
+            } else {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Groq edge function generate-caption failed, using fallback: ${e.message}")
+        }
+
+        // 2. Fallback to Gemini AI / smart generator
         try {
             val genResult = GeminiAiHelper.generateDescriptionAndHashtags(title).getOrThrow()
             Result.success(GeneratedCaption(description = genResult.description, hashtags = genResult.hashtags))
         } catch (e: Exception) {
-            Log.e(TAG, "generateCaption error", e)
+            Log.e(TAG, "generateCaption fallback error", e)
             Result.failure(e)
         }
     }

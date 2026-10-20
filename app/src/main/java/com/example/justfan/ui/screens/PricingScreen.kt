@@ -556,7 +556,7 @@ fun PricingScreen(
     // Dialog: PayPal Automatic Account Payment
     if (showPayPalDialog != null) {
         val target = showPayPalDialog!!
-        val amountClean = target.price.removePrefix("$").trim()
+        val amountClean = PayPalClient.normalizeUsdAmount(target.price, target.name)
 
         AlertDialog(
             onDismissRequest = {
@@ -571,7 +571,7 @@ fun PricingScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Upgrade to ${target.name} Membership for ${target.price} USD.\nPayPal provides instant, automatic account upgrade upon payment.",
+                        text = "Upgrade to ${target.name} Membership for $$amountClean USD.\nPayPal provides instant, automatic account upgrade in the database upon payment.",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
@@ -586,7 +586,11 @@ fun PricingScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Membership:", fontSize = 13.sp)
-                                Text(target.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(
+                                    text = if (target.name == "Pro") "Pro (1 Month • Auto-reverts to Free)" else "Legendary (Lifetime VIP)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(
@@ -594,7 +598,7 @@ fun PricingScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Total Amount:", fontSize = 13.sp)
-                                Text("${target.price} USD", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                                Text("$$amountClean USD", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
@@ -632,21 +636,23 @@ fun PricingScreen(
                                 is PayPalClient.PayPalOrderResult.Created -> {
                                     payPalOrderId = result.orderId
                                     payPalApprovalUrl = result.approvalUrl
-                                    // Open PayPal web checkout in browser
                                     try {
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.approvalUrl))
                                         context.startActivity(intent)
-                                        payPalStatusMessage = "Opened PayPal checkout in browser. Complete payment and tap 'I Have Paid' below."
+                                        payPalStatusMessage = "Opened PayPal checkout in browser. Complete payment and tap 'I Have Paid (Verify & Activate)' below to automatically upgrade your tier."
                                     } catch (_: Exception) {
                                         Toast.makeText(context, "Cannot open browser. URL: ${result.approvalUrl}", Toast.LENGTH_LONG).show()
                                     }
                                 }
                                 is PayPalClient.PayPalOrderResult.DirectUrl -> {
+                                    payPalApprovalUrl = result.checkoutUrl
                                     try {
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.checkoutUrl))
                                         context.startActivity(intent)
-                                        payPalStatusMessage = "Opened PayPal checkout. After payment, your tier activates."
-                                    } catch (_: Exception) {}
+                                        payPalStatusMessage = "Opened PayPal checkout in browser. Complete payment and tap 'I Have Paid (Verify & Activate)' below to automatically upgrade your tier."
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Cannot open browser. URL: ${result.checkoutUrl}", Toast.LENGTH_LONG).show()
+                                    }
                                 }
                                 is PayPalClient.PayPalOrderResult.Error -> {
                                     Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
@@ -657,7 +663,7 @@ fun PricingScreen(
                     enabled = !isProcessingPayPal,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
-                    Text("Proceed to PayPal")
+                    Text(if (payPalApprovalUrl == null) "Proceed to PayPal" else "Re-open PayPal")
                 }
             },
             dismissButton = {
@@ -665,13 +671,26 @@ fun PricingScreen(
                     if (payPalOrderId != null || payPalApprovalUrl != null) {
                         TextButton(
                             onClick = {
-                                // Automatic activation confirmation
-                                onSelectPlan(target.name)
-                                upgradedPlanName = target.name
-                                showPayPalDialog = null
-                                payPalOrderId = null
-                                payPalApprovalUrl = null
-                                payPalStatusMessage = null
+                                isProcessingPayPal = true
+                                coroutineScope.launch {
+                                    val ordId = payPalOrderId
+                                    if (!ordId.isNullOrBlank()) {
+                                        PayPalClient.captureOrder(ordId)
+                                    }
+                                    isProcessingPayPal = false
+                                    // Automatic tier upgrade in Supabase database + local profile
+                                    onSelectPlan(target.name)
+                                    upgradedPlanName = target.name
+                                    showPayPalDialog = null
+                                    payPalOrderId = null
+                                    payPalApprovalUrl = null
+                                    payPalStatusMessage = null
+                                    Toast.makeText(
+                                        context,
+                                        "Tier automatically upgraded to ${target.name} in database! ✓",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
                         ) {
                             Text("I Have Paid (Verify & Activate)", color = SuccessGreen, fontWeight = FontWeight.Bold)

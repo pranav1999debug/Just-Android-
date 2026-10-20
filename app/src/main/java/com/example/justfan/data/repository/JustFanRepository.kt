@@ -84,7 +84,21 @@ class JustFanRepository(private val context: Context) {
         val isSignedIn = prefs.getBoolean("user_signed_in", false)
         val email = (prefs.getString("user_email", "") ?: "").trim().lowercase()
         val isRey = email.equals("reytherapper12@gmail.com", ignoreCase = true)
-        val tier = prefs.getString("user_tier", if (isRey && isSignedIn) "Legendary" else "Free") ?: "Free"
+        val rawTier = prefs.getString("user_tier", if (isRey && isSignedIn) "Legendary" else "Free") ?: "Free"
+        val rawProExpiresAt = prefs.getLong("user_pro_expires_at", 0L)
+
+        // Automatically downgrade Pro to Free if 1-month period has expired
+        val isProExpired = rawTier.equals("Pro", ignoreCase = true) &&
+                rawProExpiresAt > 0L &&
+                rawProExpiresAt != Long.MAX_VALUE &&
+                rawProExpiresAt < System.currentTimeMillis()
+
+        val resolvedTier = when {
+            isRey && isSignedIn -> "Legendary"
+            isProExpired -> "Free"
+            else -> rawTier
+        }
+        val resolvedExpiresAt = if (isProExpired) 0L else rawProExpiresAt
 
         return UserProfile(
             id = prefs.getString("user_id", "guest_user") ?: "guest_user",
@@ -92,9 +106,9 @@ class JustFanRepository(private val context: Context) {
             email = email,
             isSignedIn = isSignedIn,
             authMethod = prefs.getString("user_auth_method", "guest") ?: "guest",
-            tier = if (isRey && isSignedIn) "Legendary" else tier,
+            tier = resolvedTier,
             isAdmin = isRey && isSignedIn,
-            proExpiresAt = prefs.getLong("user_pro_expires_at", 0L),
+            proExpiresAt = resolvedExpiresAt,
             accessToken = prefs.getString("user_access_token", null) ?: prefs.getString("cached_token_$email", null),
             refreshToken = prefs.getString("user_refresh_token", null) ?: prefs.getString("cached_refresh_$email", null),
             customWallpaperUri = prefs.getString("user_wallpaper_uri", null)
@@ -291,14 +305,21 @@ class JustFanRepository(private val context: Context) {
                 val activeToken = ensureValidAccessToken(_userProfile.value)
                 val activeUserId = _userProfile.value.id
 
-                // 1. Sync subscription tier from Supabase subscriptions table
-                val subResult = SupabaseClient.fetchUserSubscription(activeUserId, activeToken)
-                val remoteTier = subResult.getOrNull()
-                if (!remoteTier.isNullOrBlank() || isRey) {
-                    val isPro = remoteTier?.equals("pro", ignoreCase = true) == true
-                    val isLegendary = remoteTier?.equals("legendary", ignoreCase = true) == true || isRey
-                    val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L) else 0L
-                    val finalTier = if (isLegendary) "Legendary" else if (isPro) "Pro" else (remoteTier ?: "Free")
+                // 1. Sync subscription tier from Supabase subscriptions and users tables (auto-downgrades expired 1-month Pro to Free)
+                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(activeUserId, cleanEmail, activeToken).getOrNull()
+                if (subDetails != null || isRey) {
+                    val isLegendary = subDetails?.tier?.equals("legendary", ignoreCase = true) == true || isRey
+                    val isPro = subDetails?.tier?.equals("pro", ignoreCase = true) == true
+                    val expiresAt = when {
+                        isLegendary -> Long.MAX_VALUE
+                        isPro -> subDetails?.expiresAtMillis?.takeIf { it > 0L } ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
+                        else -> 0L
+                    }
+                    val finalTier = when {
+                        isLegendary -> "Legendary"
+                        isPro -> "Pro"
+                        else -> "Free"
+                    }
 
                     val updatedProfile = _userProfile.value.copy(
                         tier = finalTier,
@@ -363,9 +384,24 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun fetchRequestQuota(): RequestQuota {
-        val current = _userProfile.value
+        var current = _userProfile.value
         val hardwareDeviceId = getDeviceId(context)
-        if (current.tier.equals("legendary", ignoreCase = true) || current.tier.equals("pro", ignoreCase = true) || current.isAdmin) {
+
+        // Check if local Pro tier has expired past its 1-month window
+        if (current.tier.equals("pro", ignoreCase = true) &&
+            current.proExpiresAt > 0L &&
+            current.proExpiresAt != Long.MAX_VALUE &&
+            current.proExpiresAt < System.currentTimeMillis()
+        ) {
+            current = current.copy(tier = "Free", proExpiresAt = 0L)
+            _userProfile.value = current
+            saveProfileToPrefs(current)
+            scope.launch {
+                SupabaseClient.updateUserTier(current.id, "Free", current.accessToken, current.email)
+            }
+        }
+
+        if (current.tier.equals("legendary", ignoreCase = true) || current.isProActive || current.isAdmin) {
             val unlimited = RequestQuota(unlimited = true, limit = 9999, used = 0, remaining = 9999)
             _requestQuota.value = unlimited
             return unlimited
@@ -409,14 +445,14 @@ class JustFanRepository(private val context: Context) {
         userDao.updateUserTier(userId, newTier)
 
         val current = _userProfile.value
-        if (current.id == userId || current.email.equals(userId, ignoreCase = true)) {
+        if (current.id == userId || current.email.equals(userId, ignoreCase = true) || userId == "guest_user") {
             val isRey = current.email.equals("reytherapper12@gmail.com", ignoreCase = true)
             val isLegendary = newTier.equals("legendary", ignoreCase = true) || isRey
             val isPro = newTier.equals("pro", ignoreCase = true)
-            val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L) else 0L
+            val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (31L * 24 * 60 * 60 * 1000L) else 0L
 
             val updated = current.copy(
-                tier = if (isLegendary) "Legendary" else if (isPro) "Pro" else newTier,
+                tier = if (isLegendary) "Legendary" else if (isPro) "Pro" else "Free",
                 proExpiresAt = expiresAt
             )
             _userProfile.value = updated
@@ -424,10 +460,11 @@ class JustFanRepository(private val context: Context) {
         }
 
         scope.launch {
-            val adminToken = ensureValidAccessToken(current)
-            val res = SupabaseClient.updateUserTier(userId, newTier, adminToken)
+            val adminToken = ensureValidAccessToken(_userProfile.value)
+            val res = SupabaseClient.updateUserTier(userId, newTier, adminToken, _userProfile.value.email)
+            fetchRequestQuota()
             if (res.isSuccess) {
-                Log.i("JustFanRepository", "Remote subscription updated for $userId to $newTier")
+                Log.i("JustFanRepository", "Remote subscription updated in Supabase for $userId to $newTier")
             } else {
                 Log.w("JustFanRepository", "Remote subscription update failed: ${res.exceptionOrNull()?.message}")
             }
@@ -438,13 +475,13 @@ class JustFanRepository(private val context: Context) {
         val current = _userProfile.value
         val hardwareDeviceId = getDeviceId(context)
         val isPaidOrLegendary = current.tier.equals("legendary", ignoreCase = true) ||
-                current.tier.equals("pro", ignoreCase = true) || current.isAdmin
+                current.isProActive || current.isAdmin
 
-        // Enforce 3 free requests per device for free users
+        // Enforce 3 free requests per month only for Free tier users (Pro 1-month & Legendary lifetime are unlimited)
         if (!isPaidOrLegendary) {
             val currentQuota = fetchRequestQuota()
-            if (currentQuota.used >= 3) {
-                return Result.failure(Exception("Device limit reached (3/3 free requests used on this device). Upgrade to Pro or Legendary for unlimited requests."))
+            if (!currentQuota.unlimited && currentQuota.used >= 3) {
+                return Result.failure(Exception("Monthly Free Tier limit reached (3/3 requests used this month). Upgrade to Pro (1 Month Unlimited) or Legendary (Lifetime Unlimited) to submit more requests."))
             }
         }
 

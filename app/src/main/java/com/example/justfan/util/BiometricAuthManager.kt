@@ -318,4 +318,66 @@ object BiometricAuthManager {
             prefs.edit().putString(KEY_SAVED_EMAIL, email.trim().lowercase()).apply()
         }
     }
+
+    /**
+     * Prompts the signed-in user on app launch to unlock app contents using Biometrics
+     * (Fingerprint / Face) or Device Credential (PIN / Pattern / Password) fallback.
+     */
+    fun promptAppUnlock(
+        activity: FragmentActivity?,
+        context: Context,
+        email: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val cleanEmail = email.trim().lowercase()
+        if (activity == null || !canAuthenticate(context)) {
+            markBiometricVerifiedForAccount(context, cleanEmail, true)
+            onSuccess()
+            return
+        }
+
+        try {
+            val executor = ContextCompat.getMainExecutor(activity)
+            val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Unlock JUSTFAN")
+                .setSubtitle("Verify biometric or device PIN for $cleanEmail to access app contents")
+                .setAllowedAuthenticators(authenticators)
+                .build()
+
+            val biometricPrompt = BiometricPrompt(
+                activity,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        super.onAuthenticationSucceeded(result)
+                        markBiometricVerifiedForAccount(context, cleanEmail, true)
+                        onSuccess()
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        super.onAuthenticationError(errorCode, errString)
+                        if (errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS ||
+                            errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT ||
+                            errorCode == BiometricPrompt.ERROR_HW_UNAVAILABLE ||
+                            errorCode == BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL
+                        ) {
+                            markBiometricVerifiedForAccount(context, cleanEmail, true)
+                            onSuccess()
+                        } else {
+                            onError(errString.toString())
+                        }
+                    }
+                }
+            )
+            biometricPrompt.authenticate(promptInfo)
+        } catch (e: Exception) {
+            markBiometricVerifiedForAccount(context, cleanEmail, true)
+            onSuccess()
+        }
+    }
 }

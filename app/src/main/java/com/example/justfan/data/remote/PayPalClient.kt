@@ -1,5 +1,6 @@
 package com.example.justfan.data.remote
 
+import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -11,14 +12,16 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 object PayPalClient {
 
     private const val TAG = "PayPalClient"
 
-    // Configured PayPal Client ID & Secret
-    const val CLIENT_ID = "AaGN0l3-FmeD1qYqy2Ml4"
-    const val CLIENT_SECRET = "EHOg8BWU5j7_XGWGgclhJ18gyVi1D2qIcHCrXfS03pPzhxlcrUUOXYwTQ4E-qWBFgSgfXcvcvlKeUxEm"
+    // Default PayPal Client ID & Secret (can also be overridden via Supabase app_secrets)
+    const val DEFAULT_CLIENT_ID = "AaGN0l3-FmeD1qYqy2Ml4"
+    const val DEFAULT_CLIENT_SECRET = "EHOg8BWU5j7_XGWGgclhJ18gyVi1D2qIcHCrXfS03pPzhxlcrUUOXYwTQ4E-qWBFgSgfXcvcvlKeUxEm"
+    const val DEFAULT_MERCHANT_EMAIL = "reytherapper12@gmail.com"
 
     // Environment URLs
     private const val SANDBOX_API_URL = "https://api-m.sandbox.paypal.com"
@@ -31,9 +34,25 @@ object PayPalClient {
     }
 
     /**
+     * Normalizes price strings such as "10 USDT", "$10", "20 USDT" into valid
+     * PayPal 2-decimal USD strings like "10.00" or "20.00".
+     */
+    fun normalizeUsdAmount(rawAmount: String, planName: String = ""): String {
+        val numericMatch = Regex("""(\d+(\.\d+)?)""").find(rawAmount)?.value?.toDoubleOrNull()
+        val resolved = when {
+            numericMatch != null && numericMatch > 0.0 -> numericMatch
+            planName.equals("Legendary", ignoreCase = true) -> 20.0
+            planName.equals("Pro", ignoreCase = true) -> 10.0
+            else -> 10.0
+        }
+        return String.format(Locale.US, "%.2f", resolved)
+    }
+
+    /**
      * Creates a PayPal order using the V2 Orders API.
-     * Tries live and sandbox environments. If the credentials fail authentication,
-     * falls back gracefully to a direct web checkout link.
+     * Sanitizes the USD amount first, checks Supabase app_secrets for live PayPal credentials,
+     * tries live and sandbox REST environments, and falls back to PayPal Standard Checkout (_xclick)
+     * so users never hit PayPal's broken checkoutnow genericError screen.
      */
     suspend fun createOrder(
         planName: String,
@@ -41,24 +60,39 @@ object PayPalClient {
         returnUrl: String = "https://justfan.app/paypal/success",
         cancelUrl: String = "https://justfan.app/paypal/cancel"
     ): PayPalOrderResult = withContext(Dispatchers.IO) {
+        val cleanUsd = normalizeUsdAmount(amountUsd, planName)
+
+        val clientId = SecretsStore.getOrNull("paypal_client_id")?.trim()?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_CLIENT_ID
+        val clientSecret = SecretsStore.getOrNull("paypal_client_secret")?.trim()?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_CLIENT_SECRET
+        val merchantEmail = SecretsStore.getOrNull("paypal_business_email")?.trim()?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_MERCHANT_EMAIL
+
         val baseUrls = listOf(LIVE_API_URL, SANDBOX_API_URL)
 
         for (baseUrl in baseUrls) {
-            val token = fetchAccessToken(baseUrl)
+            val token = fetchAccessToken(baseUrl, clientId, clientSecret)
             if (token != null) {
-                val order = createOrderWithToken(baseUrl, token, planName, amountUsd, returnUrl, cancelUrl)
+                val order = createOrderWithToken(baseUrl, token, planName, cleanUsd, returnUrl, cancelUrl)
                 if (order != null) {
                     return@withContext order
                 }
             }
         }
 
-        // Direct web checkout fallback if REST token fails
-        val fallbackUrl = "https://www.paypal.com/checkoutnow?token=JUSTFAN_${planName.uppercase()}_${System.currentTimeMillis()}"
-        PayPalOrderResult.DirectUrl(fallbackUrl)
+        // Valid PayPal Standard Web Checkout fallback (_xclick) with clean USD amount
+        val itemName = Uri.encode("JUSTFAN $planName Membership")
+        val business = Uri.encode(merchantEmail)
+        val encodedReturn = Uri.encode(returnUrl)
+        val encodedCancel = Uri.encode(cancelUrl)
+        val standardCheckoutUrl =
+            "https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=$business&item_name=$itemName&amount=$cleanUsd&currency_code=USD&no_shipping=1&no_note=1&return=$encodedReturn&cancel_return=$encodedCancel"
+
+        PayPalOrderResult.DirectUrl(standardCheckoutUrl)
     }
 
-    private fun fetchAccessToken(baseUrl: String): String? {
+    private fun fetchAccessToken(baseUrl: String, clientId: String, clientSecret: String): String? {
         return try {
             val url = URL("$baseUrl/v1/oauth2/token")
             val conn = url.openConnection() as HttpURLConnection
@@ -67,7 +101,7 @@ object PayPalClient {
             conn.connectTimeout = 10000
             conn.readTimeout = 15000
 
-            val credentials = "$CLIENT_ID:$CLIENT_SECRET"
+            val credentials = "$clientId:$clientSecret"
             val basicAuth = "Basic " + Base64.encodeToString(credentials.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
             conn.setRequestProperty("Authorization", basicAuth)
             conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -101,7 +135,7 @@ object PayPalClient {
         baseUrl: String,
         token: String,
         planName: String,
-        amountUsd: String,
+        cleanUsd: String,
         returnUrl: String,
         cancelUrl: String
     ): PayPalOrderResult? {
@@ -124,7 +158,7 @@ object PayPalClient {
                         put("description", "JUSTFAN $planName Membership")
                         val amountObj = JSONObject().apply {
                             put("currency_code", "USD")
-                            put("value", amountUsd)
+                            put("value", cleanUsd)
                         }
                         put("amount", amountObj)
                     }
@@ -159,7 +193,8 @@ object PayPalClient {
                 if (links != null) {
                     for (i in 0 until links.length()) {
                         val linkObj = links.getJSONObject(i)
-                        if (linkObj.optString("rel") == "approve") {
+                        val rel = linkObj.optString("rel")
+                        if (rel == "approve" || rel == "payer-action") {
                             approvalUrl = linkObj.optString("href")
                             break
                         }
@@ -168,8 +203,10 @@ object PayPalClient {
 
                 if (!approvalUrl.isNullOrBlank()) {
                     PayPalOrderResult.Created(orderId = orderId, approvalUrl = approvalUrl)
-                } else {
+                } else if (orderId.isNotBlank()) {
                     PayPalOrderResult.Created(orderId = orderId, approvalUrl = "https://www.paypal.com/checkoutnow?token=$orderId")
+                } else {
+                    null
                 }
             } else {
                 conn.disconnect()
@@ -185,9 +222,13 @@ object PayPalClient {
      * Captures payment for an approved order.
      */
     suspend fun captureOrder(orderId: String): Boolean = withContext(Dispatchers.IO) {
+        val clientId = SecretsStore.getOrNull("paypal_client_id")?.trim()?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_CLIENT_ID
+        val clientSecret = SecretsStore.getOrNull("paypal_client_secret")?.trim()?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_CLIENT_SECRET
         val baseUrls = listOf(LIVE_API_URL, SANDBOX_API_URL)
         for (baseUrl in baseUrls) {
-            val token = fetchAccessToken(baseUrl) ?: continue
+            val token = fetchAccessToken(baseUrl, clientId, clientSecret) ?: continue
             try {
                 val url = URL("$baseUrl/v2/checkout/orders/$orderId/capture")
                 val conn = url.openConnection() as HttpURLConnection

@@ -570,16 +570,16 @@ fun PostDetailScreen(
                             }
                         )
 
-                        // 3rd Button: Direct Download => Only Pro and Admin can access
+                        // 3rd Button: Direct Download => Accessible to Pro (1 Month) and Legendary (Lifetime); Free users navigate to Payment Page
                         val directUrl = if (!post.directLinkUrl.isNullOrBlank()) post.directLinkUrl else post.linkUrl
                         if (canAccessDirectLink) {
                             DownloadActionButton(
                                 title = "Direct Download",
-                                subtitle = if (!post.directLinkUrl.isNullOrBlank()) "Instant Mirror • Zero Waiting" else "Direct File Link",
+                                subtitle = if (!post.directLinkUrl.isNullOrBlank()) "Instant Mirror • Zero Waiting (Pro & Legendary)" else "Direct File Link",
                                 icon = Icons.Default.Bolt,
                                 containerColor = ThemeEmerald,
                                 contentColor = Color.White,
-                                badge = "PRO / ADMIN",
+                                badge = "PRO / LEGENDARY",
                                 testTag = "detail_download_direct_button",
                                 onClick = {
                                     onDownloadClick(post.id, "direct")
@@ -593,16 +593,16 @@ fun PostDetailScreen(
                         } else {
                             DownloadActionButton(
                                 title = "Direct Download",
-                                subtitle = "🔒 High-Speed Mirror • Reserved for Pro & Admin • Tap to Unlock",
+                                subtitle = "🔒 Unlocked for Pro (1 Month) & Legendary (Lifetime) • Tap to Upgrade",
                                 icon = Icons.Default.Lock,
                                 containerColor = Color(0xFF7C3AED),
                                 contentColor = Color.White,
-                                badge = "PRO ONLY",
+                                badge = "PRO / LEGENDARY",
                                 testTag = "detail_download_direct_button",
                                 onClick = {
                                     Toast.makeText(
                                         context,
-                                        "Direct link is exclusive to Pro members and Admins. Opening payment page...",
+                                        "Upgrade to Pro or Legendary to unlock Direct Download. Opening payment page...",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                     onNavigateToPricing()
@@ -610,7 +610,7 @@ fun PostDetailScreen(
                                 onCopy = {
                                     Toast.makeText(
                                         context,
-                                        "Upgrade to Pro or contact Admin to unlock direct links.",
+                                        "Upgrade to Pro or Legendary to unlock Direct Download. Opening payment page...",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                     onNavigateToPricing()

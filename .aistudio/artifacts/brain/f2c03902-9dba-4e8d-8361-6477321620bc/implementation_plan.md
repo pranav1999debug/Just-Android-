@@ -1,128 +1,90 @@
-# JustFan — Full Post CRUD, Biometric Device Tracking, Successful Requests Showcase & Trending Fix
+# PayPal Tier Sync, Blurred Startup Auth/Biometric Gate & Request Page Redesign
 
-Deliver complete Post CRUD (Create, Edit, Update, Delete) with Imgchest cover and multi-media gallery uploads, Google Authentication paired with Biometric and hardware device-fingerprint tracking in Supabase (enforcing a 3-request limit per device for free users), a Homepage showcase of fulfilled user requests with reference links, and an accurate "Trending Now" carousel backed by the `post_click_counts` table.
+This plan resolves the PayPal checkout failure, automates tier synchronization and 1-month Pro expiration across the `subscriptions` and `users` tables in Supabase, enforces a blurred first-launch Login and Biometric unlock gate, and redesigns the Request screen with Gallery-only Imgchest uploads and card-styled Community and Personal request feeds.
 
----
-
-## User Review & Critical Decisions
+### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following product and architectural choices have been confirmed from your answers and the live Supabase database schema:
+> Confirmed decisions from your responses:
 
-- **Confirmed Decision 1 — Post CRUD Accessibility & Media Hosting**: Full Post Create, Edit, Update, and Delete capabilities will be accessible both directly from the **Post Detail page** (via an Edit Post modal matching your web form and a Delete action) and within the **Admin Dashboard (Upload & Manage tabs)** for admin accounts (`reytherapper12@gmail.com`). Cover media (single image/video) and content media (multiple images/videos) will upload directly to the **Imgchest API**, retrieve the hosted URLs, and persist them to the `posts` table (`image_url` and `content_images` array).
-- **Confirmed Decision 2 — Google Auth, Biometric Prompt & 3-Request Device Limit**: Users first authenticate with **Supabase Google Auth**, then are prompted to enable **Biometric Authentication** (`BiometricPrompt`). Upon verification, the app collects a deterministic hardware device fingerprint (Android ID, model, manufacturer, OS version, and biometric status) and syncs it to Supabase (`RequestfromApp.device_id` and user device metadata) so free users are strictly limited to **3 requests per device** across sessions.
-- **Confirmed Decision 3 — Free Users "Successful Uploads" Homepage Section**: A dedicated compact carousel on the **Homepage** will display fulfilled/replied requests (`status = "replied"` or `"completed"`) from `RequestfromApp`, rendering the user-submitted request thumbnail (`image_url`) alongside a clickable reference link extracted from the request's social/reference URL (`message` / `download_link`).
-- **Confirmed Decision 4 — Trending Now Bug Fix & Click Tracking**: The `post_click_counts` table in Supabase stores counts under the `count` column (`post_id`, `count`). The app will query `post_click_counts?select=post_id,count&order=count.desc`, record every post open/click into `post_clicks` (and increment the local & remote count immediately), and style the **Trending Now** cards to match your reference screenshot (`#1` / `#2` green rank badges, `🔥 901` / `🔥 338` pill badges in the top-right, emerald border, and "View All >" header action).
+- **Confirmed Decision 1 (PayPal Checkout & Automatic Tier Upgrade)**: Fix the PayPal REST V2 Orders API amount formatting (`10.00` USD for Pro, `20.00` USD for Legendary instead of raw `"10 USDT"` strings), load PayPal credentials from `app_secrets` when available, and replace the broken `checkoutnow?token=JUSTFAN_...` URL with a valid PayPal Standard Web Checkout (`https://www.paypal.com/cgi-bin/webscr?cmd=_xclick`) fallback so PayPal never shows the generic error screen. Upon payment verification, the user's tier is automatically updated in Supabase (`subscriptions` and `users`/`profiles` tables).
+- **Confirmed Decision 2 (Startup Blurred Login & Biometric Gate Fallback)**: When the app opens, the main app content is blurred in the background. Unauthenticated users see the Login gate first; already signed-in users see the Biometric unlock gate first, with support for device PIN, pattern, or password (`BIOMETRIC_STRONG or BIOMETRIC_WEAK or DEVICE_CREDENTIAL`) if no fingerprint is enrolled.
 
 ---
 
-## 1. Overview & Core Concept
+### 1. Overview & Core Concept
 
-- **What It Does**: Empowers administrators to create, edit, and delete rich media posts with direct Imgchest hosting for cover and gallery images/videos, secures user requests via Google OAuth + Android Biometrics + device fingerprinting (capping free users at 3 requests per device), showcases fulfilled community requests on the Home screen, and ranks trending posts accurately from live click telemetry.
-- **Target Audience / Persona**:
-  - **Creators / Admins**: Need fast, mobile-native content publishing and editing with multi-file Imgchest uploads and link management (Free Download, Premium, and Direct/No-Ads links).
-  - **Free & VIP Members**: Browse trending galleries, verify their device via Google Sign-In and Biometrics to submit up to 3 free creator requests, and see proof of fulfilled community requests directly on the homepage.
-- **Key Value**: Eliminates broken trending counts, prevents request spam across account resets via hardware device tracking, and unifies web and Android admin workflows.
-
----
-
-## 2. User Experience & Visual Design
-
-### Key User Flows
-
-1. **Post CRUD with Cover & Multi-Content Imgchest Uploads**:
-   - **From Post Detail**: When signed in as Admin, the top action bar displays **Edit Post** and **Delete Post** buttons. Tapping **Edit Post** opens a full-screen editor sheet pre-populated with the post's title, cover image/video, content images/videos list, description, Free Download Link, Premium Link, Direct Download / No Ads Link, comma-separated tags, section dropdown (`home`, `free`, etc.), Free post toggle, and NSFW toggle—matching your uploaded screenshot.
-   - **Cover & Content Media Pickers**: Tapping **Choose File** under Cover Media uploads the selected image/video to `api.imgchest.com/v1/post` and sets `image_url`. Tapping **Choose Files** under Content Gallery allows selecting multiple images/videos at once, batch-uploading them to Imgchest, displaying removable preview thumbnails, and saving the URL array into `content_images`.
-   - **From Admin Upload & Manage Tabs**: Admins can create new posts or edit/delete existing posts with the exact same multi-media Imgchest workflow.
-
-2. **Google Sign-In -> Biometric Setup -> Device Fingerprint & Request Quota**:
-   - **Step 1 (Google Auth)**: User signs in via Google OAuth (deep-linked back into the app with a Supabase JWT session) or Google account credential selector.
-   - **Step 2 (Biometric Enrollment Prompt)**: Immediately after Google login (or before submitting a request), the app presents an "Enable Biometric Verification" dialog triggering Android's native `BiometricPrompt` (Fingerprint / Face Unlock / Device Credential fallback).
-   - **Step 3 (Device Details & Quota Tracking)**: Once verified, the app captures the device fingerprint (`ANDROID_ID`, brand, model, SDK level, biometric status) and syncs it with Supabase. On the **Request Page**, the user sees a live badge showing **`X / 3 Free Requests Used on This Device`**. Submitting a request attaches `device_id` to `RequestfromApp`; once 3 requests are recorded for that `device_id`, free users see an upgrade prompt instead of submitting additional requests.
-
-3. **Free Users "Successful Uploads" Homepage Section**:
-   - Positioned on the **Homepage** for free users, a compact horizontal section titled **Successful Uploads (Community Requests)** displays fulfilled requests from `RequestfromApp` (`status = "replied"` or `"completed"`).
-   - Each compact card shows the small user-provided request image (`image_url`), a **"Fulfilled"** emerald badge, the creator handle/name, and a clickable **Reference Link** chip that opens the social/reference URL provided by the requester.
-
-4. **Trending Now Section & Live Click Count Updates**:
-   - Matches the uploaded reference design: **"Trending Now"** header with a green trending arrow icon and **"View All >"** action on the right.
-   - Cards feature a rounded emerald border (`#10B981`), a circular emerald rank badge (`#1`, `#2`, `#3`) at the top-left, a dark translucent pill badge at the top-right with a flame icon and exact click count (`🔥 901`, `🔥 338`), and bold two-line title overlay at the bottom.
-   - Whenever any user clicks on a post (from Trending, Discover, Home grid, or Free page), the app immediately records the click to Supabase (`post_clicks` / `post_click_counts`) and increments the in-memory counter so rankings stay real-time.
-
-### Visual Identity & Theme
-- **Aesthetic Direction**: Luxury Dark Vault & Emerald Neon (`#0B0F17` deep obsidian surfaces, `#10B981` emerald accents, `#F59E0B` warm flame/gold highlights).
-- **Component Styling**: Dark slate cards (`#151C24`) with `1.5.dp` emerald borders on Trending cards, pill-shaped status badges, and clean outlined form controls matching your web admin editor screenshot.
+- **What It Does**:
+  1. **PayPal Checkout & Automatic Tier Lifecycle**: Fixes PayPal order creation and checkout links, automatically updates the user's tier in Supabase (`subscriptions` and `users` tables) after payment, enforces 1-month automatic expiration for **Pro** back to **Free**, and ensures all 3 download buttons (**Download (Ads)**, **Premium**, and **Direct Download**) remain visible on the Post Detail page—routing **Free** users to the Membership payment page when they tap **Direct Download** and upgrading their tier upon payment.
+  2. **Blurred Startup Login & Biometric Gate**: Displays a full-screen frosted/blurred backdrop over the app on launch, requiring unauthenticated users to sign in first and already signed-in users to pass Biometric / Device Credential verification before accessing app contents.
+  3. **Tier-Aware Request Quotas (`subscriptions` & `users` tables)**: Enforces **3 requests per month** strictly for **Free** tier users while granting **Pro** users unlimited requests for 1 month (until auto-expiry) and **Legendary** users unlimited requests for a lifetime.
+  4. **Request Page Redesign & Gallery-Only Imgchest Upload**: Removes the manual image URL text box so users upload exclusively from their device gallery (automatically uploaded to Imgchest API to retrieve the URL), and reorders the Request page from top to bottom:
+     - **Community Requests** (top, styled like the Homepage Successful Uploads cards)
+     - **Your Personal Requests** (middle, requests made by the current signed-in user, styled with the same visual card format)
+     - **Submit a Request Form** (bottom, with Gallery-to-Imgchest upload).
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+### 2. User Experience & Visual Design
 
-- **Decision 1: Fixing `post_click_counts` Schema Mapping**
-  - *Chosen Approach*: Query `post_click_counts?select=post_id,count&order=count.desc` and read `obj.optInt("count", 0)` instead of `clicks_count`. When a user clicks any post, insert into `post_clicks` (`post_id`, `user_id`) which triggers the Supabase count aggregation, and also support direct upsert/increment fallback on `post_click_counts`.
-  - *Why*: Live inspection of your Supabase database confirmed the column in `post_click_counts` is named `count` (with top rows `901`, `338`, `276`), whereas the app previously queried a non-existent `clicks_count` column and fell back to `0`.
-
-- **Decision 2: Hardware Device Tracking + Biometric Binding in Supabase**
-  - *Chosen Approach*: Combine hardware `Settings.Secure.ANDROID_ID` + `Build.MANUFACTURER` + `Build.MODEL` with `BiometricPrompt` verification, storing the device record in Supabase (`user_preferences` / `profiles` metadata and `RequestfromApp.device_id`) and counting rows in `RequestfromApp?device_id=eq.<deviceId>` to enforce the 3-request limit for free users.
-  - *Why*: `RequestfromApp` already has a `device_id` column in your live Supabase schema, making per-device request counting immediate, tamper-resistant across account sign-outs, and compatible with existing RLS policies.
+- **Key User Flows**:
+  - **App Launch Gate Flow**:
+    1. User opens JUSTFAN; the underlying feed is rendered with a blur effect (`Modifier.blur(20.dp)`) and a dark translucent scrim.
+    2. **If not signed in**: The full Login card (Google Auth, Email, Passkey) is presented immediately in the center over the blurred background.
+    3. **If already signed in**: The Biometric Unlock prompt triggers automatically over the blurred background, allowing fingerprint/face unlock or device PIN/pattern fallback to unblur and enter the app.
+  - **Post Detail 3-Button Download & Upgrade Flow**:
+    1. Every post displays all 3 download buttons: **Download (Ads)**, **Premium**, and **Direct Download**.
+    2. **Free Tier**: Can use **Download (Ads)** and **Premium** directly. Tapping **Direct Download** (never hidden) navigates them directly to the Membership payment screen; completing a **Pro** or **Legendary** payment immediately upgrades their tier in Supabase and unlocks **Direct Download**.
+    3. **Pro Tier (1 Month) & Legendary Tier (Lifetime)**: Have immediate access to all 3 download buttons (**Download (Ads)**, **Premium**, and **Direct Download**).
+  - **Request Screen Flow (Top-to-Bottom)**:
+    1. **Community Requests** section at the top displays community requests in the rich thumbnail + status badge + clickable link card layout matching the Homepage's Successful Uploads section.
+    2. **Your Personal Requests** section in the middle displays only the logged-in user's submitted requests in the same visual card format (showing status, thumbnail, admin reply/fulfilled link, or rejection reason).
+    3. **Request Submission Form** at the bottom provides a single **Upload from Gallery** picker (no raw URL input field) that uploads the selected image to Imgchest API and automatically attaches the returned URL.
+- **Visual Identity & Theme**:
+  - Deep obsidian surfaces (`#0B0D12` / `#13161F`), emerald (`#10B981`) and gold (`#F59E0B`) tier badges, and frosted glass blur overlays on launch.
 
 ---
 
-## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+### 3. Key Product Decisions & Trade-Offs
 
-### Architecture & Component Diagram
+- **Decision 1: PayPal Order Sanitization & Standard Checkout Fallback**
+  - *Chosen Approach*: Strip non-numeric characters from plan prices (`"10 USDT"` $\rightarrow$ `"10.00"`, `"20 USDT"` $\rightarrow$ `"20.00"`), check `SecretsStore` (`paypal_client_id`, `paypal_client_secret`, `paypal_business_email`) in addition to configured credentials, and fall back to PayPal Standard Checkout (`https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&item_name=...&amount=10.00&currency_code=USD`) instead of a synthetic `/checkoutnow?token=JUSTFAN_...` token.
+  - *Why*: PayPal's `/checkoutnow?token=` endpoint strictly requires a server-minted EC-token; passing a custom string causes PayPal to redirect to `paypal.com/checkoutweb/genericError`. Standard `_xclick` checkout and properly formatted decimal USD amounts work reliably across mobile browsers.
+- **Decision 2: Dual-Table Tier Verification & Automatic 1-Month Pro Expiration**
+  - *Chosen Approach*: Query both `subscriptions` and `users` (alongside `profiles`) in Supabase during session initialization and quota checks. When a `Pro` plan's `expires_at` timestamp (created at +31 days / 1 month) is in the past, automatically patch both `subscriptions` and `users` back to `Free` in Supabase and update the local session state.
+  - *Why*: Guarantees Pro memberships automatically revert to Free after 1 month without manual admin intervention, while Legendary memberships remain unlimited forever.
+
+---
+
+### 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                         UI LAYER (Jetpack Compose)                        │
-│                                                                           │
-│  ┌──────────────────────┐  ┌──────────────────────┐  ┌─────────────────┐  │
-│  │      HomeScreen      │  │   PostDetailScreen   │  │  RequestScreen  │  │
-│  │  • TrendingNowRow    │  │  • Media Gallery     │  │  • Biometric    │  │
-│  │    (#1, 🔥 901)      │  │  • Admin Edit Modal  │  │    Gate Banner  │  │
-│  │  • SuccessfulUploads │  │  • Admin Delete Btn  │  │  • Device Quota │  │
-│  │    (Free Users Row)  │  │  • 3 Download Links  │  │    (X/3 Used)   │  │
-│  │  • Discover & Grid   │  └──────────┬───────────┘  └────────┬────────┘  │
-│  └──────────┬───────────┘             │                       │           │
-│             │                         ▼                       │           │
-│  ┌──────────┴─────────────────────────────────────────────────┴────────┐  │
-│  │              AdminScreen & PostEditorModal + AuthDialog             │  │
-│  │  • Cover Image/Video Picker ──► Imgchest API (`/v1/post`)           │  │
-│  │  • Multi-Content Picker     ──► Imgchest Batch API (`images[]`)     │  │
-│  │  • Google OAuth + BiometricPrompt Enrollment Dialog                 │  │
-│  └────────────────────────────────────┬────────────────────────────────┘  │
-└───────────────────────────────────────┼───────────────────────────────────┘
-                                        ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                   STATE & REPOSITORY LAYER (MVVM)                         │
-│                                                                           │
-│  MainViewModel ◄──► JustFanRepository ◄──► DeviceBiometricManager         │
-│   • posts / trendingPosts                  • Hardware Device ID & Model   │
-│   • successfulRequests                     • BiometricPrompt Verification │
-│   • deviceRequestCount (max 3 for Free)    • Supabase Device Sync         │
-└───────────────────┬───────────────────────────────────────┬───────────────┘
-                    ▼                                       ▼
-┌────────────────────────────────────────┐ ┌────────────────────────────────┐
-│        SUPABASE REST & AUTH API        │ │         IMGCHEST V1 API        │
-│  • `posts` (CRUD + `content_images`)   │ │  • `POST /v1/post`             │
-│  • `post_click_counts` (`post_id,count`)│ │  • `POST /v1/post/{id}/add`    │
-│  • `post_clicks` (insert on any click) │ │  • Returns hosted media URLs   │
-│  • `RequestfromApp` (`device_id`,      │ └────────────────────────────────┘
-│     `image_url`, `message`, `status`)  │
-└────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                       App Launch Blurred Gate (JustFanAppRoot)               │
+│  ┌────────────────────────────────────┐  ┌────────────────────────────────┐  │
+│  │ Guest User -> Full Login Gate      │  │ Signed-In User -> Biometric /  │  │
+│  │ over Blurred Background            │  │ Device PIN Unlock Gate         │  │
+│  └─────────────────┬──────────────────┘  └───────────────┬────────────────┘  │
+└────────────────────┼─────────────────────────────────────┼───────────────────┘
+                     ▼                                     ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                  Tier & Subscription Engine (SupabaseClient + Repo)          │
+│  • Reads & syncs `subscriptions` + `users` + `profiles` tables               │
+│  • Auto-downgrades expired `Pro` (> 1 month) -> `Free` in Supabase DB        │
+│  • Free: 3 requests/month + 2 Download Buttons (Direct -> Payment Page)      │
+│  • Pro (1 mo) & Legendary (Lifetime): Unlimited requests + All 3 Downloads   │
+└──────────────┬───────────────────────────────────────────┬───────────────────┘
+               ▼                                           ▼
+┌─────────────────────────────────────────┐ ┌──────────────────────────────────┐
+│ PricingScreen + PayPalClient            │ │ RequestScreen (Top-to-Bottom)    │
+│ • Clean USD amount ("10.00" / "20.00")  │ │ 1. Community Requests Cards      │
+│ • V2 Orders API + Standard Checkout     │ │ 2. Personal Requests Cards       │
+│ • Auto-updates tier in Supabase DB      │ │ 3. Request Form (Gallery-only    │
+│   on payment verification               │ │    Imgchest auto-URL upload)     │
+└─────────────────────────────────────────┘ └──────────────────────────────────┘
 ```
 
-### Interactive Component & State Mapping
-
-1. **Trending Click Telemetry Flow**:
-   - Any post click on `HomeScreen`, `TrendingCarousel`, `DiscoverSection`, or `FreeContentScreen` invokes `viewModel.recordPostClick(post.id)`.
-   - `JustFanRepository.recordPostClick` immediately increments `clicksCount` in the local `StateFlow` (instant UI feedback) and asynchronously posts `{ "post_id": postId, "user_id": currentUserId }` to `post_clicks` (plus updates `post_click_counts`), keeping `TrendingCarousel` sorted by descending `count`.
-2. **Post CRUD & Imgchest Upload Flow**:
-   - Selecting a cover image/video calls `ImgchestUploader.uploadImageDirect(context, uri)` and populates `imageUrl`.
-   - Selecting multiple content images/videos calls `ImgchestUploader.uploadImagesDirect(context, uris)` and appends all returned Imgchest URLs to `contentImages`.
-   - Saving calls `SupabaseClient.insertPost` (new) or `SupabaseClient.updatePost` (existing `posts?id=eq.<id>`) with `image_url`, `content_images`, `link_url`, `premium_link_url`, `direct_link_url`, `tags`, `section`, `is_free`, and `is_nsfw`, then refreshes the repository state.
-   - Deleting calls `SupabaseClient.deletePost(postId)` and removes the post from memory and Room cache.
-3. **Google Auth + Biometric + Device Quota Flow**:
-   - After Google Sign-In completes, if biometric verification is not yet enabled for the user, the app shows the **Enable Biometric Security** prompt using `androidx.biometric.BiometricPrompt`.
-   - Upon success, `DeviceBiometricManager` computes the device fingerprint (`ANDROID_ID` + device metadata), stores the verified state in encrypted/shared prefs and Supabase, and queries `RequestfromApp?select=id&device_id=eq.<deviceId>` to compute the user's remaining free requests out of 3.
-4. **Homepage Successful Uploads Flow**:
-   - `SupabaseClient.fetchRequests()` loads `RequestfromApp` rows; `HomeScreen` filters for rows with `status in ("replied", "completed")` and a valid `image_url`, parses the reference URL from `message` (e.g., `Social: https://...`), and renders a compact horizontal showcase strip with one-tap external link opening.
+- **Interactive Component & State Mapping**:
+  - **Startup Security Gate**: `JustFanAppRoot` tracks `isSessionUnlocked` in state. While `!userProfile.isSignedIn || !isSessionUnlocked`, the main `Scaffold` is rendered with `Modifier.blur(20.dp)` and blocked by a full-screen gate overlay that either renders the Login flow (when signed out) or triggers `BiometricAuthManager.promptAppUnlock()` (when signed in, supporting `BIOMETRIC_STRONG or BIOMETRIC_WEAK or DEVICE_CREDENTIAL`).
+  - **PayPal & Tier Sync**: `PayPalClient.createOrder` normalizes the USD price to `10.00` or `20.00`. When the user completes PayPal checkout and taps verify/activate (or when `captureOrder` succeeds), `viewModel.updateUserTier(userProfile.id, target.name)` updates both `subscriptions` (setting `expires_at` = +1 month for `Pro`, `2099-12-31` for `Legendary`) and `users`/`profiles` in Supabase, immediately unlocking **Direct Download** and unlimited requests.
+  - **Request Screen Layout & Gallery Upload**: `RequestScreen` renders **Community Requests** at the top and **Personal Requests** (filtered by `req.userId == userProfile.id || req.email.equals(userProfile.email, ignoreCase = true)`) second using the `SuccessfulUploadCard` visual design, followed by the **Submit a Request** form at the bottom with a gallery-only picker that uploads directly to `ImgchestUploader` and stores the returned URL automatically.

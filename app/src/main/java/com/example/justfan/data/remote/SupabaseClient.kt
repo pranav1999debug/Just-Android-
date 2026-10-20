@@ -491,41 +491,137 @@ object SupabaseClient {
         }
     }
 
-    suspend fun fetchUserSubscription(userId: String, accessToken: String? = null): Result<String?> = withContext(Dispatchers.IO) {
+    data class SubscriptionDetails(
+        val tier: String,
+        val expiresAtMillis: Long
+    )
+
+    suspend fun fetchUserSubscriptionDetails(
+        userId: String,
+        email: String? = null,
+        accessToken: String? = null
+    ): Result<SubscriptionDetails?> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "subscriptions?user_id=eq.$userId&order=created_at.desc&limit=1"
-            val fullUrl = "$baseUrl/rest/v1/$endpoint"
-            val request = Request.Builder()
-                .url(fullUrl)
-                .get()
-                .header("apikey", apiKey)
-                .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
-                .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string().orEmpty()
-                    val array = JSONArray(body)
-                    if (array.length() > 0) {
-                        val obj = array.getJSONObject(0)
-                        val plan = obj.optString("plan", "Free")
-                        val exp = obj.optString("expires_at", "")
-                        if (exp.isNotBlank() && exp != "null") {
-                            try {
-                                if (parseIsoToMillis(exp) < System.currentTimeMillis()) {
-                                    return@withContext Result.success("Free")
+            val cleanEmail = email?.trim()?.lowercase().orEmpty()
+            if (evaluateIsAdmin(cleanEmail) || userId == "a2d7bbad-c31f-4679-bf51-2d2684bb3216") {
+                return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
+            }
+
+            val resolvedUuid = if (userId.contains("@")) {
+                resolveUserUuid(userId) ?: userId
+            } else if (userId.isBlank() && cleanEmail.isNotBlank()) {
+                resolveUserUuid(cleanEmail) ?: userId
+            } else {
+                userId
+            }
+
+            val nowMillis = System.currentTimeMillis()
+            val oneMonthMillis = 31L * 24L * 60L * 60L * 1000L
+
+            // 1. Check `subscriptions` table first
+            if (resolvedUuid.isNotBlank()) {
+                val subEndpoint = "subscriptions?user_id=eq.$resolvedUuid&order=created_at.desc&limit=1"
+                val subReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/$subEndpoint")
+                    .get()
+                    .header("apikey", apiKey)
+                    .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
+                    .build()
+
+                okHttpClient.newCall(subReq).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val array = JSONArray(response.body?.string().orEmpty())
+                        if (array.length() > 0) {
+                            val obj = array.getJSONObject(0)
+                            val rawPlan = obj.optString("plan", "Free")
+                            val expStr = obj.optString("expires_at", "")
+                            val createdStr = obj.optString("created_at", "")
+
+                            if (rawPlan.equals("legendary", ignoreCase = true)) {
+                                return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
+                            } else if (rawPlan.equals("pro", ignoreCase = true)) {
+                                val expMillis = when {
+                                    expStr.isNotBlank() && expStr != "null" -> parseIsoToMillis(expStr)
+                                    createdStr.isNotBlank() && createdStr != "null" -> parseIsoToMillis(createdStr) + oneMonthMillis
+                                    else -> nowMillis + oneMonthMillis
                                 }
-                            } catch (_: Exception) {}
+                                if (expMillis < nowMillis) {
+                                    // Automatically downgrade expired 1-month Pro subscription back to Free in database
+                                    Log.i(TAG, "Pro subscription expired for $resolvedUuid; auto-downgrading to Free in Supabase")
+                                    updateUserTier(resolvedUuid, "Free", accessToken, cleanEmail)
+                                    return@withContext Result.success(SubscriptionDetails("Free", 0L))
+                                } else {
+                                    return@withContext Result.success(SubscriptionDetails("Pro", expMillis))
+                                }
+                            } else {
+                                return@withContext Result.success(SubscriptionDetails("Free", 0L))
+                            }
                         }
-                        return@withContext Result.success(plan)
                     }
-                    Result.success(null)
-                } else {
-                    Result.failure(Exception("HTTP ${response.code}"))
                 }
             }
+
+            // 2. Also check `users` and `profiles` tables as fallback for tier identification
+            val userCheckEndpoints = mutableListOf<String>()
+            if (resolvedUuid.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                userCheckEndpoints.add("users?id=eq.$resolvedUuid&limit=1")
+                userCheckEndpoints.add("profiles?id=eq.$resolvedUuid&limit=1")
+            }
+            if (cleanEmail.isNotBlank()) {
+                userCheckEndpoints.add("users?email=eq.$cleanEmail&limit=1")
+                userCheckEndpoints.add("profiles?username=eq.$cleanEmail&limit=1")
+            }
+
+            for (ep in userCheckEndpoints) {
+                try {
+                    val req = Request.Builder()
+                        .url("$baseUrl/rest/v1/$ep")
+                        .get()
+                        .header("apikey", apiKey)
+                        .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
+                        .build()
+                    okHttpClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val arr = JSONArray(resp.body?.string().orEmpty())
+                            if (arr.length() > 0) {
+                                val obj = arr.getJSONObject(0)
+                                val dbTier = obj.optString("tier", obj.optString("plan", "")).trim()
+                                val expStr = obj.optString("expires_at", obj.optString("pro_expires_at", ""))
+                                if (dbTier.equals("legendary", ignoreCase = true)) {
+                                    return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
+                                } else if (dbTier.equals("pro", ignoreCase = true)) {
+                                    val expMillis = if (expStr.isNotBlank() && expStr != "null") {
+                                        parseIsoToMillis(expStr)
+                                    } else {
+                                        nowMillis + oneMonthMillis
+                                    }
+                                    if (expMillis < nowMillis) {
+                                        updateUserTier(resolvedUuid, "Free", accessToken, cleanEmail)
+                                        return@withContext Result.success(SubscriptionDetails("Free", 0L))
+                                    }
+                                    return@withContext Result.success(SubscriptionDetails("Pro", expMillis))
+                                } else if (dbTier.equals("free", ignoreCase = true)) {
+                                    return@withContext Result.success(SubscriptionDetails("Free", 0L))
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            Result.success(null)
         } catch (e: Exception) {
-            Log.w(TAG, "fetchUserSubscription warning", e)
+            Log.w(TAG, "fetchUserSubscriptionDetails warning", e)
             Result.failure(e)
+        }
+    }
+
+    suspend fun fetchUserSubscription(userId: String, accessToken: String? = null, email: String? = null): Result<String?> = withContext(Dispatchers.IO) {
+        val detailsRes = fetchUserSubscriptionDetails(userId, email, accessToken)
+        if (detailsRes.isSuccess) {
+            Result.success(detailsRes.getOrNull()?.tier)
+        } else {
+            Result.failure(detailsRes.exceptionOrNull() ?: Exception("SUBSCRIPTION_CHECK_FAILED"))
         }
     }
 
@@ -554,70 +650,101 @@ object SupabaseClient {
         null
     }
 
-    suspend fun updateUserTier(userIdOrEmail: String, tier: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun updateUserTier(
+        userIdOrEmail: String,
+        tier: String,
+        accessToken: String? = null,
+        emailHint: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val normalizedTier = when {
+                tier.equals("legendary", ignoreCase = true) -> "Legendary"
+                tier.equals("pro", ignoreCase = true) -> "Pro"
+                else -> "Free"
+            }
+
             val resolvedUuid = if (userIdOrEmail.contains("@")) {
-                resolveUserUuid(userIdOrEmail) ?: userIdOrEmail
+                resolveUserUuid(userIdOrEmail) ?: UUID.nameUUIDFromBytes("justfan:${userIdOrEmail.trim().lowercase()}".toByteArray()).toString()
             } else {
                 userIdOrEmail
             }
 
             val now = Instant.now()
-            val expiresAtStr = when (tier.lowercase()) {
+            val expiresAtStr = when (normalizedTier.lowercase()) {
                 "pro" -> now.plus(31, java.time.temporal.ChronoUnit.DAYS).toString()
                 "legendary" -> Instant.parse("2099-12-31T23:59:59Z").toString()
                 else -> null
             }
 
-            // Only query subscriptions table with valid UUID
             val isUuid = resolvedUuid.matches(Regex("^[0-9a-fA-F-]{36}$"))
-            if (!isUuid) {
-                Log.w(TAG, "updateUserTier: Identifier '$userIdOrEmail' could not be resolved to UUID")
-                return@withContext Result.success(true)
-            }
+            if (isUuid) {
+                val checkUrl = "$baseUrl/rest/v1/subscriptions?user_id=eq.$resolvedUuid&limit=1"
+                val checkReq = Request.Builder()
+                    .url(checkUrl)
+                    .get()
+                    .header("apikey", apiKey)
+                    .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
+                    .build()
 
-            val checkUrl = "$baseUrl/rest/v1/subscriptions?user_id=eq.$resolvedUuid&limit=1"
-            val checkReq = Request.Builder()
-                .url(checkUrl)
-                .get()
-                .header("apikey", apiKey)
-                .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
-                .build()
+                var exists = false
+                try {
+                    okHttpClient.newCall(checkReq).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            exists = JSONArray(resp.body?.string().orEmpty()).length() > 0
+                        }
+                    }
+                } catch (_: Exception) {}
 
-            var exists = false
-            try {
-                okHttpClient.newCall(checkReq).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        exists = JSONArray(resp.body?.string().orEmpty()).length() > 0
+                val payload = JSONObject().apply {
+                    put("user_id", resolvedUuid)
+                    put("plan", normalizedTier)
+                    if (expiresAtStr != null) {
+                        put("expires_at", expiresAtStr)
+                    } else {
+                        put("expires_at", JSONObject.NULL)
                     }
                 }
-            } catch (_: Exception) {}
 
-            val payload = JSONObject().apply {
-                put("user_id", resolvedUuid)
-                put("plan", tier)
-                if (expiresAtStr != null) {
-                    put("expires_at", expiresAtStr)
+                val subResult = if (exists) {
+                    executePatch("subscriptions?user_id=eq.$resolvedUuid", payload.toString(), accessToken)
                 } else {
-                    put("expires_at", JSONObject.NULL)
+                    payload.put("id", UUID.randomUUID().toString())
+                    payload.put("created_at", now.toString())
+                    executePost("subscriptions", payload.toString(), accessToken)
                 }
+
+                if (subResult.isSuccess) {
+                    Log.i(TAG, "updateUserTier succeeded in subscriptions table for $resolvedUuid -> $normalizedTier")
+                }
+
+                // Also sync tier to `users` and `profiles` tables if columns exist
+                try {
+                    val userTierPayload = JSONObject().apply {
+                        put("tier", normalizedTier)
+                        if (expiresAtStr != null) put("expires_at", expiresAtStr) else put("expires_at", JSONObject.NULL)
+                    }
+                    executePatch("users?id=eq.$resolvedUuid", userTierPayload.toString(), accessToken)
+                } catch (_: Exception) {}
+
+                try {
+                    val profileTierPayload = JSONObject().apply {
+                        put("tier", normalizedTier)
+                    }
+                    executePatch("profiles?id=eq.$resolvedUuid", profileTierPayload.toString(), accessToken)
+                } catch (_: Exception) {}
             }
 
-            val result = if (exists) {
-                executePatch("subscriptions?user_id=eq.$resolvedUuid", payload.toString(), accessToken)
-            } else {
-                payload.put("id", UUID.randomUUID().toString())
-                payload.put("created_at", now.toString())
-                executePost("subscriptions", payload.toString(), accessToken)
+            val cleanEmail = (emailHint ?: if (userIdOrEmail.contains("@")) userIdOrEmail else "").trim().lowercase()
+            if (cleanEmail.isNotBlank()) {
+                try {
+                    val emailTierPayload = JSONObject().apply {
+                        put("tier", normalizedTier)
+                    }
+                    executePatch("users?email=eq.$cleanEmail", emailTierPayload.toString(), accessToken)
+                } catch (_: Exception) {}
             }
 
-            if (result.isSuccess) {
-                Log.i(TAG, "updateUserTier succeeded in subscriptions table for $resolvedUuid -> $tier")
-                Result.success(true)
-            } else {
-                Log.w(TAG, "updateUserTier warning on subscriptions: ${result.exceptionOrNull()?.message}")
-                Result.success(true) // Return success to allow local state update if DB has strict RLS
-            }
+            Result.success(true)
         } catch (e: Exception) {
             Log.e(TAG, "updateUserTier error", e)
             Result.failure(e)
@@ -807,9 +934,33 @@ object SupabaseClient {
         email: String? = null,
         accessToken: String? = null
     ): Result<RequestQuota> = withContext(Dispatchers.IO) {
-        var directDeviceCount = 0
+        // 1. Check user's tier in `subscriptions` and `users` tables first
         try {
-            // Count rows in RequestfromApp for this hardware device_id or user
+            val subDetails = fetchUserSubscriptionDetails(userId, email, accessToken).getOrNull()
+            if (subDetails != null) {
+                val activeTier = subDetails.tier
+                if (activeTier.equals("legendary", ignoreCase = true) || activeTier.equals("pro", ignoreCase = true)) {
+                    return@withContext Result.success(
+                        RequestQuota(
+                            unlimited = true,
+                            limit = 9999,
+                            used = 0,
+                            remaining = 9999,
+                            resetsAt = if (activeTier.equals("pro", ignoreCase = true) && subDetails.expiresAtMillis > 0L) {
+                                Instant.ofEpochMilli(subDetails.expiresAtMillis).toString()
+                            } else {
+                                null
+                            }
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. For Free tier users: enforce 3 requests per month (last 31 days rolling cycle)
+        var monthlyDeviceCount = 0
+        val monthAgoMillis = System.currentTimeMillis() - (31L * 24L * 60L * 60L * 1000L)
+        try {
             val filters = mutableListOf<String>()
             if (deviceId.isNotBlank()) filters.add("device_id.eq.$deviceId")
             if (userId.isNotBlank() && userId != "guest_user" && userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
@@ -820,10 +971,21 @@ object SupabaseClient {
             }
             if (filters.isNotEmpty()) {
                 val orClause = filters.joinToString(",")
-                val conn = openConnection("RequestfromApp?select=id,device_id,email&or=($orClause)", "GET")
+                val conn = openConnection("RequestfromApp?select=id,device_id,email,created_at&or=($orClause)", "GET")
                 if (conn.responseCode in 200..299) {
                     val arr = JSONArray(conn.inputStream.bufferedReader().readText())
-                    directDeviceCount = arr.length()
+                    for (i in 0 until arr.length()) {
+                        val row = arr.getJSONObject(i)
+                        val createdStr = row.optString("created_at", "")
+                        val createdMillis = if (createdStr.isNotBlank() && createdStr != "null") {
+                            parseIsoToMillis(createdStr)
+                        } else {
+                            System.currentTimeMillis()
+                        }
+                        if (createdMillis >= monthAgoMillis) {
+                            monthlyDeviceCount++
+                        }
+                    }
                 }
                 conn.disconnect()
             }
@@ -849,13 +1011,18 @@ object SupabaseClient {
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val json = JSONObject(body)
+                    if (json.optBoolean("unlimited", false)) {
+                        return@withContext Result.success(
+                            RequestQuota(unlimited = true, limit = 9999, used = 0, remaining = 9999)
+                        )
+                    }
                     val rpcUsed = json.optInt("used", 0)
-                    val limit = json.optInt("limit", 3)
-                    val effectiveUsed = maxOf(rpcUsed, directDeviceCount)
+                    val limit = 3
+                    val effectiveUsed = maxOf(rpcUsed, monthlyDeviceCount)
                     val remaining = (limit - effectiveUsed).coerceAtLeast(0)
                     Result.success(
                         RequestQuota(
-                            unlimited = json.optBoolean("unlimited", false),
+                            unlimited = false,
                             limit = limit,
                             used = effectiveUsed,
                             remaining = remaining,
@@ -863,13 +1030,13 @@ object SupabaseClient {
                         )
                     )
                 } else {
-                    val remaining = (3 - directDeviceCount).coerceAtLeast(0)
-                    Result.success(RequestQuota(unlimited = false, limit = 3, used = directDeviceCount, remaining = remaining))
+                    val remaining = (3 - monthlyDeviceCount).coerceAtLeast(0)
+                    Result.success(RequestQuota(unlimited = false, limit = 3, used = monthlyDeviceCount, remaining = remaining))
                 }
             }
         } catch (e: Exception) {
-            val remaining = (3 - directDeviceCount).coerceAtLeast(0)
-            Result.success(RequestQuota(unlimited = false, limit = 3, used = directDeviceCount, remaining = remaining))
+            val remaining = (3 - monthlyDeviceCount).coerceAtLeast(0)
+            Result.success(RequestQuota(unlimited = false, limit = 3, used = monthlyDeviceCount, remaining = remaining))
         }
     }
 

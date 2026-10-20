@@ -24,17 +24,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.ActivityEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.components.AuthDialog
 import com.example.justfan.ui.components.BiometricSetupDialog
 import com.example.justfan.ui.components.MoreBottomSheet
+import com.example.justfan.ui.components.StartupSecurityGate
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.screens.AdminScreen
 import com.example.justfan.ui.screens.CategoriesScreen
@@ -88,10 +92,12 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     var showMoreSheet by remember { mutableStateOf(false) }
     var globalSearchQuery by remember { mutableStateOf("") }
     var requestIdeaPreFill by remember { mutableStateOf("") }
+    var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
 
+    val isStartupGateVisible = !userProfile.isSignedIn || !isAppUnlocked
     val isOwnerOrAdmin = userProfile.isSignedIn && (userProfile.isAdmin || userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true))
     val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
-            userProfile.tier.equals("pro", ignoreCase = true) || isOwnerOrAdmin
+            userProfile.isProActive || isOwnerOrAdmin
 
     fun navigateTo(screen: AppScreen) {
         if (screenBackstack.lastOrNull() != screen) {
@@ -127,22 +133,28 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
         darkTheme = preferences.isDarkMode
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Custom Wallpaper Layer
-            if (!preferences.customWallpaperUri.isNullOrBlank()) {
-                AsyncImage(
-                    model = preferences.customWallpaperUri,
-                    contentDescription = "Background Wallpaper",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = preferences.wallpaperDim))
-                )
-            }
+            // Main App Content Layer (Blurred whenever Startup Login or Biometric Gate is active)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (isStartupGateVisible) Modifier.blur(20.dp) else Modifier)
+            ) {
+                // Custom Wallpaper Layer
+                if (!preferences.customWallpaperUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = preferences.customWallpaperUri,
+                        contentDescription = "Background Wallpaper",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = preferences.wallpaperDim))
+                    )
+                }
 
-            Scaffold(
+                Scaffold(
                 containerColor = if (!preferences.customWallpaperUri.isNullOrBlank()) Color.Transparent else MaterialTheme.colorScheme.background,
                 topBar = {
                     if (currentScreen !is AppScreen.PostDetail) {
@@ -276,9 +288,14 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             requests = requests,
                             initialIdea = requestIdeaPreFill,
                             deviceBiometricInfo = deviceBiometricInfo,
-                            onSubmitRequest = { name, email, telegram, message, image ->
-                                viewModel.createRequest(name, email, telegram, message, image) { success, _ ->
-                                    if (success) requestIdeaPreFill = ""
+                            onSubmitRequest = { name, email, telegram, message, image, onResult ->
+                                viewModel.createRequest(name, email, telegram, message, image) { success, errMsg ->
+                                    if (success) {
+                                        requestIdeaPreFill = ""
+                                        onResult(Result.success(true))
+                                    } else {
+                                        onResult(Result.failure(Exception(errMsg ?: "Failed to submit request")))
+                                    }
                                 }
                             },
                             onBiometricVerified = { info ->
@@ -373,7 +390,10 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                 viewModel.updateWallpaper(uri, dim)
                             },
                             onSignInClick = { showAuthDialog = true },
-                            onSignOutClick = { viewModel.signOut() }
+                            onSignOutClick = {
+                                isAppUnlocked = false
+                                viewModel.signOut()
+                            }
                         )
                         is AppScreen.PostDetail -> PostDetailScreen(
                             post = posts.find { it.id == scr.post.id } ?: scr.post,
@@ -405,6 +425,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                     }
                 }
             }
+            } // End of blurred main app layer
 
             // More Bottom Sheet (Navigation drawer)
             if (showMoreSheet) {
@@ -450,14 +471,21 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                 onDismiss = { showAuthDialog = false },
                 onSignInWithGoogle = { email, name ->
                     viewModel.signInWithGoogle(email, name)
+                    isAppUnlocked = true
                 },
                 onSignInWithPasskey = { name ->
                     viewModel.signInWithPasskey(name)
+                    isAppUnlocked = true
                 },
                 onSignInWithEmail = { email, pass ->
-                    viewModel.signInWithEmail(email, pass)
+                    val res = viewModel.signInWithEmail(email, pass)
+                    if (res.isSuccess) {
+                        isAppUnlocked = true
+                    }
+                    res
                 },
                 onSignOut = {
+                    isAppUnlocked = false
                     viewModel.signOut()
                 },
                 onUpgradeClick = {
@@ -470,6 +498,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                         name = email.substringBefore("@"),
                         refreshToken = refreshToken
                     )
+                    isAppUnlocked = true
                     onResult(true, null)
                 }
             )
@@ -477,12 +506,44 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
             // Post-Login Biometric & Device Tracking Enrollment Prompt
             BiometricSetupDialog(
                 userProfile = userProfile,
-                isOpen = showBiometricPromptAfterLogin,
+                isOpen = showBiometricPromptAfterLogin && isAppUnlocked,
                 onDismiss = { viewModel.dismissBiometricPrompt() },
                 onBiometricVerified = { info ->
                     viewModel.completeBiometricDeviceSetup(info)
                 }
             )
+
+            // Blurred Startup Login & Biometric Unlock Gate
+            if (isStartupGateVisible) {
+                StartupSecurityGate(
+                    userProfile = userProfile,
+                    onSignInWithGoogle = { email, name ->
+                        viewModel.signInWithGoogle(email, name)
+                        isAppUnlocked = true
+                    },
+                    onSignInWithPasskey = { name ->
+                        viewModel.signInWithPasskey(name)
+                        isAppUnlocked = true
+                    },
+                    onSignInWithEmail = { email, pass ->
+                        val res = viewModel.signInWithEmail(email, pass)
+                        if (res.isSuccess) {
+                            isAppUnlocked = true
+                        }
+                        res
+                    },
+                    onSignOut = {
+                        isAppUnlocked = false
+                        viewModel.signOut()
+                    },
+                    onUnlocked = {
+                        isAppUnlocked = true
+                    },
+                    onBiometricVerified = { info ->
+                        viewModel.completeBiometricDeviceSetup(info)
+                    }
+                )
+            }
         }
     }
 }

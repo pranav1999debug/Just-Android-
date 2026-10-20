@@ -97,11 +97,15 @@ fun RequestScreen(
     val canSubmit = hasUnlimited || monthlyUsed < monthlyLimit
 
     // Personal requests made by this particular user
-    val personalRequests = remember(requests, userProfile) {
+    val contentRequestsOnly = remember(requests) {
+        requests.filter { !it.message.startsWith("[PAYMENT_PROOF]") }
+    }
+
+    val personalRequests = remember(contentRequestsOnly, userProfile) {
         if (!userProfile.isSignedIn && email.isBlank()) {
             emptyList()
         } else {
-            requests.filter { req ->
+            contentRequestsOnly.filter { req ->
                 (userProfile.isSignedIn && req.userId == userProfile.id) ||
                         (userProfile.email.isNotBlank() && req.email.equals(userProfile.email, ignoreCase = true)) ||
                         (email.isNotBlank() && req.email.equals(email.trim(), ignoreCase = true))
@@ -110,8 +114,8 @@ fun RequestScreen(
     }
 
     // Community requests (all requests across the community, prioritizing fulfilled/with images)
-    val communityRequests = remember(requests) {
-        requests.sortedWith(
+    val communityRequests = remember(contentRequestsOnly) {
+        contentRequestsOnly.sortedWith(
             compareByDescending<RequestEntity> {
                 it.status.equals("fulfilled", ignoreCase = true) ||
                         it.status.equals("delivered", ignoreCase = true) ||
@@ -450,9 +454,9 @@ fun RequestScreen(
                         ) {
                             Text(
                                 text = if (canSubmit) {
-                                    "You have ${(monthlyLimit - monthlyUsed).coerceAtLeast(0)} free request(s) remaining this month."
+                                    "You have ${(monthlyLimit - monthlyUsed).coerceAtLeast(0)} free request(s) remaining this calendar month (resets on the 1st of each month)."
                                 } else {
-                                    "Monthly Free limit reached (3/3 used)."
+                                    "Monthly Free limit reached (3/3 used this month • resets on the 1st of next month)."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (canSubmit) MaterialTheme.colorScheme.onSurfaceVariant else DangerRed

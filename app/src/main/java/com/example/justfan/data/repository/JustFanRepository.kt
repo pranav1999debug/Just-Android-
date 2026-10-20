@@ -512,6 +512,55 @@ class JustFanRepository(private val context: Context) {
         return res
     }
 
+    suspend fun submitPaymentProof(
+        tier: String,
+        method: String,
+        amount: String,
+        proofImageUrl: String,
+        note: String
+    ): Result<Boolean> {
+        val current = _userProfile.value
+        val hardwareDeviceId = getDeviceId(context)
+        val userEmail = current.email.ifBlank { "subscriber@justfan.app" }
+        val userName = current.username.ifBlank { userEmail.substringBefore("@") }
+        val structuredMessage = buildString {
+            append("[PAYMENT_PROOF] Tier: ")
+            append(tier.trim())
+            append(" | Method: ")
+            append(method.trim())
+            append(" | Amount: ")
+            append(amount.trim())
+            if (note.isNotBlank()) {
+                append(" | Ref: ")
+                append(note.trim())
+            }
+        }
+
+        val res = SupabaseClient.createRequest(
+            name = userName,
+            email = userEmail,
+            telegram = note.ifBlank { null },
+            message = structuredMessage,
+            imageUrl = proofImageUrl,
+            userId = if (current.isSignedIn && current.id != "guest_user") current.id else null,
+            deviceId = hardwareDeviceId
+        )
+
+        val newEntity = RequestEntity(
+            id = UUID.randomUUID().toString(),
+            userId = if (current.isSignedIn && current.id != "guest_user") current.id else null,
+            name = userName,
+            email = userEmail,
+            telegramUsername = note.ifBlank { null },
+            message = structuredMessage,
+            imageUrl = proofImageUrl,
+            status = "pending",
+            createdAt = System.currentTimeMillis()
+        )
+        requestDao.insertRequest(newEntity)
+        return res
+    }
+
     private fun isCurrentUserAdmin(): Boolean {
         val current = _userProfile.value
         return current.isSignedIn && (current.isAdmin || current.email.equals("reytherapper12@gmail.com", ignoreCase = true))

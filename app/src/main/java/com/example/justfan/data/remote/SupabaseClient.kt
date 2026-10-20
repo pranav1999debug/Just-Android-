@@ -21,7 +21,12 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -57,15 +62,31 @@ object SupabaseClient {
         return connection
     }
 
-    private fun parseIsoToMillis(isoStr: String): Long {
-        if (isoStr.isBlank() || isoStr == "null") return System.currentTimeMillis()
+    private fun parseIsoToMillis(isoStr: String, defaultMillis: Long = 0L): Long {
+        val raw = isoStr.trim()
+        if (raw.isBlank() || raw.equals("null", ignoreCase = true)) return defaultMillis
+        // Normalize PostgreSQL timestamp strings like "2026-09-25 14:22:10.123456+00" -> ISO-8601
+        val normalized = raw
+            .replace(' ', 'T')
+            .let { s ->
+                when {
+                    s.endsWith("+00") -> s.dropLast(3) + "Z"
+                    s.endsWith("-00") -> s.dropLast(3) + "Z"
+                    Regex(".*[+-]\\d{2}$").matches(s) -> "$s:00"
+                    else -> s
+                }
+            }
         return try {
-            Instant.parse(isoStr).toEpochMilli()
+            Instant.parse(normalized).toEpochMilli()
         } catch (_: Exception) {
             try {
-                DateTimeFormatter.ISO_DATE_TIME.parse(isoStr, Instant::from).toEpochMilli()
+                OffsetDateTime.parse(normalized, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant().toEpochMilli()
             } catch (_: Exception) {
-                System.currentTimeMillis()
+                try {
+                    LocalDateTime.parse(normalized, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC).toEpochMilli()
+                } catch (_: Exception) {
+                    defaultMillis
+                }
             }
         }
     }
@@ -957,9 +978,15 @@ object SupabaseClient {
             }
         } catch (_: Exception) {}
 
-        // 2. For Free tier users: enforce 3 requests per month (last 31 days rolling cycle)
-        var monthlyDeviceCount = 0
-        val monthAgoMillis = System.currentTimeMillis() - (31L * 24L * 60L * 60L * 1000L)
+        // 2. For Free tier users: enforce 3 requests per calendar month (resets on the 1st of each month per device & account)
+        val startOfCalendarMonth = ZonedDateTime.now(ZoneOffset.UTC)
+            .withDayOfMonth(1)
+            .truncatedTo(ChronoUnit.DAYS)
+        val startOfMonthMillis = startOfCalendarMonth.toInstant().toEpochMilli()
+        val startOfMonthIso = startOfCalendarMonth.toInstant().toString()
+        val nextMonthResetIso = startOfCalendarMonth.plusMonths(1).toInstant().toString()
+
+        var currentMonthCount = 0
         try {
             val filters = mutableListOf<String>()
             if (deviceId.isNotBlank()) filters.add("device_id.eq.$deviceId")
@@ -971,73 +998,40 @@ object SupabaseClient {
             }
             if (filters.isNotEmpty()) {
                 val orClause = filters.joinToString(",")
-                val conn = openConnection("RequestfromApp?select=id,device_id,email,created_at&or=($orClause)", "GET")
+                val endpoint = "RequestfromApp?select=id,device_id,email,message,created_at&created_at=gte.$startOfMonthIso&or=($orClause)"
+                val conn = openConnection(endpoint, "GET")
                 if (conn.responseCode in 200..299) {
                     val arr = JSONArray(conn.inputStream.bufferedReader().readText())
                     for (i in 0 until arr.length()) {
                         val row = arr.getJSONObject(i)
+                        val msg = row.optString("message", "")
+                        // Exclude payment verification screenshot submissions from the 3-request content quota
+                        if (msg.startsWith("[PAYMENT_PROOF]")) continue
+
                         val createdStr = row.optString("created_at", "")
-                        val createdMillis = if (createdStr.isNotBlank() && createdStr != "null") {
-                            parseIsoToMillis(createdStr)
-                        } else {
-                            System.currentTimeMillis()
-                        }
-                        if (createdMillis >= monthAgoMillis) {
-                            monthlyDeviceCount++
+                        val createdMillis = parseIsoToMillis(createdStr, defaultMillis = 0L)
+                        if (createdMillis >= startOfMonthMillis) {
+                            currentMonthCount++
                         }
                     }
                 }
                 conn.disconnect()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "fetchRequestQuota direct count notice", e)
+            Log.w(TAG, "fetchRequestQuota calendar month count notice", e)
         }
 
-        try {
-            val endpoint = "$baseUrl/rest/v1/rpc/get_request_quota"
-            val payload = JSONObject().apply {
-                put("p_user_id", userId)
-                put("p_device_id", deviceId)
-            }
-            val request = Request.Builder()
-                .url(endpoint)
-                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-                .header("apikey", apiKey)
-                .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
-                .header("Content-Type", "application/json")
-                .build()
-
-            okHttpClient.newCall(request).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
-                    if (json.optBoolean("unlimited", false)) {
-                        return@withContext Result.success(
-                            RequestQuota(unlimited = true, limit = 9999, used = 0, remaining = 9999)
-                        )
-                    }
-                    val rpcUsed = json.optInt("used", 0)
-                    val limit = 3
-                    val effectiveUsed = maxOf(rpcUsed, monthlyDeviceCount)
-                    val remaining = (limit - effectiveUsed).coerceAtLeast(0)
-                    Result.success(
-                        RequestQuota(
-                            unlimited = false,
-                            limit = limit,
-                            used = effectiveUsed,
-                            remaining = remaining,
-                            resetsAt = json.optString("resets_at", null)
-                        )
-                    )
-                } else {
-                    val remaining = (3 - monthlyDeviceCount).coerceAtLeast(0)
-                    Result.success(RequestQuota(unlimited = false, limit = 3, used = monthlyDeviceCount, remaining = remaining))
-                }
-            }
-        } catch (e: Exception) {
-            val remaining = (3 - monthlyDeviceCount).coerceAtLeast(0)
-            Result.success(RequestQuota(unlimited = false, limit = 3, used = monthlyDeviceCount, remaining = remaining))
-        }
+        val limit = 3
+        val remaining = (limit - currentMonthCount).coerceAtLeast(0)
+        Result.success(
+            RequestQuota(
+                unlimited = false,
+                limit = limit,
+                used = currentMonthCount,
+                remaining = remaining,
+                resetsAt = nextMonthResetIso
+            )
+        )
     }
 
     suspend fun syncDeviceBiometricToSupabase(
@@ -1051,6 +1045,7 @@ object SupabaseClient {
         accessToken: String? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val currentMonthKey = ZonedDateTime.now(ZoneOffset.UTC).let { "${it.year}-${it.monthValue.toString().padStart(2, '0')}" }
             // 1. Update auth user_metadata if user has a valid accessToken
             if (!accessToken.isNullOrBlank() && accessToken != apiKey) {
                 try {
@@ -1062,6 +1057,7 @@ object SupabaseClient {
                             put("os_version", osVersion)
                             put("biometric_enabled", biometricEnabled)
                             put("biometric_verified_at", Instant.now().toString())
+                            put("quota_month", currentMonthKey)
                         })
                     }
                     val req = Request.Builder()
@@ -1075,12 +1071,21 @@ object SupabaseClient {
                 } catch (_: Exception) {}
             }
 
-            // 2. Also update any existing RequestfromApp rows for this email/userId that lack a hardware device_id
+            // 2. Only link current-month RequestfromApp rows for this email that lack a device_id
             if (email.isNotBlank()) {
+                val startOfMonthIso = ZonedDateTime.now(ZoneOffset.UTC)
+                    .withDayOfMonth(1)
+                    .truncatedTo(ChronoUnit.DAYS)
+                    .toInstant()
+                    .toString()
                 val patchPayload = JSONObject().apply {
                     put("device_id", deviceId)
                 }
-                executePatch("RequestfromApp?email=eq.${email.trim().lowercase()}", patchPayload.toString(), accessToken)
+                executePatch(
+                    "RequestfromApp?email=eq.${email.trim().lowercase()}&device_id=is.null&created_at=gte.$startOfMonthIso",
+                    patchPayload.toString(),
+                    accessToken
+                )
             }
 
             Log.i(TAG, "Synced biometric & device details ($manufacturer $model / $deviceId) for $email to Supabase")

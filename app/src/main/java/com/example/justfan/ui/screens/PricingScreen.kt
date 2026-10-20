@@ -137,7 +137,9 @@ fun PricingScreen(
     var payPalOrderId by remember { mutableStateOf<String?>(null) }
     var payPalStatusMessage by remember { mutableStateOf<String?>(null) }
 
-    // Google Pay / UPI states
+    var payPalVerificationFailed by remember { mutableStateOf(false) }
+
+    // Google Pay / UPI & PayPal Screenshot Proof states
     var selectedProofUri by remember { mutableStateOf<Uri?>(null) }
     var uploadedImgchestUrl by remember { mutableStateOf<String?>(null) }
     var isUploadingToImgchest by remember { mutableStateOf(false) }
@@ -153,15 +155,25 @@ fun PricingScreen(
             uploadErrorMessage = null
             isUploadingToImgchest = true
             coroutineScope.launch {
-                val uploadResult = MediaUploadClient.uploadSingleMedia(
+                val activePlanName = showPayPalDialog?.name ?: showGooglePayDialog?.name ?: "Plan"
+                val directRes = com.example.justfan.data.remote.ImgchestUploader.uploadImageDirect(
                     context = context,
-                    uri = uri,
-                    title = "JUSTFAN Payment Proof - ${showGooglePayDialog?.name ?: "Plan"}"
+                    imageUri = uri,
+                    title = "JUSTFAN Payment Proof - $activePlanName"
                 )
+                val uploadResult = if (directRes.isSuccess) {
+                    directRes
+                } else {
+                    MediaUploadClient.uploadSingleMedia(
+                        context = context,
+                        uri = uri,
+                        title = "JUSTFAN Payment Proof - $activePlanName"
+                    )
+                }
                 isUploadingToImgchest = false
                 if (uploadResult.isSuccess) {
                     uploadedImgchestUrl = uploadResult.getOrNull()
-                    Toast.makeText(context, "Screenshot uploaded successfully!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Payment screenshot uploaded to Imgchest!", Toast.LENGTH_SHORT).show()
                 } else {
                     uploadErrorMessage = uploadResult.exceptionOrNull()?.message ?: "Upload failed"
                     Toast.makeText(context, "Upload failed: $uploadErrorMessage", Toast.LENGTH_LONG).show()
@@ -553,74 +565,282 @@ fun PricingScreen(
         )
     }
 
-    // Dialog: PayPal Automatic Account Payment
+    // Dialog: PayPal Payment & Screenshot Verification
     if (showPayPalDialog != null) {
         val target = showPayPalDialog!!
         val amountClean = PayPalClient.normalizeUsdAmount(target.price, target.name)
 
         AlertDialog(
             onDismissRequest = {
-                if (!isProcessingPayPal) showPayPalDialog = null
+                if (!isProcessingPayPal && !isUploadingToImgchest) {
+                    showPayPalDialog = null
+                    payPalOrderId = null
+                    payPalApprovalUrl = null
+                    payPalStatusMessage = null
+                    payPalVerificationFailed = false
+                    selectedProofUri = null
+                    uploadedImgchestUrl = null
+                    uploadErrorMessage = null
+                    userPaymentNote = ""
+                }
             },
             icon = {
                 Icon(Icons.Default.Payment, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
             },
             title = {
-                Text("PayPal Automatic Payment", fontWeight = FontWeight.Bold)
+                Text("PayPal Checkout & Verification", fontWeight = FontWeight.Bold)
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = "Upgrade to ${target.name} Membership for $$amountClean USD.\nPayPal provides instant, automatic account upgrade in the database upon payment.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "Upgrade to ${target.name} Membership for $$amountClean USD.\nComplete checkout in PayPal, or if automatic verification fails, upload your payment screenshot below for Admin verification.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
 
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Membership:", fontSize = 13.sp)
-                                Text(
-                                    text = if (target.name == "Pro") "Pro (1 Month • Auto-reverts to Free)" else "Legendary (Lifetime VIP)",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
+                    item {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Membership:", fontSize = 13.sp)
+                                    Text(
+                                        text = if (target.name == "Pro") "Pro (1 Month • Auto-reverts to Free)" else "Legendary (Lifetime VIP)",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Total Amount:", fontSize = 13.sp)
+                                    Text("$$amountClean USD", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                                }
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        }
+                    }
+
+                    item {
+                        Button(
+                            onClick = {
+                                isProcessingPayPal = true
+                                coroutineScope.launch {
+                                    val result = PayPalClient.createOrder(target.name, amountClean)
+                                    isProcessingPayPal = false
+                                    when (result) {
+                                        is PayPalClient.PayPalOrderResult.Created -> {
+                                            payPalOrderId = result.orderId
+                                            payPalApprovalUrl = result.approvalUrl
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.approvalUrl))
+                                                context.startActivity(intent)
+                                                payPalStatusMessage = "PayPal opened in browser. After paying, tap 'Verify PayPal Order' or upload your payment screenshot below."
+                                            } catch (_: Exception) {
+                                                Toast.makeText(context, "Cannot open browser. URL: ${result.approvalUrl}", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                        is PayPalClient.PayPalOrderResult.DirectUrl -> {
+                                            payPalApprovalUrl = result.checkoutUrl
+                                            payPalVerificationFailed = true
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.checkoutUrl))
+                                                context.startActivity(intent)
+                                                payPalStatusMessage = "PayPal checkout opened. After completing payment, please upload your payment screenshot below so Admin can cross-verify and upgrade your tier."
+                                            } catch (_: Exception) {
+                                                Toast.makeText(context, "Cannot open browser. URL: ${result.checkoutUrl}", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                        is PayPalClient.PayPalOrderResult.Error -> {
+                                            payPalVerificationFailed = true
+                                            payPalStatusMessage = "Automatic PayPal order failed (${result.message}). If you already paid, upload your payment screenshot below for Admin verification."
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = !isProcessingPayPal,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (payPalApprovalUrl == null) "1. Open PayPal Checkout ($$amountClean USD)" else "Re-open PayPal Checkout")
+                        }
+                    }
+
+                    if (!payPalOrderId.isNullOrBlank()) {
+                        item {
+                            OutlinedButton(
+                                onClick = {
+                                    isProcessingPayPal = true
+                                    coroutineScope.launch {
+                                        val ordId = payPalOrderId.orEmpty()
+                                        val captured = PayPalClient.captureOrder(ordId)
+                                        isProcessingPayPal = false
+                                        if (captured) {
+                                            onSelectPlan(target.name)
+                                            upgradedPlanName = target.name
+                                            showPayPalDialog = null
+                                            payPalOrderId = null
+                                            payPalApprovalUrl = null
+                                            payPalStatusMessage = null
+                                            payPalVerificationFailed = false
+                                            Toast.makeText(
+                                                context,
+                                                "PayPal payment verified! Tier upgraded to ${target.name} in database! ✓",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        } else {
+                                            payPalVerificationFailed = true
+                                            payPalStatusMessage = "⚠️ Automatic payment capture could not verify a completed payment. Please upload your payment screenshot below so the Admin can cross-verify and upgrade your tier."
+                                        }
+                                    }
+                                },
+                                enabled = !isProcessingPayPal,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Total Amount:", fontSize = 13.sp)
-                                Text("$$amountClean USD", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                                Text("Verify Automatic PayPal Order", fontWeight = FontWeight.Bold)
                             }
                         }
                     }
 
                     if (isProcessingPayPal) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Connecting to PayPal...", fontSize = 12.sp)
+                        item {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Checking with PayPal...", fontSize = 12.sp)
+                            }
                         }
                     }
 
                     if (payPalStatusMessage != null) {
+                        item {
+                            Surface(
+                                color = if (payPalVerificationFailed) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f) else SuccessGreen.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = payPalStatusMessage!!,
+                                    fontSize = 11.sp,
+                                    color = if (payPalVerificationFailed) MaterialTheme.colorScheme.error else SuccessGreen,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Upload Payment Screenshot Section (Imgchest) for Admin Cross-Verification
+                    item {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                         Text(
-                            text = payPalStatusMessage!!,
-                            fontSize = 12.sp,
-                            color = SuccessGreen,
-                            fontWeight = FontWeight.Medium
+                            text = "📸 Payment Failed or Unverified? Upload Screenshot:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = "Upload your PayPal payment receipt screenshot (uploaded via Imgchest API). The Admin will cross-verify your payment and upgrade your account to ${target.name}.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    item {
+                        if (uploadedImgchestUrl != null) {
+                            Card(
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    AsyncImage(
+                                        model = uploadedImgchestUrl,
+                                        contentDescription = "Uploaded PayPal Screenshot",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.size(54.dp).clip(RoundedCornerShape(8.dp))
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Uploaded to Imgchest", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = SuccessGreen)
+                                        }
+                                        Text(uploadedImgchestUrl!!, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            uploadedImgchestUrl = null
+                                            selectedProofUri = null
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    photoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                enabled = !isUploadingToImgchest,
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                if (isUploadingToImgchest) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Uploading Screenshot to Imgchest...", fontSize = 12.sp)
+                                } else {
+                                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Upload Payment Screenshot from Gallery", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        uploadErrorMessage?.let { errMsg ->
+                            Text(errMsg, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                        }
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = userPaymentNote,
+                            onValueChange = { userPaymentNote = it },
+                            label = { Text("PayPal Transaction ID / Email (Optional)") },
+                            placeholder = { Text("e.g. TXN-987654321 or payer@gmail.com") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
@@ -628,84 +848,46 @@ fun PricingScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        isProcessingPayPal = true
-                        coroutineScope.launch {
-                            val result = PayPalClient.createOrder(target.name, amountClean)
-                            isProcessingPayPal = false
-                            when (result) {
-                                is PayPalClient.PayPalOrderResult.Created -> {
-                                    payPalOrderId = result.orderId
-                                    payPalApprovalUrl = result.approvalUrl
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.approvalUrl))
-                                        context.startActivity(intent)
-                                        payPalStatusMessage = "Opened PayPal checkout in browser. Complete payment and tap 'I Have Paid (Verify & Activate)' below to automatically upgrade your tier."
-                                    } catch (_: Exception) {
-                                        Toast.makeText(context, "Cannot open browser. URL: ${result.approvalUrl}", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                                is PayPalClient.PayPalOrderResult.DirectUrl -> {
-                                    payPalApprovalUrl = result.checkoutUrl
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.checkoutUrl))
-                                        context.startActivity(intent)
-                                        payPalStatusMessage = "Opened PayPal checkout in browser. Complete payment and tap 'I Have Paid (Verify & Activate)' below to automatically upgrade your tier."
-                                    } catch (_: Exception) {
-                                        Toast.makeText(context, "Cannot open browser. URL: ${result.checkoutUrl}", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                                is PayPalClient.PayPalOrderResult.Error -> {
-                                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
+                        val proofUrl = uploadedImgchestUrl.orEmpty()
+                        onSubmitPaymentProof(
+                            target.name,
+                            "PayPal",
+                            "$$amountClean USD",
+                            proofUrl,
+                            userPaymentNote.trim()
+                        )
+                        showPayPalDialog = null
+                        payPalOrderId = null
+                        payPalApprovalUrl = null
+                        payPalStatusMessage = null
+                        payPalVerificationFailed = false
+                        selectedProofUri = null
+                        uploadedImgchestUrl = null
+                        userPaymentNote = ""
+                        proofSubmittedSuccessfully = true
                     },
-                    enabled = !isProcessingPayPal,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    enabled = uploadedImgchestUrl != null && !isUploadingToImgchest,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
                 ) {
-                    Text(if (payPalApprovalUrl == null) "Proceed to PayPal" else "Re-open PayPal")
+                    Text("Submit Screenshot for Admin Verification")
                 }
             },
             dismissButton = {
-                Row {
-                    if (payPalOrderId != null || payPalApprovalUrl != null) {
-                        TextButton(
-                            onClick = {
-                                isProcessingPayPal = true
-                                coroutineScope.launch {
-                                    val ordId = payPalOrderId
-                                    if (!ordId.isNullOrBlank()) {
-                                        PayPalClient.captureOrder(ordId)
-                                    }
-                                    isProcessingPayPal = false
-                                    // Automatic tier upgrade in Supabase database + local profile
-                                    onSelectPlan(target.name)
-                                    upgradedPlanName = target.name
-                                    showPayPalDialog = null
-                                    payPalOrderId = null
-                                    payPalApprovalUrl = null
-                                    payPalStatusMessage = null
-                                    Toast.makeText(
-                                        context,
-                                        "Tier automatically upgraded to ${target.name} in database! ✓",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
-                        ) {
-                            Text("I Have Paid (Verify & Activate)", color = SuccessGreen, fontWeight = FontWeight.Bold)
-                        }
+                TextButton(
+                    onClick = {
+                        showPayPalDialog = null
+                        payPalOrderId = null
+                        payPalApprovalUrl = null
+                        payPalStatusMessage = null
+                        payPalVerificationFailed = false
+                        selectedProofUri = null
+                        uploadedImgchestUrl = null
+                        uploadErrorMessage = null
+                        userPaymentNote = ""
                     }
-                    TextButton(
-                        onClick = {
-                            showPayPalDialog = null
-                            payPalOrderId = null
-                            payPalApprovalUrl = null
-                            payPalStatusMessage = null
-                        }
-                    ) {
-                        Text("Cancel")
-                    }
+                ) {
+                    Text("Cancel")
                 }
             }
         )
@@ -972,15 +1154,15 @@ fun PricingScreen(
         )
     }
 
-    // Success confirmation dialog for Google Pay screenshot
+    // Success confirmation dialog for PayPal / Google Pay screenshot proof
     if (proofSubmittedSuccessfully) {
         AlertDialog(
             onDismissRequest = { proofSubmittedSuccessfully = false },
             icon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(36.dp)) },
-            title = { Text("Payment Proof Submitted!", fontWeight = FontWeight.Bold) },
+            title = { Text("Payment Screenshot Submitted!", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    text = "Your payment screenshot has been uploaded to Imgchest and submitted to the administrator.\n\nThe administrator will verify the transaction on Google Pay and upgrade your account to your selected tier shortly.",
+                    text = "Your payment screenshot has been uploaded to Imgchest and sent to the Admin Dashboard.\n\nThe administrator will cross-verify your payment screenshot and upgrade your membership tier shortly.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             },

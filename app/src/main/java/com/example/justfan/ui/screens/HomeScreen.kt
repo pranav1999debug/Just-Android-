@@ -119,7 +119,7 @@ fun HomeScreen(
 
                             // 2. Small Homepage Section for Free Users: Successful Request Uploads (Request Image + Reference Link)
                             SuccessfulRequestUploadsSection(
-                                requests = requests
+                                requests = requests.filter { !it.message.startsWith("[PAYMENT_PROOF]") }
                             )
 
                             // 3. Discover Section: Below trending, auto-scrolling random old post discovery container

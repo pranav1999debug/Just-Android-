@@ -323,6 +323,9 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             userProfile = userProfile,
                             onSelectPlan = { selectedTier ->
                                 viewModel.updateUserTier(userProfile.id, selectedTier)
+                            },
+                            onSubmitPaymentProof = { tier, method, amount, proofImageUrl, note ->
+                                viewModel.submitPaymentProof(tier, method, amount, proofImageUrl, note)
                             }
                         )
                         is AppScreen.Activity -> NotificationsScreen(

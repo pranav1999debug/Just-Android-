@@ -86,6 +86,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun submitPaymentProof(
+        tier: String,
+        method: String,
+        amount: String,
+        proofImageUrl: String,
+        note: String,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val res = repository.submitPaymentProof(tier, method, amount, proofImageUrl, note)
+            onResult(res.isSuccess)
+        }
+    }
+
     fun updateRequestStatus(id: String, status: String, link: String?, reason: String? = null) {
         viewModelScope.launch {
             repository.updateRequestStatus(id, status, link, reason)

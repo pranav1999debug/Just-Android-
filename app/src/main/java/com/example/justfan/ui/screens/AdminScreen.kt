@@ -77,6 +77,9 @@ import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import android.content.Intent
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Payment
 import coil.compose.AsyncImage
 import com.example.justfan.data.remote.MediaUploadClient
 import com.example.justfan.ui.components.PostEditorDialog
@@ -99,24 +102,34 @@ fun AdminScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var notificationFeedback by remember { mutableStateOf<String?>(null) }
 
+    val paymentProofs = remember(requests) {
+        requests.filter { it.message.startsWith("[PAYMENT_PROOF]") }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = selectedTab) {
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
-                text = { Text("Users (${users.size})") },
+                text = { Text("Users (${users.size})", fontSize = 11.sp) },
                 icon = { Icon(Icons.Default.Group, contentDescription = null, modifier = Modifier.size(16.dp)) }
             )
             Tab(
                 selected = selectedTab == 1,
                 onClick = { selectedTab = 1 },
-                text = { Text("Requests (${requests.size})") },
-                icon = { Icon(Icons.Default.Mail, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                text = { Text("Payments (${paymentProofs.size})", fontSize = 11.sp) },
+                icon = { Icon(Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(16.dp)) }
             )
             Tab(
                 selected = selectedTab == 2,
                 onClick = { selectedTab = 2 },
-                text = { Text("Posts CRUD") },
+                text = { Text("Requests (${requests.size})", fontSize = 11.sp) },
+                icon = { Icon(Icons.Default.Mail, contentDescription = null, modifier = Modifier.size(16.dp)) }
+            )
+            Tab(
+                selected = selectedTab == 3,
+                onClick = { selectedTab = 3 },
+                text = { Text("Posts CRUD", fontSize = 11.sp) },
                 icon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) }
             )
         }
@@ -151,7 +164,22 @@ fun AdminScreen(
                 },
                 onRefresh = onRefresh
             )
-            1 -> AdminRequestsTab(
+            1 -> AdminPaymentProofsTab(
+                paymentProofs = paymentProofs,
+                users = users,
+                onApproveAndUpgrade = { reqId, userUuid, tier, email, proofUrl ->
+                    onUpdateUserTier(userUuid, tier)
+                    onUpdateRequestStatus(reqId, "fulfilled", proofUrl, null)
+                    notificationFeedback = "Verified payment & upgraded $email to $tier in database! ✓"
+                },
+                onRejectProof = { reqId, email ->
+                    onUpdateRequestStatus(reqId, "rejected", null, "Payment screenshot could not be verified")
+                    notificationFeedback = "Rejected payment proof from $email."
+                },
+                onDelete = onDeleteRequest,
+                onRefresh = onRefresh
+            )
+            2 -> AdminRequestsTab(
                 requests = requests,
                 users = users,
                 onUpdateTier = { userUuid, tier, email ->
@@ -162,7 +190,7 @@ fun AdminScreen(
                 onDelete = onDeleteRequest,
                 onRefresh = onRefresh
             )
-            2 -> AdminUploadPostTab(
+            3 -> AdminUploadPostTab(
                 posts = posts,
                 onCreatePost = { post, onDone ->
                     onCreatePost(post) { success, err ->
@@ -377,16 +405,15 @@ fun TierStatBadge(label: String, count: Int, color: Color) {
 }
 
 @Composable
-fun AdminRequestsTab(
-    requests: List<RequestEntity>,
+fun AdminPaymentProofsTab(
+    paymentProofs: List<RequestEntity>,
     users: List<UserEntity>,
-    onUpdateTier: (userUuid: String, tier: String, email: String) -> Unit,
-    onUpdateStatus: (id: String, status: String, link: String?, reason: String?) -> Unit,
+    onApproveAndUpgrade: (reqId: String, userUuid: String, tier: String, email: String, proofUrl: String?) -> Unit,
+    onRejectProof: (reqId: String, email: String) -> Unit,
     onDelete: (id: String) -> Unit,
     onRefresh: () -> Unit
 ) {
-    var linkInputMap by remember { mutableStateOf(mapOf<String, String>()) }
-    var reasonInputMap by remember { mutableStateOf(mapOf<String, String>()) }
+    val context = LocalContext.current
 
     LazyColumn(
         modifier = Modifier
@@ -400,7 +427,186 @@ fun AdminRequestsTab(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Subscriber Content Requests (${requests.size})", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Payment Screenshot Verification (${paymentProofs.size})", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(
+                        "Cross-verify uploaded PayPal / Google Pay screenshots and upgrade subscriber tiers.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                }
+            }
+        }
+
+        if (paymentProofs.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "No payment screenshots awaiting verification.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        } else {
+            items(paymentProofs, key = { it.id }) { req ->
+                val matchingUser = remember(req.email, users) {
+                    users.find { it.email.equals(req.email, ignoreCase = true) || it.id == req.userId }
+                }
+                val resolvedUserUuid = matchingUser?.id ?: req.userId ?: req.email
+                val requestedTier = remember(req.message) {
+                    if (req.message.contains("Tier: Legendary", ignoreCase = true)) "Legendary" else "Pro"
+                }
+                val statusClean = req.status.lowercase()
+                val statusColor = when (statusClean) {
+                    "fulfilled", "verified", "approved" -> SuccessGreen
+                    "rejected" -> DangerRed
+                    else -> GoldAccent
+                }
+                val statusLabel = when (statusClean) {
+                    "fulfilled", "verified", "approved" -> "VERIFIED & UPGRADED"
+                    "rejected" -> "REJECTED"
+                    else -> "PENDING VERIFICATION"
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(14.dp),
+                    elevation = CardDefaults.cardElevation(3.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(req.name ?: "Subscriber", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text(req.email, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Surface(color = statusColor.copy(alpha = 0.18f), shape = RoundedCornerShape(6.dp)) {
+                                Text(
+                                    text = statusLabel,
+                                    color = statusColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            IconButton(onClick = { onDelete(req.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = DangerRed)
+                            }
+                        }
+
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = req.message.removePrefix("[PAYMENT_PROOF]").trim(),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+
+                        if (!req.imageUrl.isNullOrBlank()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                AsyncImage(
+                                    model = req.imageUrl,
+                                    contentDescription = "Payment Screenshot Proof",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(210.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            try {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
+                                            } catch (_: Exception) {}
+                                        }
+                                )
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
+                                        } catch (_: Exception) {}
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Open Full Payment Screenshot (Imgchest)", fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    onApproveAndUpgrade(req.id, resolvedUserUuid, requestedTier, req.email, req.imageUrl)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (requestedTier == "Legendary") GoldAccent else SuccessGreen,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Verify & Upgrade to $requestedTier", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
+                            OutlinedButton(
+                                onClick = { onRejectProof(req.id, req.email) },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Reject", color = DangerRed, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AdminRequestsTab(
+    requests: List<RequestEntity>,
+    users: List<UserEntity>,
+    onUpdateTier: (userUuid: String, tier: String, email: String) -> Unit,
+    onUpdateStatus: (id: String, status: String, link: String?, reason: String?) -> Unit,
+    onDelete: (id: String) -> Unit,
+    onRefresh: () -> Unit
+) {
+    val context = LocalContext.current
+    var linkInputMap by remember { mutableStateOf(mapOf<String, String>()) }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Subscriber Requests & Proofs (${requests.size})", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 IconButton(onClick = onRefresh) {
                     Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                 }
@@ -413,11 +619,11 @@ fun AdminRequestsTab(
             }
         } else {
             items(requests, key = { it.id }) { req ->
-                // Resolve user UUID from user list or req.userId
                 val matchingUser = remember(req.email, users) {
                     users.find { it.email.equals(req.email, ignoreCase = true) || it.id == req.userId }
                 }
                 val resolvedUserUuid = matchingUser?.id ?: req.userId ?: req.email
+                val isPaymentProof = req.message.startsWith("[PAYMENT_PROOF]")
 
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -431,8 +637,21 @@ fun AdminRequestsTab(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(req.name ?: "Unknown Fan", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(req.name ?: "Unknown Fan", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    if (isPaymentProof) {
+                                        Surface(color = GoldAccent.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
+                                            Text(
+                                                "PAYMENT PROOF",
+                                                color = GoldAccent,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Black,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(req.email, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             IconButton(onClick = { onDelete(req.id) }) {
@@ -441,11 +660,32 @@ fun AdminRequestsTab(
                         }
 
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(text = "Idea: ${req.message}", fontSize = 13.sp)
+                        Text(
+                            text = if (isPaymentProof) req.message.removePrefix("[PAYMENT_PROOF]").trim() else "Idea: ${req.message}",
+                            fontSize = 13.sp
+                        )
+
+                        if (!req.imageUrl.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            AsyncImage(
+                                model = req.imageUrl,
+                                contentDescription = "Uploaded Image",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
+                                        } catch (_: Exception) {}
+                                    }
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Quick 1-Tap Upgrade User from Request
+                        // Quick 1-Tap Upgrade User from Request / Payment Proof
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(8.dp),
@@ -463,6 +703,9 @@ fun AdminRequestsTab(
                                         shape = RoundedCornerShape(6.dp),
                                         modifier = Modifier.clickable {
                                             onUpdateTier(resolvedUserUuid, "Pro", req.email)
+                                            if (isPaymentProof) {
+                                                onUpdateStatus(req.id, "fulfilled", req.imageUrl, null)
+                                            }
                                         }
                                     ) {
                                         Text("+ Pro Tier", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
@@ -472,6 +715,9 @@ fun AdminRequestsTab(
                                         shape = RoundedCornerShape(6.dp),
                                         modifier = Modifier.clickable {
                                             onUpdateTier(resolvedUserUuid, "Legendary", req.email)
+                                            if (isPaymentProof) {
+                                                onUpdateStatus(req.id, "fulfilled", req.imageUrl, null)
+                                            }
                                         }
                                     ) {
                                         Text("+ ★ Legendary", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
@@ -497,7 +743,7 @@ fun AdminRequestsTab(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    onUpdateStatus(req.id, "fulfilled", linkInput.ifBlank { null }, null)
+                                    onUpdateStatus(req.id, "fulfilled", linkInput.ifBlank { req.imageUrl }, null)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Color.Black),
                                 shape = RoundedCornerShape(8.dp),
@@ -505,7 +751,7 @@ fun AdminRequestsTab(
                             ) {
                                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Fulfill Link")
+                                Text(if (isPaymentProof) "Mark Verified" else "Fulfill Link")
                             }
 
                             OutlinedButton(

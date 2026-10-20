@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,12 +26,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.justfan.data.model.PostEntity
+import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.ui.components.CompactPostCard
 import com.example.justfan.ui.components.DiscoverSection
+import com.example.justfan.ui.components.SuccessfulRequestUploadsSection
 import com.example.justfan.ui.components.TrendingCarousel
 
 @Composable
@@ -42,6 +42,8 @@ fun HomeScreen(
     isPaidOrLegendary: Boolean,
     onPostClick: (PostEntity) -> Unit,
     onToggleFavorite: (String) -> Unit,
+    requests: List<RequestEntity> = emptyList(),
+    onViewAllTrending: () -> Unit = {},
     onDownloadClick: (PostEntity) -> Unit = {},
     externalSearchQuery: String = "",
     modifier: Modifier = Modifier
@@ -106,15 +108,21 @@ fun HomeScreen(
                 if (searchQuery.isBlank() && selectedFilter == "All") {
                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Column {
-                            // 1. Trending Carousel: Top 10 calculated by historical click table values
+                            // 1. Trending Carousel: Top 10 calculated by Supabase post_click_counts table ('count' column)
                             TrendingCarousel(
                                 trendingPosts = posts.sortedByDescending { it.clicksCount }.take(10),
                                 onPostClick = { postId ->
                                     posts.find { it.id == postId }?.let(onPostClick)
-                                }
+                                },
+                                onViewAllClick = onViewAllTrending
                             )
 
-                            // 2. Discover Section: Below trending, auto-scrolling random old post discovery container
+                            // 2. Small Homepage Section for Free Users: Successful Request Uploads (Request Image + Reference Link)
+                            SuccessfulRequestUploadsSection(
+                                requests = requests
+                            )
+
+                            // 3. Discover Section: Below trending, auto-scrolling random old post discovery container
                             val historicalPosts = remember(posts) {
                                 posts.shuffled(kotlin.random.Random(1337)).take(12)
                             }
@@ -138,7 +146,6 @@ fun HomeScreen(
                         onCardClick = { onPostClick(post) },
                         onToggleFavorite = { onToggleFavorite(post.id) },
                         onDirectDownloadClick = {
-                            // Intercept the download action to asynchronously increment click count
                             onDownloadClick(post)
                             val url = post.directLinkUrl?.ifBlank { null } ?: post.linkUrl
                             if (url.isNotBlank()) {

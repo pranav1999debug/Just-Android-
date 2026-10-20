@@ -36,6 +36,7 @@ import android.widget.Toast
 import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.components.InlineVideoPreview
+import com.example.justfan.ui.components.PostEditorDialog
 import com.example.justfan.ui.components.VideoPlayerView
 import com.example.justfan.ui.components.isVideoMediaUrl
 import com.example.justfan.ui.theme.DangerRed
@@ -54,11 +55,14 @@ fun PostDetailScreen(
     comments: List<CommentEntity>,
     isFavorite: Boolean,
     canAccessDirectLink: Boolean = false,
+    isAdmin: Boolean = false,
     onNavigateToPricing: () -> Unit = {},
     onBack: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddComment: (String) -> Unit,
     onSelectPost: (String) -> Unit,
+    onUpdatePost: (PostEntity, (Boolean) -> Unit) -> Unit = { _, _ -> },
+    onDeletePost: (String, (Boolean) -> Unit) -> Unit = { _, _ -> },
     onShare: () -> Unit = {},
     onDownloadClick: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -75,6 +79,8 @@ fun PostDetailScreen(
 
     var selectedImageIndex by remember { mutableIntStateOf(0) }
     var isLightboxOpen by remember { mutableStateOf(false) }
+    var isEditDialogOpen by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     var newCommentText by remember { mutableStateOf("") }
     var isDescExpanded by remember { mutableStateOf(false) }
 
@@ -130,6 +136,28 @@ fun PostDetailScreen(
                     }
                 },
                 actions = {
+                    if (isAdmin) {
+                        IconButton(
+                            onClick = { isEditDialogOpen = true },
+                            modifier = Modifier.testTag("detail_edit_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit Post",
+                                tint = Color(0xFF10B981)
+                            )
+                        }
+                        IconButton(
+                            onClick = { showDeleteConfirm = true },
+                            modifier = Modifier.testTag("detail_delete_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete Post",
+                                tint = DangerRed
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = onToggleFavorite,
                         modifier = Modifier.testTag("detail_fav_button")
@@ -169,6 +197,42 @@ fun PostDetailScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(bottom = 32.dp)
         ) {
+            // Post CRUD Action Bar (Admin Only: Edit Cover / Content Media via Imgchest & Delete)
+            if (isAdmin) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { isEditDialogOpen = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10B981),
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("detail_crud_edit_btn")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Edit Post & Media (Imgchest)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = { showDeleteConfirm = true },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
+                            modifier = Modifier.testTag("detail_crud_delete_btn")
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Delete", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
             // Main Featured Media (Video or Image)
             item {
                 val currentMedia = images.getOrNull(selectedImageIndex) ?: post.imageUrl
@@ -918,6 +982,58 @@ fun PostDetailScreen(
                 }
             }
         }
+    }
+
+    // Full Post CRUD Editor Dialog (Admin Only: Cover & Multi-Content Imgchest Uploads)
+    if (isAdmin && isEditDialogOpen) {
+        PostEditorDialog(
+            initialPost = post,
+            onDismiss = { isEditDialogOpen = false },
+            onSave = { updatedPost ->
+                onUpdatePost(updatedPost) { success ->
+                    isEditDialogOpen = false
+                    Toast.makeText(
+                        context,
+                        if (success) "Post updated in Supabase database! ✓" else "Post updated locally ✓",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            onDelete = { postId ->
+                onDeletePost(postId) {
+                    isEditDialogOpen = false
+                    Toast.makeText(context, "Post deleted from database ✓", Toast.LENGTH_SHORT).show()
+                    onBack()
+                }
+            }
+        )
+    }
+
+    if (isAdmin && showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Post", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete '${post.title}' from the database?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDeletePost(post.id) {
+                            Toast.makeText(context, "Post deleted ✓", Toast.LENGTH_SHORT).show()
+                            onBack()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
+                ) {
+                    Text("Delete", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

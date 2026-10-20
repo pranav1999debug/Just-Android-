@@ -4,8 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,7 +23,11 @@ import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
@@ -53,6 +57,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.RequestQuota
 import com.example.justfan.data.model.UserProfile
@@ -60,6 +65,9 @@ import com.example.justfan.data.remote.ImgchestUploader
 import com.example.justfan.ui.theme.DangerRed
 import com.example.justfan.ui.theme.GoldAccent
 import com.example.justfan.ui.theme.SuccessGreen
+import com.example.justfan.util.BiometricAuthManager
+import com.example.justfan.util.DeviceBiometricInfo
+import com.example.justfan.util.getDeviceBiometricInfo
 import kotlinx.coroutines.launch
 
 @Composable
@@ -68,15 +76,27 @@ fun RequestScreen(
     quota: RequestQuota,
     requests: List<RequestEntity>,
     initialIdea: String = "",
+    deviceBiometricInfo: DeviceBiometricInfo? = null,
     onSubmitRequest: (name: String, email: String, telegram: String?, message: String, image: String?) -> Unit,
+    onBiometricVerified: (DeviceBiometricInfo) -> Unit = {},
+    onRequestSignIn: () -> Unit = {},
     onNavigateToPricing: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val resolvedDeviceInfo = deviceBiometricInfo ?: remember(userProfile.email) {
+        getDeviceBiometricInfo(
+            context = context,
+            email = userProfile.email,
+            biometricEnabled = BiometricAuthManager.isBiometricVerifiedForAccount(context, userProfile.email)
+        )
+    }
+
     var nameInput by remember(userProfile) { mutableStateOf(userProfile.username.ifBlank { "" }) }
     var emailInput by remember(userProfile) { mutableStateOf(userProfile.email.ifBlank { "" }) }
     var telegramInput by remember { mutableStateOf("") }
+    var referenceLinkInput by remember { mutableStateOf("") }
     var messageInput by remember(initialIdea) { mutableStateOf(initialIdea) }
     var imageUrlInput by remember { mutableStateOf("") }
     var statusMessage by remember { mutableStateOf<String?>(null) }
@@ -88,11 +108,11 @@ fun RequestScreen(
         uri?.let {
             scope.launch {
                 isUploading = true
-                statusMessage = "Uploading image to Imgchest..."
+                statusMessage = "Uploading request image to Imgchest API..."
                 val result = ImgchestUploader.uploadImageDirect(context, it, "JUSTFAN Request Reference")
                 if (result.isSuccess) {
                     imageUrlInput = result.getOrNull() ?: ""
-                    statusMessage = "Image uploaded successfully! ✓"
+                    statusMessage = "Request image uploaded to Imgchest! ✓"
                 } else {
                     statusMessage = "Upload failed: ${result.exceptionOrNull()?.message}"
                 }
@@ -108,7 +128,7 @@ fun RequestScreen(
         if (userProfile.email.isNotBlank()) {
             requests.filter { it.email.equals(userProfile.email, ignoreCase = true) }
         } else {
-            requests.take(5)
+            requests.take(8)
         }
     }
 
@@ -118,12 +138,13 @@ fun RequestScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Quota / Unlimited Status Card
+        // 1. Google Login + Biometric + Hardware Device Quota Card
         item {
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isPaidOrLegendary) Color(0xFF2A2208) else MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = if (isPaidOrLegendary) Color(0xFF2A2208) else Color(0xFF151C24)
                 ),
+                border = BorderStroke(1.dp, if (isPaidOrLegendary) GoldAccent else Color(0xFF10B981).copy(alpha = 0.5f)),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -137,50 +158,127 @@ fun RequestScreen(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = if (isPaidOrLegendary) Icons.Default.AllInclusive else Icons.Default.Star,
+                                imageVector = if (isPaidOrLegendary) Icons.Default.AllInclusive else Icons.Default.Fingerprint,
                                 contentDescription = null,
-                                tint = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                                tint = if (isPaidOrLegendary) GoldAccent else Color(0xFF10B981),
                                 modifier = Modifier.size(24.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isPaidOrLegendary) "UNLIMITED REQUESTS" else "REQUEST QUOTA",
+                                text = if (isPaidOrLegendary) "UNLIMITED VIP REQUESTS" else "DEVICE & BIOMETRIC QUOTA",
                                 fontWeight = FontWeight.Black,
-                                fontSize = 14.sp,
-                                color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                                fontSize = 13.sp,
+                                color = if (isPaidOrLegendary) GoldAccent else Color.White
                             )
                         }
 
                         Surface(
-                            color = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                            color = if (isPaidOrLegendary) GoldAccent else Color(0xFF10B981),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = if (isPaidOrLegendary) "LEGENDARY TIER" else "${quota.remaining} LEFT",
+                                text = if (isPaidOrLegendary) "LEGENDARY / PRO" else "${quota.used} / 3 USED (${quota.remaining} LEFT)",
                                 color = Color.Black,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    Text(
-                        text = if (isPaidOrLegendary) {
-                            "As a Legendary subscriber, your requests are processed with top priority with no monthly limits."
-                        } else {
-                            "Free tier includes 3 requests per month. Upgrade to Legendary or Pro for unlimited requests and direct media downloads."
-                        },
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    // Device & Biometric Tracking Details
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.PhoneAndroid,
+                                    contentDescription = null,
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Tracked Device: ${resolvedDeviceInfo.manufacturer} ${resolvedDeviceInfo.model} (${resolvedDeviceInfo.osVersion})",
+                                    fontSize = 11.sp,
+                                    color = Color.LightGray,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (resolvedDeviceInfo.biometricEnabled) Icons.Default.CheckCircle else Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = if (resolvedDeviceInfo.biometricEnabled) Color(0xFF10B981) else GoldAccent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Device ID: ${resolvedDeviceInfo.deviceId.take(14)}... • Biometric: ${if (resolvedDeviceInfo.biometricEnabled) "Enabled & Synced ✓" else "Pending Verification"}",
+                                    fontSize = 11.sp,
+                                    color = if (resolvedDeviceInfo.biometricEnabled) Color(0xFF10B981) else GoldAccent
+                                )
+                            }
+                        }
+                    }
+
+                    if (!userProfile.isSignedIn) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = onRequestSignIn,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("request_google_login_btn")
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("1. Sign In with Google to Enable Biometric Tracking", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    } else if (!resolvedDeviceInfo.biometricEnabled) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val act = context as? FragmentActivity
+                                BiometricAuthManager.promptEnableBiometricAndDeviceTracking(
+                                    activity = act,
+                                    context = context,
+                                    email = userProfile.email,
+                                    refreshToken = userProfile.refreshToken,
+                                    onSuccess = { info ->
+                                        onBiometricVerified(info)
+                                        statusMessage = "Biometric & Device ID (${info.deviceId.take(8)}...) synced to Supabase! ✓"
+                                    },
+                                    onError = { err ->
+                                        statusMessage = err
+                                    }
+                                )
+                            },
+                            border = BorderStroke(1.dp, Color(0xFF10B981)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("request_enable_biometric_btn")
+                        ) {
+                            Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Enable Biometric & Upload Device Details to Supabase", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
                 }
             }
         }
 
-        // New Request Form Card
+        // 2. New Request Form Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -199,7 +297,7 @@ fun RequestScreen(
                     OutlinedTextField(
                         value = nameInput,
                         onValueChange = { nameInput = it },
-                        label = { Text("Your Name or Alias") },
+                        label = { Text("Creator / Model Name or Your Alias") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -208,8 +306,21 @@ fun RequestScreen(
                     OutlinedTextField(
                         value = emailInput,
                         onValueChange = { emailInput = it },
-                        label = { Text("Email (for receiving fulfillment)") },
+                        label = { Text("Email (Google Account)") },
                         modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = referenceLinkInput,
+                        onValueChange = { referenceLinkInput = it },
+                        label = { Text("Reference / Social Link (Displayed on Homepage when fulfilled)") },
+                        placeholder = { Text("https://instagram.com/... or https://ganknow.com/...") },
+                        leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("request_reference_link_input"),
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -229,7 +340,7 @@ fun RequestScreen(
                         label = { Text("Request Details (Shoot, theme, model, outfit…)") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(110.dp)
+                            .height(100.dp)
                             .testTag("request_message_input"),
                         maxLines = 4
                     )
@@ -238,7 +349,7 @@ fun RequestScreen(
                     OutlinedTextField(
                         value = imageUrlInput,
                         onValueChange = { imageUrlInput = it },
-                        label = { Text("Reference Photo URL (Optional)") },
+                        label = { Text("Small Request Image URL (Uploaded via Imgchest)") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         trailingIcon = {
@@ -246,7 +357,7 @@ fun RequestScreen(
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             } else {
                                 IconButton(onClick = { photoPickerLauncher.launch("image/*") }) {
-                                    Icon(Icons.Default.CloudUpload, contentDescription = "Upload Image")
+                                    Icon(Icons.Default.CloudUpload, contentDescription = "Upload Request Image")
                                 }
                             }
                         }
@@ -254,7 +365,7 @@ fun RequestScreen(
 
                     if (imageUrlInput.isBlank() && !isUploading) {
                         Text(
-                            text = "Or upload a photo directly to get a URL",
+                            text = "Tap the cloud icon to upload a small request image to Imgchest",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 4.dp)
@@ -273,7 +384,7 @@ fun RequestScreen(
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    text = "Monthly limit reached (3/3 requests). Free users are restricted to 3 requests per cycle.",
+                                    text = "Device limit reached (3/3 free requests used on this device). Upgrade to Pro or Legendary for unlimited requests.",
                                     color = DangerRed,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -294,23 +405,38 @@ fun RequestScreen(
                     } else {
                         Button(
                             onClick = {
-                                if (emailInput.isNotBlank() && messageInput.isNotBlank()) {
+                                if (!userProfile.isSignedIn) {
+                                    statusMessage = "Please sign in with Google first so we can verify your device & biometric quota."
+                                    onRequestSignIn()
+                                    return@Button
+                                }
+                                if (emailInput.isNotBlank() && (messageInput.isNotBlank() || referenceLinkInput.isNotBlank())) {
+                                    val combinedMessage = buildString {
+                                        if (referenceLinkInput.isNotBlank()) {
+                                            append("Social: ${referenceLinkInput.trim()}\n")
+                                        }
+                                        if (messageInput.isNotBlank()) {
+                                            append("Details: ${messageInput.trim()}")
+                                        }
+                                    }.trim()
+
                                     onSubmitRequest(
                                         nameInput.ifBlank { "Fan Member" },
                                         emailInput.trim(),
                                         telegramInput.ifBlank { null },
-                                        messageInput.trim(),
+                                        combinedMessage,
                                         imageUrlInput.ifBlank { null }
                                     )
-                                    statusMessage = "Request submitted successfully! Admin will review it shortly. ✓"
+                                    statusMessage = "Request submitted with Device ID (${resolvedDeviceInfo.deviceId.take(8)}...)! ✓"
                                     messageInput = ""
+                                    referenceLinkInput = ""
                                     imageUrlInput = ""
                                 } else {
-                                    statusMessage = "Please enter an email and request details."
+                                    statusMessage = "Please enter an email and request details or reference link."
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPaidOrLegendary) GoldAccent else MaterialTheme.colorScheme.primary,
+                                containerColor = if (isPaidOrLegendary) GoldAccent else Color(0xFF10B981),
                                 contentColor = Color.Black
                             ),
                             shape = RoundedCornerShape(10.dp),
@@ -336,7 +462,7 @@ fun RequestScreen(
             }
         }
 
-        // Past Requests Section
+        // 3. Past Requests Section
         item {
             Text(
                 text = "Recent Community & Personal Requests (${myRequests.size})",
@@ -373,7 +499,7 @@ fun RequestScreen(
                             )
 
                             val (statusColor, statusIcon) = when (req.status.lowercase()) {
-                                "approved", "fulfilled" -> Pair(SuccessGreen, Icons.Default.CheckCircle)
+                                "approved", "fulfilled", "replied", "completed" -> Pair(SuccessGreen, Icons.Default.CheckCircle)
                                 "rejected" -> Pair(DangerRed, Icons.Default.Warning)
                                 else -> Pair(GoldAccent, Icons.Default.HourglassEmpty)
                             }

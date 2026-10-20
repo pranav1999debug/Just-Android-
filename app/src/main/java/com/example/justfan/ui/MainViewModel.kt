@@ -11,6 +11,7 @@ import com.example.justfan.data.model.UserEntity
 import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
 import com.example.justfan.data.repository.JustFanRepository
+import com.example.justfan.util.DeviceBiometricInfo
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -35,6 +36,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val preferences: StateFlow<UserPreferencesState> = repository.preferences
     val requestQuota: StateFlow<RequestQuota> = repository.requestQuota
     val isRefreshing: StateFlow<Boolean> = repository.isRefreshing
+    val deviceBiometricInfo: StateFlow<DeviceBiometricInfo> = repository.deviceBiometricInfo
+    val showBiometricPromptAfterLogin: StateFlow<Boolean> = repository.showBiometricPromptAfterLogin
+
+    fun completeBiometricDeviceSetup(info: DeviceBiometricInfo) {
+        repository.completeBiometricDeviceSetup(info)
+    }
+
+    fun dismissBiometricPrompt() {
+        repository.dismissBiometricPrompt()
+    }
 
     fun updateTheme(themeVariant: String, isDark: Boolean) {
         repository.updateTheme(themeVariant, isDark)
@@ -53,6 +64,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshAll() {
         viewModelScope.launch {
             repository.syncData()
+            repository.fetchRequestQuota()
         }
     }
 

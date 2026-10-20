@@ -70,14 +70,29 @@ import com.example.justfan.ui.theme.SuccessGreen
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import com.example.justfan.data.remote.MediaUploadClient
+import com.example.justfan.ui.components.PostEditorDialog
+import com.example.justfan.ui.components.isVideoMediaUrl
+
 @Composable
 fun AdminScreen(
     users: List<UserEntity>,
     requests: List<RequestEntity>,
+    posts: List<PostEntity> = emptyList(),
     onUpdateUserTier: (userIdOrEmail: String, newTier: String) -> Unit,
     onUpdateRequestStatus: (id: String, status: String, link: String?, reason: String?) -> Unit,
     onDeleteRequest: (id: String) -> Unit,
     onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit,
+    onUpdatePost: (PostEntity, (Boolean) -> Unit) -> Unit = { _, _ -> },
+    onDeletePost: (String, (Boolean) -> Unit) -> Unit = { _, _ -> },
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -101,7 +116,7 @@ fun AdminScreen(
             Tab(
                 selected = selectedTab == 2,
                 onClick = { selectedTab = 2 },
-                text = { Text("Upload Post") },
+                text = { Text("Posts CRUD") },
                 icon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) }
             )
         }
@@ -148,6 +163,7 @@ fun AdminScreen(
                 onRefresh = onRefresh
             )
             2 -> AdminUploadPostTab(
+                posts = posts,
                 onCreatePost = { post, onDone ->
                     onCreatePost(post) { success, err ->
                         onDone(success, err)
@@ -157,6 +173,20 @@ fun AdminScreen(
                         } else {
                             notificationFeedback = "Saved locally. Supabase DB notice: ${err ?: "Sign in with Supabase email/password or Google OAuth to write to remote DB"}"
                         }
+                    }
+                },
+                onUpdatePost = { post, onDone ->
+                    onUpdatePost(post) { success ->
+                        onDone(success)
+                        notificationFeedback = "Updated '${post.title}' in database! ✓"
+                        onRefresh()
+                    }
+                },
+                onDeletePost = { postId, onDone ->
+                    onDeletePost(postId) { success ->
+                        onDone(success)
+                        notificationFeedback = "Deleted post from database! ✓"
+                        onRefresh()
                     }
                 }
             )
@@ -496,13 +526,17 @@ fun AdminRequestsTab(
 
 @Composable
 fun AdminUploadPostTab(
-    onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit
+    posts: List<PostEntity> = emptyList(),
+    onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit,
+    onUpdatePost: (PostEntity, (Boolean) -> Unit) -> Unit = { _, _ -> },
+    onDeletePost: (String, (Boolean) -> Unit) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var imageUrl by remember { mutableStateOf("") }
+    var uploadedContentUrls by remember { mutableStateOf<List<String>>(emptyList()) }
     var extraImagesInput by remember { mutableStateOf("") }
     var adsLinkUrl by remember { mutableStateOf("") }
     var premiumLinkUrl by remember { mutableStateOf("") }
@@ -511,24 +545,71 @@ fun AdminUploadPostTab(
     var tagsInput by remember { mutableStateOf("Exclusive, VIP, Glamour") }
     var isFree by remember { mutableStateOf(false) }
     var isUploadingImg by remember { mutableStateOf(false) }
+    var isUploadingMulti by remember { mutableStateOf(false) }
     var isPublishing by remember { mutableStateOf(false) }
     var statusBanner by remember { mutableStateOf<String?>(null) }
+    var editingPost by remember { mutableStateOf<PostEntity?>(null) }
 
+    // Cover Image/Video Picker -> Imgchest API
     val coverPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        uri?.let {
+        uri?.let { selectedUri ->
             scope.launch {
                 isUploadingImg = true
-                statusBanner = "Uploading cover image to Imgchest API..."
-                val res = ImgchestUploader.uploadImageDirect(context, it, title.ifBlank { "JUSTFAN Gallery Cover" })
+                statusBanner = "Uploading cover image/video to Imgchest API..."
+                val mime = MediaUploadClient.getMimeType(context, selectedUri)
+                val res = if (mime.startsWith("video/")) {
+                    MediaUploadClient.uploadSingleMedia(context, selectedUri, title.ifBlank { "JUSTFAN Cover Video" })
+                } else {
+                    val imgRes = ImgchestUploader.uploadImageDirect(context, selectedUri, title.ifBlank { "JUSTFAN Gallery Cover" })
+                    if (imgRes.isSuccess) imgRes else MediaUploadClient.uploadSingleMedia(context, selectedUri, title)
+                }
                 isUploadingImg = false
                 if (res.isSuccess) {
                     val url = res.getOrNull().orEmpty()
                     imageUrl = url
-                    statusBanner = "Cover image uploaded to Imgchest: $url ✓"
+                    statusBanner = "Cover media uploaded to Imgchest: $url ✓"
                 } else {
                     statusBanner = "Imgchest upload error: ${res.exceptionOrNull()?.message}"
+                }
+            }
+        }
+    }
+
+    // Multiple Content Images/Videos Picker -> Imgchest API
+    val multiContentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                isUploadingMulti = true
+                statusBanner = "Uploading ${uris.size} content files to Imgchest API..."
+                val imgUris = uris.filter { !MediaUploadClient.getMimeType(context, it).startsWith("video/") }
+                val vidUris = uris.filter { MediaUploadClient.getMimeType(context, it).startsWith("video/") }
+                val newUrls = mutableListOf<String>()
+
+                if (imgUris.isNotEmpty()) {
+                    val imgRes = ImgchestUploader.uploadImagesDirect(context, imgUris, title.ifBlank { "JUSTFAN Content" })
+                    if (imgRes.isSuccess) {
+                        newUrls.addAll(imgRes.getOrNull().orEmpty())
+                    } else {
+                        val fb = MediaUploadClient.uploadMedia(context, imgUris, title)
+                        if (fb.isSuccess) newUrls.addAll(fb.getOrNull()?.groups?.flatMap { it.urls }.orEmpty())
+                    }
+                }
+                if (vidUris.isNotEmpty()) {
+                    val vidRes = MediaUploadClient.uploadMedia(context, vidUris, title.ifBlank { "JUSTFAN Video" })
+                    if (vidRes.isSuccess) newUrls.addAll(vidRes.getOrNull()?.groups?.flatMap { it.urls }.orEmpty())
+                }
+
+                isUploadingMulti = false
+                if (newUrls.isNotEmpty()) {
+                    uploadedContentUrls = (uploadedContentUrls + newUrls).distinct()
+                    if (imageUrl.isBlank()) imageUrl = newUrls.first()
+                    statusBanner = "Uploaded ${newUrls.size} content file(s) via Imgchest API! ✓"
+                } else {
+                    statusBanner = "Failed to upload content files."
                 }
             }
         }
@@ -542,7 +623,7 @@ fun AdminUploadPostTab(
     ) {
         item {
             Text(
-                "Upload New Exclusive Media Gallery",
+                "Create or Manage Media Galleries (CRUD)",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -599,7 +680,7 @@ fun AdminUploadPostTab(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = { coverPickerLauncher.launch("image/*") },
+                    onClick = { coverPickerLauncher.launch("*/*") },
                     enabled = !isUploadingImg,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth().testTag("admin_upload_imgchest_btn")
@@ -607,26 +688,79 @@ fun AdminUploadPostTab(
                     if (isUploadingImg) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Uploading to Imgchest...")
+                        Text("Uploading Cover to Imgchest...")
                     } else {
                         Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Upload Cover Image via Imgchest API")
+                        Text("Upload Cover Image/Video via Imgchest API")
                     }
                 }
 
                 OutlinedTextField(
                     value = imageUrl,
                     onValueChange = { imageUrl = it },
-                    label = { Text("Preview Image/Video URL (Main Thumbnail) *") },
+                    label = { Text("Cover Image/Video URL *") },
                     placeholder = { Text("https://cdn.imgchest.com/...jpg") },
                     modifier = Modifier.fillMaxWidth().testTag("admin_post_image_input")
                 )
 
+                // Multi-Content Images/Videos Upload Button
+                OutlinedButton(
+                    onClick = { multiContentPickerLauncher.launch("*/*") },
+                    enabled = !isUploadingMulti,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("admin_upload_multi_content_btn")
+                ) {
+                    if (isUploadingMulti) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Uploading Content Files to Imgchest...")
+                    } else {
+                        Icon(Icons.Default.Collections, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Upload Multiple Content Images/Videos (${uploadedContentUrls.size} uploaded)")
+                    }
+                }
+
+                if (uploadedContentUrls.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        itemsIndexed(uploadedContentUrls) { idx, url ->
+                            Box(
+                                modifier = Modifier
+                                    .size(68.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                AsyncImage(
+                                    model = url,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                Surface(
+                                    color = DangerRed,
+                                    shape = CircleShape,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(18.dp)
+                                        .clickable {
+                                            uploadedContentUrls = uploadedContentUrls.filterIndexed { i, _ -> i != idx }
+                                        }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove", tint = Color.White, modifier = Modifier.size(11.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = extraImagesInput,
                     onValueChange = { extraImagesInput = it },
-                    label = { Text("Additional Gallery Image/Video URLs (comma-separated)") },
+                    label = { Text("Additional Content Image/Video URLs (comma-separated)") },
                     placeholder = { Text("https://cdn.imgchest.com/1.jpg, https://cdn.imgchest.com/2.jpg") },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -702,18 +836,20 @@ fun AdminUploadPostTab(
         item {
             Button(
                 onClick = {
-                    if (title.isBlank() || imageUrl.isBlank()) {
-                        statusBanner = "Please provide at least a Post Title and Preview Image URL."
+                    val effectiveCover = imageUrl.trim().ifBlank { uploadedContentUrls.firstOrNull().orEmpty() }
+                    if (title.isBlank() || effectiveCover.isBlank()) {
+                        statusBanner = "Please provide at least a Post Title and Cover Image/Video."
                         return@Button
                     }
                     isPublishing = true
                     statusBanner = "Publishing post to Supabase database..."
                     val tags = tagsInput.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     val galleryUrls = buildList {
-                        add(imageUrl.trim())
+                        add(effectiveCover)
+                        uploadedContentUrls.forEach { if (it.isNotBlank()) add(it.trim()) }
                         extraImagesInput.split(",").map { it.trim() }.filter { it.isNotBlank() }.forEach { add(it) }
                     }.distinct()
-                    val resolvedAdsLink = adsLinkUrl.trim().ifBlank { imageUrl.trim() }
+                    val resolvedAdsLink = adsLinkUrl.trim().ifBlank { effectiveCover }
                     val resolvedPremiumLink = premiumLinkUrl.trim().ifBlank { resolvedAdsLink }
                     val resolvedDirectLink = directLinkUrl.trim().ifBlank { resolvedAdsLink }
 
@@ -724,7 +860,7 @@ fun AdminUploadPostTab(
                         description = description.trim().ifBlank {
                             "Explore exclusive high-resolution previews and premium showcase content for ${title.trim()}."
                         },
-                        imageUrl = imageUrl.trim(),
+                        imageUrl = effectiveCover,
                         linkUrl = resolvedAdsLink,
                         premiumLinkUrl = resolvedPremiumLink,
                         directLinkUrl = resolvedDirectLink,
@@ -741,6 +877,7 @@ fun AdminUploadPostTab(
                             title = ""
                             description = ""
                             imageUrl = ""
+                            uploadedContentUrls = emptyList()
                             extraImagesInput = ""
                             adsLinkUrl = ""
                             premiumLinkUrl = ""
@@ -768,5 +905,81 @@ fun AdminUploadPostTab(
                 }
             }
         }
+
+        // Existing Posts CRUD Management List
+        if (posts.isNotEmpty()) {
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Manage Existing Posts (${posts.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            items(posts.take(40), key = { it.id }) { postItem ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            AsyncImage(
+                                model = postItem.imageUrl,
+                                contentDescription = postItem.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(postItem.title, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                                Text(
+                                    "${postItem.contentImages.size} media • ${postItem.clicksCount} clicks",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row {
+                            IconButton(onClick = { editingPost = postItem }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Edit", tint = SuccessGreen)
+                            }
+                            IconButton(onClick = { onDeletePost(postItem.id) {} }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = DangerRed)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (editingPost != null) {
+        PostEditorDialog(
+            initialPost = editingPost,
+            onDismiss = { editingPost = null },
+            onSave = { updated ->
+                onUpdatePost(updated) {
+                    editingPost = null
+                }
+            },
+            onDelete = { id ->
+                onDeletePost(id) {
+                    editingPost = null
+                }
+            }
+        )
     }
 }

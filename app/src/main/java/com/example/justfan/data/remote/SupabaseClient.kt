@@ -173,7 +173,7 @@ object SupabaseClient {
     private fun fetchPostClickCounts(): Map<String, Int> {
         val map = mutableMapOf<String, Int>()
         try {
-            val conn = openConnection("post_click_counts?select=post_id,clicks_count&order=clicks_count.desc&limit=1000", "GET")
+            val conn = openConnection("post_click_counts?select=post_id,count&order=count.desc&limit=1000", "GET")
             if (conn.responseCode in 200..299) {
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
@@ -181,7 +181,7 @@ object SupabaseClient {
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
                     val pid = obj.optString("post_id", "")
-                    val count = obj.optInt("clicks_count", 0)
+                    val count = obj.optInt("count", obj.optInt("clicks_count", 0))
                     if (pid.isNotBlank()) {
                         map[pid] = count
                     }
@@ -315,12 +315,42 @@ object SupabaseClient {
 
     suspend fun recordPostClick(postId: String, userId: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            // Insert click event into post_clicks table (schema: id, post_id) which triggers post_click_counts increment
+            // 1. Insert click event into post_clicks table
             val clickPayload = JSONObject().apply {
                 put("post_id", postId)
+                if (!userId.isNullOrBlank() && userId != "guest_user" && userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                    put("user_id", userId)
+                }
             }
-            val res = executePost("post_clicks", clickPayload.toString())
-            Result.success(res.isSuccess)
+            val clickRes = executePost("post_clicks", clickPayload.toString())
+
+            // 2. Also ensure post_click_counts table is updated directly if trigger didn't increment
+            try {
+                val checkConn = openConnection("post_click_counts?select=post_id,count&post_id=eq.$postId&limit=1", "GET")
+                if (checkConn.responseCode in 200..299) {
+                    val body = checkConn.inputStream.bufferedReader().readText()
+                    checkConn.disconnect()
+                    val arr = JSONArray(body)
+                    if (arr.length() > 0) {
+                        val currentCount = arr.getJSONObject(0).optInt("count", 0)
+                        // If post_clicks failed or didn't auto-increment via trigger, patch count + 1
+                        if (clickRes.isFailure) {
+                            val patchObj = JSONObject().apply { put("count", currentCount + 1) }
+                            executePatch("post_click_counts?post_id=eq.$postId", patchObj.toString())
+                        }
+                    } else if (clickRes.isFailure) {
+                        val postObj = JSONObject().apply {
+                            put("post_id", postId)
+                            put("count", 1)
+                        }
+                        executePost("post_click_counts", postObj.toString())
+                    }
+                } else {
+                    checkConn.disconnect()
+                }
+            } catch (_: Exception) {}
+
+            Result.success(true)
         } catch (e: Exception) {
             Log.w(TAG, "recordPostClick notice", e)
             Result.success(false)
@@ -771,7 +801,36 @@ object SupabaseClient {
         }
     }
 
-    suspend fun fetchRequestQuota(userId: String, deviceId: String, accessToken: String? = null): Result<RequestQuota> = withContext(Dispatchers.IO) {
+    suspend fun fetchRequestQuota(
+        userId: String,
+        deviceId: String,
+        email: String? = null,
+        accessToken: String? = null
+    ): Result<RequestQuota> = withContext(Dispatchers.IO) {
+        var directDeviceCount = 0
+        try {
+            // Count rows in RequestfromApp for this hardware device_id or user
+            val filters = mutableListOf<String>()
+            if (deviceId.isNotBlank()) filters.add("device_id.eq.$deviceId")
+            if (userId.isNotBlank() && userId != "guest_user" && userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                filters.add("user_id.eq.$userId")
+            }
+            if (!email.isNullOrBlank()) {
+                filters.add("email.eq.${email.trim().lowercase()}")
+            }
+            if (filters.isNotEmpty()) {
+                val orClause = filters.joinToString(",")
+                val conn = openConnection("RequestfromApp?select=id,device_id,email&or=($orClause)", "GET")
+                if (conn.responseCode in 200..299) {
+                    val arr = JSONArray(conn.inputStream.bufferedReader().readText())
+                    directDeviceCount = arr.length()
+                }
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchRequestQuota direct count notice", e)
+        }
+
         try {
             val endpoint = "$baseUrl/rest/v1/rpc/get_request_quota"
             val payload = JSONObject().apply {
@@ -790,21 +849,78 @@ object SupabaseClient {
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val json = JSONObject(body)
+                    val rpcUsed = json.optInt("used", 0)
+                    val limit = json.optInt("limit", 3)
+                    val effectiveUsed = maxOf(rpcUsed, directDeviceCount)
+                    val remaining = (limit - effectiveUsed).coerceAtLeast(0)
                     Result.success(
                         RequestQuota(
                             unlimited = json.optBoolean("unlimited", false),
-                            limit = json.optInt("limit", 3),
-                            used = json.optInt("used", 0),
-                            remaining = json.optInt("remaining", 3),
+                            limit = limit,
+                            used = effectiveUsed,
+                            remaining = remaining,
                             resetsAt = json.optString("resets_at", null)
                         )
                     )
                 } else {
-                    Result.success(RequestQuota(unlimited = false, limit = 3, used = 0, remaining = 3))
+                    val remaining = (3 - directDeviceCount).coerceAtLeast(0)
+                    Result.success(RequestQuota(unlimited = false, limit = 3, used = directDeviceCount, remaining = remaining))
                 }
             }
         } catch (e: Exception) {
-            Result.success(RequestQuota(unlimited = false, limit = 3, used = 0, remaining = 3))
+            val remaining = (3 - directDeviceCount).coerceAtLeast(0)
+            Result.success(RequestQuota(unlimited = false, limit = 3, used = directDeviceCount, remaining = remaining))
+        }
+    }
+
+    suspend fun syncDeviceBiometricToSupabase(
+        userId: String,
+        email: String,
+        deviceId: String,
+        manufacturer: String,
+        model: String,
+        osVersion: String,
+        biometricEnabled: Boolean,
+        accessToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            // 1. Update auth user_metadata if user has a valid accessToken
+            if (!accessToken.isNullOrBlank() && accessToken != apiKey) {
+                try {
+                    val userPayload = JSONObject().apply {
+                        put("data", JSONObject().apply {
+                            put("device_id", deviceId)
+                            put("device_manufacturer", manufacturer)
+                            put("device_model", model)
+                            put("os_version", osVersion)
+                            put("biometric_enabled", biometricEnabled)
+                            put("biometric_verified_at", Instant.now().toString())
+                        })
+                    }
+                    val req = Request.Builder()
+                        .url("$baseUrl/auth/v1/user")
+                        .put(userPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                        .header("apikey", apiKey)
+                        .header("Authorization", "Bearer $accessToken")
+                        .header("Content-Type", "application/json")
+                        .build()
+                    okHttpClient.newCall(req).execute().close()
+                } catch (_: Exception) {}
+            }
+
+            // 2. Also update any existing RequestfromApp rows for this email/userId that lack a hardware device_id
+            if (email.isNotBlank()) {
+                val patchPayload = JSONObject().apply {
+                    put("device_id", deviceId)
+                }
+                executePatch("RequestfromApp?email=eq.${email.trim().lowercase()}", patchPayload.toString(), accessToken)
+            }
+
+            Log.i(TAG, "Synced biometric & device details ($manufacturer $model / $deviceId) for $email to Supabase")
+            Result.success(true)
+        } catch (e: Exception) {
+            Log.w(TAG, "syncDeviceBiometricToSupabase warning", e)
+            Result.success(false)
         }
     }
 

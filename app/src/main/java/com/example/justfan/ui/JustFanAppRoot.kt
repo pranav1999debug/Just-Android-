@@ -31,9 +31,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.ActivityEntity
-import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.ui.components.AuthDialog
+import com.example.justfan.ui.components.BiometricSetupDialog
 import com.example.justfan.ui.components.MoreBottomSheet
 import com.example.justfan.ui.components.TopHeader
 import com.example.justfan.ui.screens.AdminScreen
@@ -76,6 +76,8 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     val favorites by viewModel.favorites.collectAsState()
     val quota by viewModel.requestQuota.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val deviceBiometricInfo by viewModel.deviceBiometricInfo.collectAsState()
+    val showBiometricPromptAfterLogin by viewModel.showBiometricPromptAfterLogin.collectAsState()
 
     val favoriteIds = remember(favorites) { favorites.map { it.postId }.toSet() }
 
@@ -87,7 +89,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     var globalSearchQuery by remember { mutableStateOf("") }
     var requestIdeaPreFill by remember { mutableStateOf("") }
 
-    val isOwnerOrAdmin = userProfile.isAdmin || userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true)
+    val isOwnerOrAdmin = userProfile.isSignedIn && (userProfile.isAdmin || userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true))
     val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
             userProfile.tier.equals("pro", ignoreCase = true) || isOwnerOrAdmin
 
@@ -112,7 +114,12 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     }
 
     val deliveredRequests = remember(requests) {
-        requests.filter { it.status.equals("fulfilled", ignoreCase = true) || it.status.equals("delivered", ignoreCase = true) }
+        requests.filter {
+            it.status.equals("fulfilled", ignoreCase = true) ||
+                    it.status.equals("delivered", ignoreCase = true) ||
+                    it.status.equals("replied", ignoreCase = true) ||
+                    it.status.equals("completed", ignoreCase = true)
+        }
     }
 
     JustFanTheme(
@@ -218,10 +225,15 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             posts = posts,
                             favoriteIds = favoriteIds,
                             isPaidOrLegendary = isPaidOrLegendary,
+                            requests = requests,
                             externalSearchQuery = globalSearchQuery,
+                            onViewAllTrending = { navigateRoot(AppScreen.Trending) },
                             onPostClick = {
                                 viewModel.recordPostClick(it.id)
                                 navigateTo(AppScreen.PostDetail(it))
+                            },
+                            onDownloadClick = {
+                                viewModel.recordDownloadClick(it.id)
                             },
                             onToggleFavorite = { viewModel.toggleFavorite(it) }
                         )
@@ -253,6 +265,9 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     viewModel.recordPostClick(it.id)
                                     navigateTo(AppScreen.PostDetail(it))
                                 }
+                            },
+                            onDownloadClick = { postId ->
+                                viewModel.recordDownloadClick(postId)
                             }
                         )
                         is AppScreen.Requests -> RequestScreen(
@@ -260,17 +275,26 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             quota = quota,
                             requests = requests,
                             initialIdea = requestIdeaPreFill,
+                            deviceBiometricInfo = deviceBiometricInfo,
                             onSubmitRequest = { name, email, telegram, message, image ->
                                 viewModel.createRequest(name, email, telegram, message, image) { success, _ ->
                                     if (success) requestIdeaPreFill = ""
                                 }
-                            }
+                            },
+                            onBiometricVerified = { info ->
+                                viewModel.completeBiometricDeviceSetup(info)
+                            },
+                            onRequestSignIn = { showAuthDialog = true },
+                            onNavigateToPricing = { navigateTo(AppScreen.Membership) }
                         )
                         is AppScreen.Saved -> FavoritesScreen(
                             allPosts = posts,
                             favoriteIds = favoriteIds,
                             isPaidOrLegendary = isPaidOrLegendary,
-                            onPostClick = { navigateTo(AppScreen.PostDetail(it)) },
+                            onPostClick = {
+                                viewModel.recordPostClick(it.id)
+                                navigateTo(AppScreen.PostDetail(it))
+                            },
                             onToggleFavorite = { viewModel.toggleFavorite(it) }
                         )
                         is AppScreen.Gallery -> GalleryScreen(
@@ -293,7 +317,10 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                 )
                             ),
                             onSelectPost = { postId ->
-                                posts.find { it.id == postId }?.let { navigateTo(AppScreen.PostDetail(it)) }
+                                posts.find { it.id == postId }?.let {
+                                    viewModel.recordPostClick(it.id)
+                                    navigateTo(AppScreen.PostDetail(it))
+                                }
                             }
                         )
                         is AppScreen.Admin -> {
@@ -301,6 +328,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                 AdminScreen(
                                     users = users,
                                     requests = requests,
+                                    posts = posts,
                                     onUpdateUserTier = { idOrEmail, tier ->
                                         viewModel.updateUserTier(idOrEmail, tier)
                                     },
@@ -311,6 +339,12 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     onCreatePost = { post, onResult ->
                                         viewModel.createPost(post, onResult)
                                     },
+                                    onUpdatePost = { post, onResult ->
+                                        viewModel.updatePost(post, onResult)
+                                    },
+                                    onDeletePost = { postId, onResult ->
+                                        viewModel.deletePost(postId, onResult)
+                                    },
                                     onRefresh = { viewModel.refreshAll() }
                                 )
                             } else {
@@ -318,7 +352,9 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     posts = posts,
                                     favoriteIds = favoriteIds,
                                     isPaidOrLegendary = isPaidOrLegendary,
+                                    requests = requests,
                                     externalSearchQuery = globalSearchQuery,
+                                    onViewAllTrending = { navigateRoot(AppScreen.Trending) },
                                     onPostClick = {
                                         viewModel.recordPostClick(it.id)
                                         navigateTo(AppScreen.PostDetail(it))
@@ -345,6 +381,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             comments = emptyList(),
                             isFavorite = scr.post.id in favoriteIds,
                             canAccessDirectLink = isPaidOrLegendary,
+                            isAdmin = isOwnerOrAdmin,
                             onNavigateToPricing = { navigateTo(AppScreen.Membership) },
                             onBack = { navigateBack() },
                             onToggleFavorite = { viewModel.toggleFavorite(scr.post.id) },
@@ -354,6 +391,12 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     viewModel.recordPostClick(it.id)
                                     navigateTo(AppScreen.PostDetail(it))
                                 }
+                            },
+                            onUpdatePost = { updatedPost, onDone ->
+                                viewModel.updatePost(updatedPost, onDone)
+                            },
+                            onDeletePost = { postId, onDone ->
+                                viewModel.deletePost(postId, onDone)
                             },
                             onDownloadClick = { postId, _ ->
                                 viewModel.recordDownloadClick(postId)
@@ -420,6 +463,24 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                 onUpgradeClick = {
                     showAuthDialog = false
                     navigateTo(AppScreen.Membership)
+                },
+                onBiometricSignIn = { refreshToken, email, onResult ->
+                    viewModel.signInWithGoogle(
+                        email = email,
+                        name = email.substringBefore("@"),
+                        refreshToken = refreshToken
+                    )
+                    onResult(true, null)
+                }
+            )
+
+            // Post-Login Biometric & Device Tracking Enrollment Prompt
+            BiometricSetupDialog(
+                userProfile = userProfile,
+                isOpen = showBiometricPromptAfterLogin,
+                onDismiss = { viewModel.dismissBiometricPrompt() },
+                onBiometricVerified = { info ->
+                    viewModel.completeBiometricDeviceSetup(info)
                 }
             )
         }

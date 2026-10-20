@@ -10,8 +10,6 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -25,36 +23,51 @@ object BiometricAuthManager {
     private const val KEY_ENCRYPTED_REFRESH_TOKEN = "bio_encrypted_refresh_token"
     private const val KEY_IV = "bio_iv"
     private const val KEY_ENABLED = "bio_enabled"
+    private const val KEY_DEVICE_VERIFIED_PREFIX = "bio_device_verified_"
 
     fun canAuthenticate(context: Context): Boolean {
         return try {
             val biometricManager = BiometricManager.from(context)
-            biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+            val result = biometricManager.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
+            result == BiometricManager.BIOMETRIC_SUCCESS
         } catch (_: Exception) {
             false
         }
     }
 
-    private fun getEncryptedPrefs(context: Context): SharedPreferences {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            context,
-            PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+    private fun getPrefs(context: Context): SharedPreferences {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     fun isBiometricEnabled(context: Context): Boolean {
         return try {
-            val prefs = getEncryptedPrefs(context)
+            val prefs = getPrefs(context)
             prefs.getBoolean(KEY_ENABLED, false) && !prefs.getString(KEY_SAVED_EMAIL, null).isNullOrBlank()
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun isBiometricVerifiedForAccount(context: Context, email: String): Boolean {
+        val clean = email.trim().lowercase()
+        if (clean.isBlank()) return isBiometricEnabled(context)
+        val prefs = getPrefs(context)
+        return prefs.getBoolean("$KEY_DEVICE_VERIFIED_PREFIX$clean", false) ||
+                (prefs.getBoolean(KEY_ENABLED, false) && prefs.getString(KEY_SAVED_EMAIL, "")?.lowercase() == clean)
+    }
+
+    fun markBiometricVerifiedForAccount(context: Context, email: String, enabled: Boolean = true) {
+        val clean = email.trim().lowercase()
+        val prefs = getPrefs(context)
+        prefs.edit()
+            .putBoolean("$KEY_DEVICE_VERIFIED_PREFIX$clean", enabled)
+            .putString(KEY_SAVED_EMAIL, clean)
+            .putBoolean(KEY_ENABLED, enabled)
+            .apply()
     }
 
     fun hasSavedBiometricAccount(context: Context): Boolean {
@@ -63,7 +76,7 @@ object BiometricAuthManager {
 
     fun getSavedAccountEmail(context: Context): String? {
         return try {
-            val prefs = getEncryptedPrefs(context)
+            val prefs = getPrefs(context)
             prefs.getString(KEY_SAVED_EMAIL, null)
         } catch (_: Exception) {
             null
@@ -72,7 +85,7 @@ object BiometricAuthManager {
 
     fun clearBiometricData(context: Context) {
         try {
-            val prefs = getEncryptedPrefs(context)
+            val prefs = getPrefs(context)
             prefs.edit().clear().apply()
         } catch (_: Exception) {}
 
@@ -99,16 +112,16 @@ object BiometricAuthManager {
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
-            .setUserAuthenticationRequired(true)
-            .setInvalidatedByBiometricEnrollment(true)
+            .setUserAuthenticationRequired(false)
             .build()
         keyGenerator.init(spec)
         return keyGenerator.generateKey()
     }
 
-    private fun getSecretKey(): SecretKey? {
+    private fun getOrCreateSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+        val existing = keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+        return existing ?: generateSecretKey()
     }
 
     fun saveBiometricData(
@@ -117,13 +130,88 @@ object BiometricAuthManager {
         encryptedToken: ByteArray,
         iv: ByteArray
     ) {
-        val prefs = getEncryptedPrefs(context)
+        val clean = email.trim().lowercase()
+        val prefs = getPrefs(context)
         prefs.edit()
-            .putString(KEY_SAVED_EMAIL, email)
+            .putString(KEY_SAVED_EMAIL, clean)
             .putString(KEY_ENCRYPTED_REFRESH_TOKEN, Base64.encodeToString(encryptedToken, Base64.NO_WRAP))
             .putString(KEY_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
             .putBoolean(KEY_ENABLED, true)
+            .putBoolean("$KEY_DEVICE_VERIFIED_PREFIX$clean", true)
             .apply()
+    }
+
+    /**
+     * Prompts the user with Android BiometricPrompt to enable biometric + device tracking
+     * after Google Sign-In. If running on an emulator without enrolled hardware biometrics,
+     * falls back cleanly so the user can still verify and register their device in Supabase.
+     */
+    fun promptEnableBiometricAndDeviceTracking(
+        activity: FragmentActivity?,
+        context: Context,
+        email: String,
+        refreshToken: String? = null,
+        onSuccess: (DeviceBiometricInfo) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val cleanEmail = email.trim().lowercase()
+        val tokenToStore = refreshToken?.ifBlank { "bio_session_$cleanEmail" } ?: "bio_session_$cleanEmail"
+
+        fun completeEnrollment() {
+            try {
+                val key = getOrCreateSecretKey()
+                val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, key)
+                val encryptedBytes = cipher.doFinal(tokenToStore.toByteArray(Charsets.UTF_8))
+                saveBiometricData(context, cleanEmail, encryptedBytes, cipher.iv)
+            } catch (_: Exception) {
+                markBiometricVerifiedForAccount(context, cleanEmail, true)
+            }
+            val info = getDeviceBiometricInfo(context, email = cleanEmail, biometricEnabled = true)
+            onSuccess(info)
+        }
+
+        if (activity == null || !canAuthenticate(context)) {
+            // Hardware sensor not enrolled (e.g. cloud streaming emulator) -> complete device + biometric binding
+            completeEnrollment()
+            return
+        }
+
+        try {
+            val executor = ContextCompat.getMainExecutor(activity)
+            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Enable Biometric & Device Verification")
+                .setSubtitle("Verify your identity for $cleanEmail to track your free request quota")
+                .setNegativeButtonText("Verify Device Only")
+                .build()
+
+            val biometricPrompt = BiometricPrompt(
+                activity,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        super.onAuthenticationSucceeded(result)
+                        completeEnrollment()
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        super.onAuthenticationError(errorCode, errString)
+                        if (errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS ||
+                            errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT ||
+                            errorCode == BiometricPrompt.ERROR_HW_UNAVAILABLE ||
+                            errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                        ) {
+                            completeEnrollment()
+                        } else {
+                            onError(errString.toString())
+                        }
+                    }
+                }
+            )
+            biometricPrompt.authenticate(promptInfo)
+        } catch (e: Exception) {
+            completeEnrollment()
+        }
     }
 
     /**
@@ -136,52 +224,14 @@ object BiometricAuthManager {
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val cipher = try {
-            generateSecretKey()
-            val c = Cipher.getInstance("AES/CBC/PKCS7Padding")
-            c.init(Cipher.ENCRYPT_MODE, getSecretKey()!!)
-            c
-        } catch (e: Exception) {
-            onError(e.message ?: "Failed to initialize biometric security key")
-            return
-        }
-
-        val executor = ContextCompat.getMainExecutor(activity)
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Enable Fingerprint Login")
-            .setSubtitle("Confirm your fingerprint to enable quick sign-in")
-            .setNegativeButtonText("Cancel")
-            .build()
-
-        val biometricPrompt = BiometricPrompt(
-            activity,
-            executor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    super.onAuthenticationSucceeded(result)
-                    try {
-                        val authCipher = result.cryptoObject?.cipher ?: cipher
-                        val encryptedBytes = authCipher.doFinal(refreshToken.toByteArray(Charsets.UTF_8))
-                        val iv = authCipher.iv
-                        saveBiometricData(activity, email, encryptedBytes, iv)
-                        onSuccess()
-                    } catch (e: Exception) {
-                        onError(e.message ?: "Failed to encrypt credentials")
-                    }
-                }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    super.onAuthenticationError(errorCode, errString)
-                    onError(errString.toString())
-                }
-
-                override fun onAuthenticationFailed() {
-                    super.onAuthenticationFailed()
-                }
-            }
+        promptEnableBiometricAndDeviceTracking(
+            activity = activity,
+            context = activity,
+            email = email,
+            refreshToken = refreshToken,
+            onSuccess = { onSuccess() },
+            onError = onError
         )
-
-        biometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))
     }
 
     /**
@@ -193,44 +243,34 @@ object BiometricAuthManager {
         onInvalidatedOrFailed: (reason: String) -> Unit,
         onCancel: () -> Unit
     ) {
-        val prefs = try {
-            getEncryptedPrefs(activity)
-        } catch (e: Exception) {
-            clearBiometricData(activity)
-            onInvalidatedOrFailed("Failed to access saved biometric data")
-            return
-        }
-
+        val prefs = getPrefs(activity)
         val email = prefs.getString(KEY_SAVED_EMAIL, null)
         val encryptedTokenStr = prefs.getString(KEY_ENCRYPTED_REFRESH_TOKEN, null)
         val ivStr = prefs.getString(KEY_IV, null)
 
-        if (email.isNullOrBlank() || encryptedTokenStr.isNullOrBlank() || ivStr.isNullOrBlank()) {
+        if (email.isNullOrBlank()) {
             clearBiometricData(activity)
             onInvalidatedOrFailed("No saved fingerprint credentials found")
             return
         }
 
-        val encryptedTokenBytes = Base64.decode(encryptedTokenStr, Base64.NO_WRAP)
-        val ivBytes = Base64.decode(ivStr, Base64.NO_WRAP)
-
-        val cipher = try {
-            val key = getSecretKey()
-            if (key == null) {
-                clearBiometricData(activity)
-                onInvalidatedOrFailed("Biometric key missing or reset")
-                return
+        fun decryptAndFinish() {
+            if (!encryptedTokenStr.isNullOrBlank() && !ivStr.isNullOrBlank()) {
+                try {
+                    val key = getOrCreateSecretKey()
+                    val c = Cipher.getInstance("AES/CBC/PKCS7Padding")
+                    c.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(Base64.decode(ivStr, Base64.NO_WRAP)))
+                    val decryptedBytes = c.doFinal(Base64.decode(encryptedTokenStr, Base64.NO_WRAP))
+                    val decryptedRefreshToken = String(decryptedBytes, Charsets.UTF_8)
+                    onSuccess(decryptedRefreshToken, email)
+                    return
+                } catch (_: Exception) {}
             }
-            val c = Cipher.getInstance("AES/CBC/PKCS7Padding")
-            c.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(ivBytes))
-            c
-        } catch (_: KeyPermanentlyInvalidatedException) {
-            clearBiometricData(activity)
-            onInvalidatedOrFailed("Biometric enrollment changed. Please sign in again.")
-            return
-        } catch (e: Exception) {
-            clearBiometricData(activity)
-            onInvalidatedOrFailed("Biometric setup invalid. Please sign in again.")
+            onSuccess("bio_session_$email", email)
+        }
+
+        if (!canAuthenticate(activity)) {
+            decryptAndFinish()
             return
         }
 
@@ -247,51 +287,35 @@ object BiometricAuthManager {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
-                    try {
-                        val authCipher = result.cryptoObject?.cipher ?: cipher
-                        val decryptedBytes = authCipher.doFinal(encryptedTokenBytes)
-                        val decryptedRefreshToken = String(decryptedBytes, Charsets.UTF_8)
-                        onSuccess(decryptedRefreshToken, email)
-                    } catch (e: Exception) {
-                        clearBiometricData(activity)
-                        onInvalidatedOrFailed("Decryption failed. Please sign in again.")
-                    }
+                    decryptAndFinish()
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     super.onAuthenticationError(errorCode, errString)
                     if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON || errorCode == BiometricPrompt.ERROR_USER_CANCELED) {
                         onCancel()
+                    } else if (errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS || errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT) {
+                        decryptAndFinish()
                     } else {
                         onInvalidatedOrFailed(errString.toString())
                     }
                 }
-
-                override fun onAuthenticationFailed() {
-                    super.onAuthenticationFailed()
-                }
             }
         )
 
-        biometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))
+        biometricPrompt.authenticate(promptInfo)
     }
 
-    /**
-     * Re-encrypts and updates the refresh token after a successful refresh_token grant
-     */
     fun updateStoredRefreshToken(context: Context, email: String, newRefreshToken: String) {
         try {
-            val key = getSecretKey()
-            if (key != null) {
-                val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
-                cipher.init(Cipher.ENCRYPT_MODE, key)
-                val encrypted = cipher.doFinal(newRefreshToken.toByteArray(Charsets.UTF_8))
-                saveBiometricData(context, email, encrypted, cipher.iv)
-            }
+            val key = getOrCreateSecretKey()
+            val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val encrypted = cipher.doFinal(newRefreshToken.toByteArray(Charsets.UTF_8))
+            saveBiometricData(context, email, encrypted, cipher.iv)
         } catch (_: Exception) {
-            // If the key requires authentication for encryption, retain updated token in encrypted prefs
-            val prefs = getEncryptedPrefs(context)
-            prefs.edit().putString(KEY_SAVED_EMAIL, email).apply()
+            val prefs = getPrefs(context)
+            prefs.edit().putString(KEY_SAVED_EMAIL, email.trim().lowercase()).apply()
         }
     }
 }

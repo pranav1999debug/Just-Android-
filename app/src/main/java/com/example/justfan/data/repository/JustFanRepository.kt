@@ -12,6 +12,10 @@ import com.example.justfan.data.model.UserEntity
 import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
 import com.example.justfan.data.remote.SupabaseClient
+import com.example.justfan.util.BiometricAuthManager
+import com.example.justfan.util.DeviceBiometricInfo
+import com.example.justfan.util.getDeviceBiometricInfo
+import com.example.justfan.util.getDeviceId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,11 +55,24 @@ class JustFanRepository(private val context: Context) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _deviceBiometricInfo = MutableStateFlow(
+        getDeviceBiometricInfo(
+            context = context,
+            email = _userProfile.value.email,
+            biometricEnabled = BiometricAuthManager.isBiometricVerifiedForAccount(context, _userProfile.value.email)
+        )
+    )
+    val deviceBiometricInfo: StateFlow<DeviceBiometricInfo> = _deviceBiometricInfo.asStateFlow()
+
+    private val _showBiometricPromptAfterLogin = MutableStateFlow(false)
+    val showBiometricPromptAfterLogin: StateFlow<Boolean> = _showBiometricPromptAfterLogin.asStateFlow()
+
     private val validThemeVariants = setOf("cyan", "purple", "crimson", "emerald", "gold", "rose")
 
     init {
         scope.launch {
             syncData()
+            fetchRequestQuota()
             val current = _userProfile.value
             if (current.isSignedIn && current.id != "guest_user") {
                 syncUserDataOnLogin(current)
@@ -347,15 +364,45 @@ class JustFanRepository(private val context: Context) {
 
     suspend fun fetchRequestQuota(): RequestQuota {
         val current = _userProfile.value
-        if (current.tier.equals("legendary", ignoreCase = true) || current.isAdmin) {
+        val hardwareDeviceId = getDeviceId(context)
+        if (current.tier.equals("legendary", ignoreCase = true) || current.tier.equals("pro", ignoreCase = true) || current.isAdmin) {
             val unlimited = RequestQuota(unlimited = true, limit = 9999, used = 0, remaining = 9999)
             _requestQuota.value = unlimited
             return unlimited
         }
-        val quotaResult = SupabaseClient.fetchRequestQuota(current.id, "device_app", current.accessToken)
+        val quotaResult = SupabaseClient.fetchRequestQuota(
+            userId = current.id,
+            deviceId = hardwareDeviceId,
+            email = current.email,
+            accessToken = current.accessToken
+        )
         val quota = quotaResult.getOrDefault(RequestQuota(unlimited = false, limit = 3, used = 0, remaining = 3))
         _requestQuota.value = quota
         return quota
+    }
+
+    fun dismissBiometricPrompt() {
+        _showBiometricPromptAfterLogin.value = false
+    }
+
+    fun completeBiometricDeviceSetup(info: DeviceBiometricInfo) {
+        _deviceBiometricInfo.value = info
+        _showBiometricPromptAfterLogin.value = false
+        val current = _userProfile.value
+        scope.launch {
+            val activeToken = ensureValidAccessToken(current)
+            SupabaseClient.syncDeviceBiometricToSupabase(
+                userId = current.id,
+                email = current.email.ifBlank { info.userEmail },
+                deviceId = info.deviceId,
+                manufacturer = info.manufacturer,
+                model = info.model,
+                osVersion = info.osVersion,
+                biometricEnabled = info.biometricEnabled,
+                accessToken = activeToken
+            )
+            fetchRequestQuota()
+        }
     }
 
     suspend fun updateUserTier(userId: String, newTier: String) {
@@ -389,6 +436,18 @@ class JustFanRepository(private val context: Context) {
 
     suspend fun createRequest(name: String, email: String, telegram: String?, message: String, imageUrl: String?): Result<Boolean> {
         val current = _userProfile.value
+        val hardwareDeviceId = getDeviceId(context)
+        val isPaidOrLegendary = current.tier.equals("legendary", ignoreCase = true) ||
+                current.tier.equals("pro", ignoreCase = true) || current.isAdmin
+
+        // Enforce 3 free requests per device for free users
+        if (!isPaidOrLegendary) {
+            val currentQuota = fetchRequestQuota()
+            if (currentQuota.used >= 3) {
+                return Result.failure(Exception("Device limit reached (3/3 free requests used on this device). Upgrade to Pro or Legendary for unlimited requests."))
+            }
+        }
+
         val res = SupabaseClient.createRequest(
             name = name,
             email = email,
@@ -396,7 +455,7 @@ class JustFanRepository(private val context: Context) {
             message = message,
             imageUrl = imageUrl,
             userId = if (current.isSignedIn) current.id else null,
-            deviceId = "device_app"
+            deviceId = hardwareDeviceId
         )
         if (res.isSuccess) {
             val newEntity = RequestEntity(
@@ -411,11 +470,18 @@ class JustFanRepository(private val context: Context) {
                 createdAt = System.currentTimeMillis()
             )
             requestDao.insertRequest(newEntity)
+            fetchRequestQuota()
         }
         return res
     }
 
+    private fun isCurrentUserAdmin(): Boolean {
+        val current = _userProfile.value
+        return current.isSignedIn && (current.isAdmin || current.email.equals("reytherapper12@gmail.com", ignoreCase = true))
+    }
+
     suspend fun updateRequestStatus(id: String, status: String, link: String?, reason: String? = null) {
+        if (!isCurrentUserAdmin()) return
         requestDao.updateStatus(id, status, link, reason)
         scope.launch {
             val token = ensureValidAccessToken(_userProfile.value)
@@ -428,6 +494,7 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun deleteRequest(id: String) {
+        if (!isCurrentUserAdmin()) return
         requestDao.deleteRequest(id)
         scope.launch {
             val token = ensureValidAccessToken(_userProfile.value)
@@ -457,6 +524,9 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun createPost(post: PostEntity): Result<Boolean> {
+        if (!isCurrentUserAdmin()) {
+            return Result.failure(Exception("Only admin can create posts"))
+        }
         // Always insert into local Room DB immediately so UI reflects the new post
         postDao.insertPost(post)
         val token = ensureValidAccessToken(_userProfile.value)
@@ -465,18 +535,27 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun updatePost(post: PostEntity): Result<Boolean> {
+        if (!isCurrentUserAdmin()) {
+            return Result.failure(Exception("Only admin can edit posts"))
+        }
         postDao.insertPost(post)
         val token = ensureValidAccessToken(_userProfile.value)
         return SupabaseClient.updatePost(post, token)
     }
 
     suspend fun deletePost(postId: String): Result<Boolean> {
+        if (!isCurrentUserAdmin()) {
+            return Result.failure(Exception("Only admin can delete posts"))
+        }
         postDao.deletePost(postId)
         val token = ensureValidAccessToken(_userProfile.value)
         return SupabaseClient.deletePost(postId, token)
     }
 
     suspend fun setUserBlocked(userId: String, isBlocked: Boolean): Result<Boolean> {
+        if (!isCurrentUserAdmin()) {
+            return Result.failure(Exception("Only admin can modify user status"))
+        }
         val status = if (isBlocked) "Suspended" else "Active"
         userDao.updateUserStatus(userId, status)
         val token = ensureValidAccessToken(_userProfile.value)
@@ -519,6 +598,13 @@ class JustFanRepository(private val context: Context) {
         )
         _userProfile.value = user
         saveProfileToPrefs(user)
+        val alreadyVerified = BiometricAuthManager.isBiometricVerifiedForAccount(context, cleanEmail)
+        _deviceBiometricInfo.value = getDeviceBiometricInfo(context, cleanEmail, alreadyVerified)
+        if (!alreadyVerified) {
+            _showBiometricPromptAfterLogin.value = true
+        } else {
+            completeBiometricDeviceSetup(_deviceBiometricInfo.value)
+        }
         syncUserDataOnLogin(user)
         return user
     }

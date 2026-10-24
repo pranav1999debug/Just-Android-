@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to move manual Membership Plan upgrades exclusively to the Admin Dashboard for targeting specific users (removing unverified self-upgrade buttons from the public Membership page) and to remove the top FREE/PREMIUM and DIRECT/VIP overlay badges from Home page post cards so cover images remain clean and unobstructed.",
-  "updatedAt":  "2026-10-24T15:36:48.505269562Z",
+  "summary":  "Implementation plan to fix the Admin Dashboard Manual Membership Plan Upgrade so tier changes persist reliably in the remote Supabase database and survive app uninstall and reinstall.",
+  "updatedAt":  "2026-10-24T16:52:26.640742660Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -55,9 +55,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.updateWallpaper(wallpaperUri, dim)
     }
 
-    fun updateUserTier(userId: String, newTier: String) {
+    fun updateUserTier(
+        userId: String,
+        newTier: String,
+        emailHint: String? = null,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
         viewModelScope.launch {
-            repository.updateUserTier(userId, newTier)
+            val res = repository.updateUserTier(userId, newTier, emailHint)
+            if (res.isSuccess) {
+                onResult(true, null)
+            } else {
+                onResult(false, res.exceptionOrNull()?.message)
+            }
         }
     }
 

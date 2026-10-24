@@ -1,48 +1,50 @@
-# Admin-Only User Membership Plan Upgrade & Clean Home Post Card Covers
+# Persistent Supabase Sync for Admin Manual Membership Plan Upgrades
 
-This update moves manual Membership Plan tier upgrades (`Free`, `Pro`, `Legendary`) exclusively into the **Admin Dashboard** so regular users cannot self-upgrade without payment, and removes the top `PREMIUM` / `FREE` and `DIRECT` / `VIP` badges from Home page post cards so cover images are never obstructed.
+Fix the **Manual Membership Plan Upgrade (Specific User)** workflow in the **Admin Dashboard (`Users` tab)** so that upgrading or changing any subscriber's plan (`Free`, `Pro`, or `Legendary`) is durably written to the remote Supabase database and automatically restored even after uninstalling and reinstalling the app.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> - **Admin-Only Manual Membership Plan Upgrade**: Regular users on the **Membership Plans** page can only upgrade via **PayPal Checkout** or **Google Pay / UPI QR + Payment Screenshot Verification**. All manual tier-upgrade controls are moved exclusively to the **Admin Dashboard**, allowing the admin to target any specific user by email, user ID, or subscriber list card.
-> - **Unobstructed Home Post Card Cover Images**: The `PREMIUM` / `FREE` badge and `DIRECT` / `VIP` download pill are removed from the top overlay of Home page post cards so the cover artwork is completely clean.
+> **Root Cause Identified**:
+> 1. **Foreign Key (`auth.users`) & RLS Rejections on `subscriptions` / `profiles`**: When a subscriber signs in with Google (or is added by email in the Admin Dashboard), their client-generated UUID does not exist in Supabase's `auth.users` table. As a result, `POST /rest/v1/subscriptions` fails with an `auth.users` foreign-key constraint error, while `PATCH /rest/v1/subscriptions` returns HTTP `200 OK` with an empty array `[]` (0 rows updated).
+> 2. **False-Positive `[]` Patch Success**: `executePatch` previously treated any `200 OK` response—even an empty `[]` array affecting 0 rows—as a success, showing a green confirmation banner in the Admin UI even when nothing was saved in Supabase.
+> 3. **Solution — Dual Remote Persistence & Verified Row Writes**: In addition to updating `subscriptions` and `profiles` (and verifying that returned JSON arrays are non-empty), `updateUserTier` will persist a foreign-key-free `[TIER_ASSIGNMENT]` ledger record in Supabase (`RequestfromApp` with `user_id = null` and `email = <subscriber_email>`) so that any subscriber's upgraded tier is 100% stored in Supabase and restored after app uninstall/reinstall.
+
+- **Confirmed Decision 1**: Only the Admin (`reytherapper12@gmail.com`) can upgrade or modify a user's Membership Plan from the **Admin Dashboard**.
+- **Confirmed Decision 2**: Upgraded tiers (`Pro` with 31-day expiration, `Legendary` with lifetime access, or `Free`) must persist in the remote Supabase database across app uninstalls, reinstalls, and logins by email or user ID.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**:
-  1. **Strict Payment Gate on Public Membership Page**: Removes the self-service manual tier switcher and manual upgrade buttons from the public Membership screen so non-admin users cannot bypass payment.
-  2. **Admin Dashboard Membership Plan Upgrade Panel**: Adds a dedicated **Manual Membership Plan Upgrade** panel inside the Admin Dashboard (`Users` tab) where the admin can either type/paste any user's email address or select a subscriber from the list and immediately assign `Free`, `Pro (31 Days)`, or `Legendary (Lifetime)`. Also improves user list syncing so every account from `profiles`, `subscriptions`, `user_devices`, and `RequestfromApp` appears in the Admin Dashboard.
-  3. **Clean Home Page Post Cards**: Removes the `FREE` / `PREMIUM` badge and `DIRECT` / `VIP` download button from the top header overlay of the latest post cards on the Home screen so cover images are displayed cleanly.
-- **Target Audience / Persona**: Creators/Admins managing subscriber tiers and fans browsing gallery cover art on the Home feed.
-- **Key Value**: Prevents unauthorized free tier upgrades while giving the admin a reliable per-user upgrade tool, and elevates the visual presentation of gallery covers on the Home feed.
+- **What It Does**: Ensures that whenever the Admin upgrades a specific user in the **Admin Dashboard (`Users`, `Payments`, or `Requests` tab)**—whether by typing an email address, typing a user ID, or tapping a user row—the tier change is verified and persisted in Supabase so it survives complete app uninstallation and reinstallation.
+- **Target Audience / Persona**:
+  - **Admin (`reytherapper12@gmail.com`)**: Needs reliable, verifiable database persistence when upgrading subscribers from `Free` to `Pro` or `Legendary`.
+  - **Subscribers**: Expect their upgraded `Pro` or `Legendary` membership to remain active in their account even if they uninstall and reinstall the app or switch devices.
+- **Key Value**: Eliminates silent 0-row database updates and foreign-key rejections so manual tier upgrades work reliably for every user account type (Google Sign-In, Email/Password, or pre-registration email).
 
 ---
 
 ## 2. User Experience & Visual Design
 
 - **Key User Flows**:
-  1. **Admin Upgrading a Specific User**:
-     - Admin opens **Admin Panel → Users Tab**.
-     - At the top of the tab, the **Manual Membership Plan Upgrade** card lets the admin enter or pick a user's email/ID and tap **Set Free**, **Upgrade to Pro**, or **Upgrade to Legendary**—or tap the `Free` / `Pro` / `Legendary` buttons directly on any subscriber's row in the list below.
-     - The target user's tier is immediately updated in Supabase (`subscriptions`, `profiles`, `users`) and locally.
-  2. **Regular User on Membership Page**:
-     - Regular users see their current active tier badge and can only upgrade to **Pro ($10 / ₹850)** or **Legendary ($20 / ₹1700)** through **PayPal** or **Google Pay / UPI Screenshot Verification**.
-  3. **Home Page Latest Post Grid**:
-     - Each post card displays its cover image cleanly with only the subtle top-right favorite heart icon and bottom title gradient—no `PREMIUM`/`FREE` or `DIRECT`/`VIP` pills cluttering the top of the artwork.
+  1. **Admin Manual Upgrade (`Users` Tab)**:
+     - Admin enters a user's email address (e.g., `user@gmail.com`) or User ID—or taps a user card in the list—and clicks **`Set Free`**, **`Upgrade Pro`**, or **`★ Legendary`**.
+     - The Admin Dashboard displays a live `"Syncing tier to Supabase database..."` status and only shows `"Upgraded <email> to Legendary in Supabase database! ✓"` after confirming that a non-empty record was written to Supabase.
+     - The subscriber list immediately re-fetches from Supabase so the Admin sees the real database state reflected in the `Subscriber Tier Breakdown` counters and user row badge.
+  2. **Uninstall & Reinstall Recovery Flow**:
+     - When the upgraded user (or Admin) uninstalls and reinstalls the app—wiping all local Room tables and `SharedPreferences`—and signs back in with their email or Google account, the app queries Supabase during startup and login (`syncData()` and `syncUserDataOnLogin()`), reads their remote tier record, and immediately unlocks their `Pro` or `Legendary` membership.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Consolidating All Manual Tier Overrides in the Admin Dashboard**
-  - *Chosen Approach*: Remove all self-upgrade buttons from the Membership screen and provide both a direct Email/User lookup upgrade card and per-row tier buttons inside the Admin Dashboard.
-  - *Why*: Ensures zero unauthorized tier upgrades by regular users while allowing the admin to upgrade any user (even if they haven't created a `profiles` row yet) by email or user ID.
-- **Decision 2: Multi-Source Admin User Discovery (`profiles` + `subscriptions` + `RequestfromApp` + `user_devices`)**
-  - *Chosen Approach*: Aggregate users from `profiles` (without failing if `created_at` is omitted), `subscriptions`, `RequestfromApp`, and `user_devices` so every user who has ever logged in or submitted a request is visible and upgradable in the Admin Dashboard.
-  - *Why*: Prevents missing users in the Admin Users list when Supabase table schemas vary.
+- **Decision 1: Verified Non-Empty Supabase Writes + Foreign-Key-Free Remote Tier Ledger**
+  - *Chosen Approach*:
+    1. Check that `PATCH` operations on `subscriptions` and `profiles` return at least 1 affected row (`JSONArray(responseBody).length() > 0`) before considering them successful.
+    2. Always upsert a canonical `[TIER_ASSIGNMENT]` record in Supabase's `RequestfromApp` table keyed by the subscriber's lowercase email (with `user_id` omitted if not a registered `auth.users` UUID so PostgreSQL foreign-key constraints never block the write).
+    3. Filter `[TIER_ASSIGNMENT]` rows out of the user-facing/Admin content requests list and monthly quota counter while reading them in `fetchSubscriptions()`, `fetchUserSubscriptionDetails()`, and `fetchProfiles()`.
+  - *Why*: `subscriptions.user_id` enforces a strict foreign key to `auth.users(id)`, which rejects Google Sign-In accounts that use deterministic client UUIDs or emails upgraded prior to Supabase password signup. Backing `subscriptions` with a foreign-key-free remote ledger in Supabase guarantees 100% persistence across uninstall/reinstall for every email address.
 
 ---
 
@@ -50,34 +52,44 @@ This update moves manual Membership Plan tier upgrades (`Free`, `Pro`, `Legendar
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                        ADMIN DASHBOARD (Admin Only)                        │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ Manual Membership Plan Upgrade Card                                  │  │
-│  │  • Input: Target User Email or UUID                                  │  │
-│  │  • Actions: [Set Free]  [Upgrade to Pro (31d)]  [★ Legendary (VIP)]  │  │
-│  └──────────────────────────────────┬───────────────────────────────────┘  │
-│                                     │                                      │
-│  ┌──────────────────────────────────▼───────────────────────────────────┐  │
-│  │ Subscriber List (Merged from profiles, subscriptions, requests)      │  │
-│  │  • Per-User Row: Email, Active Tier Badge, [Free] [Pro] [Legendary]  │  │
-│  └──────────────────────────────────┬───────────────────────────────────┘  │
-└─────────────────────────────────────┼──────────────────────────────────────┘
-                                      ▼
+│                   ADMIN DASHBOARD (Users / Payments Tabs)                  │
+│  • Enter subscriber Email/UUID or tap subscriber row                       │
+│  • Click [Set Free] / [Upgrade Pro] / [★ Legendary]                        │
+└───────────────────────────────────────┬────────────────────────────────────┘
+                                        │
+                                        ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                   Supabase & Local Persistence Layer                       │
-│  • Upserts `subscriptions` (plan = Free / Pro / Legendary)                 │
-│  • Syncs `profiles` & `users` tables + local Room UserDao                  │
-└────────────────────────────────────────────────────────────────────────────┘
-
+│                  JustFanRepository.updateUserTier(...)                     │
+│  1. Update local Room UserDao + active UserProfile (if matching email/ID)  │
+│  2. Call SupabaseClient.updateUserTier(targetIdOrEmail, tier, token, email)│
+│  3. Re-fetch Supabase profiles & active subscription details to verify     │
+└───────────────────────────────────────┬────────────────────────────────────┘
+                                        │
+                    ┌───────────────────┴───────────────────┐
+                    ▼                                       ▼
+┌───────────────────────────────────────┐ ┌──────────────────────────────────┐
+│   Supabase `subscriptions` / `profiles`│ │ Supabase Foreign-Key-Free Ledger │
+│  • Verify PATCH returns > 0 rows      │ │ (`RequestfromApp` [TIER_ASSIGN]) │
+│  • Insert/Update by resolved UUID     │ │  • Keyed by subscriber `email`   │
+│  • Sync `plan` & `expires_at`         │ │  • Stores `Tier`, `ExpiresAt`,   │
+│                                       │ │    and `TargetId` without FK fail│
+└───────────────────┬───────────────────┘ └─────────────────┬────────────────┘
+                    └───────────────────┬───────────────────┘
+                                        ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                   HOME SCREEN LATEST POST CARD VIEW                        │
-│  • Top Header Overlay: Removed FREE/PREMIUM badge & DIRECT/VIP button      │
-│  • Retains clean full-bleed cover image + top-right Favorite heart icon    │
-│  • Bottom Gradient: Gallery Title & Short Spicy Description                │
+│          UNINSTALL & REINSTALL RECOVERY (Startup & Login Sync)             │
+│  • `fetchSubscriptions()` + `fetchUserSubscriptionDetails()` +             │
+│    `fetchProfiles()` merge `subscriptions`, `[TIER_ASSIGNMENT]` ledger,    │
+│    and `profiles` so upgraded tier is restored on fresh install            │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Interactive Component & State Mapping**:
-  - **Public Membership Screen**: Displays payment checkout buttons (`btn_pay_plan_pro`, `btn_pay_plan_legendary`) only; manual self-upgrade controls are completely removed.
-  - **Admin Dashboard (`Users` Tab)**: Provides an email/UUID input field (`admin_manual_upgrade_email_input`) and tier action buttons (`admin_manual_upgrade_free`, `admin_manual_upgrade_pro`, `admin_manual_upgrade_legendary`) alongside per-user row tier buttons (`set_tier_<userId>_<Tier>`).
-  - **Home Post Cards (`CompactPostCard` & `ContentCard`)**: Removes the top-left `FREE` / `PREMIUM` badge and top-right `DIRECT` / `VIP` pill so only the cover image, subtle favorite icon, and bottom title bar appear.
+### Interactive Component & State Mapping
+- **`SupabaseClient.updateUserTier`**:
+  - Resolves both `cleanEmail` and `targetUuid` (inspecting existing `profiles`, `subscriptions`, and `RequestfromApp` rows if only a UUID or only an email was passed).
+  - Writes to `subscriptions` and `profiles`, verifying `hasAffectedRows(responseBody)` (`JSONArray.length() > 0`) on `PATCH` before treating it as updated.
+  - Upserts a `[TIER_ASSIGNMENT]` row in `RequestfromApp` (`email = cleanEmail`, `name = "TIER_ASSIGNMENT"`, `message = "[TIER_ASSIGNMENT] Tier: $normalizedTier | ExpiresAt: ${expiresAtStr ?: "never"} | TargetId: $targetUuid"`, `status = "tier_$lowerTier"`), retrying without `user_id` if a foreign-key constraint error occurs.
+- **`SupabaseClient.fetchSubscriptions` & `fetchUserSubscriptionDetails` & `fetchProfiles`**:
+  - Reads both `subscriptions` and `[TIER_ASSIGNMENT]` rows from `RequestfromApp`, indexing tiers by both `user_id` and lowercase `email` so `fetchProfiles()` (Admin `Users` tab) and `fetchUserSubscriptionDetails()` (logged-in subscriber session) always resolve the upgraded tier after an app uninstall and reinstall.
+- **`SupabaseClient.fetchRequests` & `fetchRequestQuota`**:
+  - Excludes `[TIER_ASSIGNMENT]` system rows from the Admin `Requests` / `Payments` lists and from the 3-request monthly quota calculation.

@@ -92,7 +92,7 @@ fun AdminScreen(
     users: List<UserEntity>,
     requests: List<RequestEntity>,
     posts: List<PostEntity> = emptyList(),
-    onUpdateUserTier: (userIdOrEmail: String, newTier: String) -> Unit,
+    onUpdateUserTier: (userIdOrEmail: String, newTier: String, emailHint: String?, onDone: (Boolean, String?) -> Unit) -> Unit,
     onUpdateRequestStatus: (id: String, status: String, link: String?, reason: String?) -> Unit,
     onDeleteRequest: (id: String) -> Unit,
     onCreatePost: (PostEntity, (Boolean, String?) -> Unit) -> Unit,
@@ -161,8 +161,14 @@ fun AdminScreen(
             0 -> AdminUsersTab(
                 users = users,
                 onUpdateTier = { idOrEmail, tier, email ->
-                    onUpdateUserTier(idOrEmail, tier)
-                    notificationFeedback = "Marked $email as $tier! Synced to Supabase subscriptions table. ✓"
+                    notificationFeedback = "Updating $email to $tier in Supabase database…"
+                    onUpdateUserTier(idOrEmail, tier, email) { ok, err ->
+                        notificationFeedback = if (ok) {
+                            "Marked $email as $tier! Saved in remote Supabase database & active across reinstalls. ✓"
+                        } else {
+                            "Updated $email locally (${err ?: "remote sync warning"})."
+                        }
+                    }
                 },
                 onRefresh = onRefresh
             )
@@ -170,9 +176,14 @@ fun AdminScreen(
                 paymentProofs = paymentProofs,
                 users = users,
                 onApproveAndUpgrade = { reqId, userUuid, tier, email, proofUrl ->
-                    onUpdateUserTier(userUuid, tier)
                     onUpdateRequestStatus(reqId, "fulfilled", proofUrl, null)
-                    notificationFeedback = "Verified payment & upgraded $email to $tier in database! ✓"
+                    onUpdateUserTier(userUuid, tier, email) { ok, _ ->
+                        notificationFeedback = if (ok) {
+                            "Verified payment & upgraded $email to $tier in Supabase database! ✓"
+                        } else {
+                            "Verified payment & upgraded $email to $tier! ✓"
+                        }
+                    }
                 },
                 onRejectProof = { reqId, email ->
                     onUpdateRequestStatus(reqId, "rejected", null, "Payment screenshot could not be verified")
@@ -185,8 +196,13 @@ fun AdminScreen(
                 requests = requests,
                 users = users,
                 onUpdateTier = { userUuid, tier, email ->
-                    onUpdateUserTier(userUuid, tier)
-                    notificationFeedback = "Upgraded $email to $tier! Synced to subscriptions table. ✓"
+                    onUpdateUserTier(userUuid, tier, email) { ok, _ ->
+                        notificationFeedback = if (ok) {
+                            "Upgraded $email to $tier in Supabase database! ✓"
+                        } else {
+                            "Upgraded $email to $tier! ✓"
+                        }
+                    }
                 },
                 onUpdateStatus = onUpdateRequestStatus,
                 onDelete = onDeleteRequest,

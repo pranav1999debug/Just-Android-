@@ -251,6 +251,49 @@ class JustFanRepository(private val context: Context) {
     suspend fun syncData() {
         _isRefreshing.value = true
         try {
+            val hardwareDeviceId = getDeviceId(context)
+
+            // 0. If this is a fresh install / reinstall (`guest_user` and not explicitly signed out locally),
+            //    check Supabase for an active device binding for this hardware ANDROID_ID and restore the account & tier!
+            val initialProfile = _userProfile.value
+            val explicitlySignedOutLocally = prefs.getBoolean("explicitly_signed_out", false)
+            if ((!initialProfile.isSignedIn || initialProfile.id == "guest_user") && !explicitlySignedOutLocally) {
+                val remoteBinding = SupabaseClient.fetchDeviceBindingFromSupabase(hardwareDeviceId)
+                if (remoteBinding != null && remoteBinding.email.isNotBlank()) {
+                    val cleanEmail = remoteBinding.email.trim().lowercase()
+                    val isRey = cleanEmail == "reytherapper12@gmail.com"
+                    val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
+                        userId = remoteBinding.userId,
+                        email = cleanEmail,
+                        accessToken = null,
+                        deviceId = hardwareDeviceId
+                    ).getOrNull()
+                    val resolvedTier = subDetails?.tier ?: if (isRey) "Legendary" else remoteBinding.tier
+                    val resolvedExpires = when {
+                        resolvedTier.equals("Legendary", ignoreCase = true) -> Long.MAX_VALUE
+                        resolvedTier.equals("Pro", ignoreCase = true) -> subDetails?.expiresAtMillis?.takeIf { it > 0L }
+                            ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
+                        else -> 0L
+                    }
+                    val restoredProfile = UserProfile(
+                        id = remoteBinding.userId,
+                        username = if (isRey) "reytherapper12 (Admin)" else remoteBinding.username,
+                        email = cleanEmail,
+                        isSignedIn = true,
+                        authMethod = remoteBinding.authMethod,
+                        tier = resolvedTier,
+                        isAdmin = isRey,
+                        proExpiresAt = resolvedExpires
+                    )
+                    _userProfile.value = restoredProfile
+                    saveProfileToPrefs(restoredProfile)
+                    prefs.edit()
+                        .putString("account_tier_$cleanEmail", resolvedTier)
+                        .putLong("account_expires_$cleanEmail", resolvedExpires)
+                        .apply()
+                }
+            }
+
             // 1. Sync Posts (includes click counts from post_click_counts)
             val postsResult = SupabaseClient.fetchPosts()
             if (postsResult.isSuccess) {
@@ -283,7 +326,12 @@ class JustFanRepository(private val context: Context) {
             if (current.isSignedIn && current.id != "guest_user") {
                 val cleanEmail = current.email.trim().lowercase()
                 val activeToken = ensureValidAccessToken(current)
-                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(current.id, cleanEmail, activeToken).getOrNull()
+                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
+                    userId = current.id,
+                    email = cleanEmail,
+                    accessToken = activeToken,
+                    deviceId = hardwareDeviceId
+                ).getOrNull()
                 if (subDetails != null) {
                     val updated = current.copy(
                         tier = subDetails.tier,
@@ -291,6 +339,13 @@ class JustFanRepository(private val context: Context) {
                     )
                     _userProfile.value = updated
                     saveProfileToPrefs(updated)
+                    if (cleanEmail.isNotBlank()) {
+                        prefs.edit()
+                            .putString("account_tier_$cleanEmail", subDetails.tier)
+                            .putLong("account_expires_$cleanEmail", subDetails.expiresAtMillis)
+                            .apply()
+                    }
+                    userDao.updateUserTier(current.id, subDetails.tier)
                 }
             }
         } catch (e: Exception) {
@@ -303,6 +358,7 @@ class JustFanRepository(private val context: Context) {
     fun syncUserDataOnLogin(profile: UserProfile) {
         if (!profile.isSignedIn || profile.id == "guest_user") return
         val cleanEmail = profile.email.trim().lowercase()
+        prefs.edit().putBoolean("explicitly_signed_out", false).apply()
 
         // 0. Immediately restore saved per-account preferences so theme & wallpaper apply right away
         val cachedAccountPref = loadAccountPreferences(cleanEmail)
@@ -329,12 +385,18 @@ class JustFanRepository(private val context: Context) {
 
         scope.launch {
             try {
+                val hardwareDeviceId = getDeviceId(context)
                 val isRey = cleanEmail.equals("reytherapper12@gmail.com", ignoreCase = true)
                 val activeToken = ensureValidAccessToken(_userProfile.value)
                 val activeUserId = _userProfile.value.id
 
-                // 1. Sync subscription tier from Supabase subscriptions and users tables (auto-downgrades expired 1-month Pro to Free)
-                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(activeUserId, cleanEmail, activeToken).getOrNull()
+                // 1. Sync subscription tier from Supabase tier ledger, subscriptions, and users tables
+                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
+                    userId = activeUserId,
+                    email = cleanEmail,
+                    accessToken = activeToken,
+                    deviceId = hardwareDeviceId
+                ).getOrNull()
                 val effectiveTier = when {
                     subDetails != null -> subDetails.tier
                     !cachedAccountTier.isNullOrBlank() -> cachedAccountTier
@@ -368,6 +430,17 @@ class JustFanRepository(private val context: Context) {
                     .putLong("account_expires_$cleanEmail", expiresAt)
                     .apply()
                 userDao.updateUserTier(activeUserId, finalTier)
+
+                // Persist device binding in Supabase so even after uninstall & reinstall on this device,
+                // the account and its upgraded tier are recovered automatically!
+                SupabaseClient.saveDeviceBindingToSupabase(
+                    deviceId = hardwareDeviceId,
+                    email = cleanEmail,
+                    userId = activeUserId,
+                    username = updatedProfile.username,
+                    authMethod = updatedProfile.authMethod,
+                    tier = finalTier
+                )
 
                 // 2. Sync theme & wallpaper from Supabase user_preferences table
                 val prefResult = SupabaseClient.fetchUserPreferences(activeUserId, activeToken)
@@ -413,7 +486,11 @@ class JustFanRepository(private val context: Context) {
                     )
                 }
 
-                // 3. Refresh request quota
+                // 3. Refresh remote profiles & request quota
+                val profilesRes = SupabaseClient.fetchProfiles()
+                if (profilesRes.isSuccess) {
+                    profilesRes.getOrNull()?.takeIf { it.isNotEmpty() }?.let { userDao.insertUsers(it) }
+                }
                 fetchRequestQuota()
             } catch (e: Exception) {
                 Log.w("JustFanRepository", "syncUserDataOnLogin warning", e)
@@ -435,7 +512,7 @@ class JustFanRepository(private val context: Context) {
             _userProfile.value = current
             saveProfileToPrefs(current)
             scope.launch {
-                SupabaseClient.updateUserTier(current.id, "Free", current.accessToken, current.email)
+                SupabaseClient.updateUserTier(current.id, "Free", current.accessToken, current.email, hardwareDeviceId)
             }
         }
 
@@ -475,11 +552,23 @@ class JustFanRepository(private val context: Context) {
                 biometricEnabled = info.biometricEnabled,
                 accessToken = activeToken
             )
+            SupabaseClient.saveDeviceBindingToSupabase(
+                deviceId = info.deviceId,
+                email = current.email.ifBlank { info.userEmail },
+                userId = current.id,
+                username = current.username,
+                authMethod = current.authMethod,
+                tier = current.tier
+            )
             fetchRequestQuota()
         }
     }
 
-    suspend fun updateUserTier(userId: String, newTier: String) {
+    suspend fun updateUserTier(
+        userId: String,
+        newTier: String,
+        emailHint: String? = null
+    ): Result<Boolean> {
         val trimmedInput = userId.trim()
         val normalizedTier = when {
             newTier.equals("legendary", ignoreCase = true) -> "Legendary"
@@ -490,19 +579,28 @@ class JustFanRepository(private val context: Context) {
         val isPro = normalizedTier == "Pro"
         val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (31L * 24 * 60 * 60 * 1000L) else 0L
 
+        val cleanHint = emailHint?.trim()?.lowercase().orEmpty()
         val existingUser = userDao.findUserById(trimmedInput)
             ?: userDao.findUserByEmail(trimmedInput.lowercase())
+            ?: (if (cleanHint.isNotBlank()) userDao.findUserByEmail(cleanHint) else null)
             ?: userDao.getAllUsersList().find {
                 it.email.equals(trimmedInput, ignoreCase = true) ||
+                        (cleanHint.isNotBlank() && it.email.equals(cleanHint, ignoreCase = true)) ||
                         it.id.equals(trimmedInput, ignoreCase = true) ||
                         it.username.equals(trimmedInput, ignoreCase = true)
             }
 
+        val resolvedTargetEmail = when {
+            cleanHint.contains("@") -> cleanHint
+            !existingUser?.email.isNullOrBlank() -> existingUser!!.email.trim().lowercase()
+            trimmedInput.contains("@") -> trimmedInput.lowercase()
+            else -> ""
+        }
+
         if (existingUser != null) {
             userDao.insertUsers(listOf(existingUser.copy(tier = normalizedTier)))
-        } else if (trimmedInput.isNotBlank()) {
-            val isEmail = trimmedInput.contains("@")
-            val emailVal = if (isEmail) trimmedInput.lowercase() else "${trimmedInput.take(8)}@user.justfan"
+        } else if (trimmedInput.isNotBlank() || resolvedTargetEmail.isNotBlank()) {
+            val emailVal = resolvedTargetEmail.ifBlank { "${trimmedInput.take(8)}@user.justfan" }
             val idVal = if (trimmedInput.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
                 trimmedInput
             } else {
@@ -524,14 +622,18 @@ class JustFanRepository(private val context: Context) {
             )
         }
         userDao.updateUserTier(trimmedInput, normalizedTier)
+        if (resolvedTargetEmail.isNotBlank() && !resolvedTargetEmail.equals(trimmedInput, ignoreCase = true)) {
+            userDao.updateUserTier(resolvedTargetEmail, normalizedTier)
+        }
 
         val current = _userProfile.value
-        val resolvedTargetEmail = existingUser?.email ?: if (trimmedInput.contains("@")) trimmedInput.lowercase() else ""
         val isCurrentTarget = current.id.equals(trimmedInput, ignoreCase = true) ||
                 current.email.equals(trimmedInput, ignoreCase = true) ||
                 (resolvedTargetEmail.isNotBlank() && current.email.equals(resolvedTargetEmail, ignoreCase = true)) ||
                 trimmedInput == "guest_user" ||
                 trimmedInput.isBlank()
+
+        val hardwareDeviceId = getDeviceId(context)
 
         if (isCurrentTarget) {
             val updated = current.copy(
@@ -555,22 +657,49 @@ class JustFanRepository(private val context: Context) {
                 .apply()
         }
 
-        scope.launch {
-            val adminToken = ensureValidAccessToken(_userProfile.value)
-            val emailHint = when {
-                resolvedTargetEmail.isNotBlank() -> resolvedTargetEmail
-                isCurrentTarget -> _userProfile.value.email
-                else -> null
-            }
-            val targetIdOrEmail = existingUser?.id ?: if (trimmedInput.isBlank()) _userProfile.value.id else trimmedInput
-            val res = SupabaseClient.updateUserTier(targetIdOrEmail, normalizedTier, adminToken, emailHint)
-            fetchRequestQuota()
-            if (res.isSuccess) {
-                Log.i("JustFanRepository", "Remote subscription updated in Supabase for $targetIdOrEmail ($emailHint) to $normalizedTier")
-            } else {
-                Log.w("JustFanRepository", "Remote subscription update failed: ${res.exceptionOrNull()?.message}")
+        val adminToken = ensureValidAccessToken(_userProfile.value)
+        val effectiveEmailHint = when {
+            resolvedTargetEmail.isNotBlank() -> resolvedTargetEmail
+            isCurrentTarget -> _userProfile.value.email
+            else -> null
+        }
+        val targetIdOrEmail = existingUser?.id ?: if (trimmedInput.isBlank()) _userProfile.value.id else trimmedInput
+        val targetDeviceId = if (isCurrentTarget) hardwareDeviceId else null
+
+        val res = SupabaseClient.updateUserTier(
+            userIdOrEmail = targetIdOrEmail,
+            tier = normalizedTier,
+            accessToken = adminToken,
+            emailHint = effectiveEmailHint,
+            deviceId = targetDeviceId
+        )
+
+        if (isCurrentTarget && _userProfile.value.email.isNotBlank()) {
+            SupabaseClient.saveDeviceBindingToSupabase(
+                deviceId = hardwareDeviceId,
+                email = _userProfile.value.email,
+                userId = _userProfile.value.id,
+                username = _userProfile.value.username,
+                authMethod = _userProfile.value.authMethod,
+                tier = normalizedTier
+            )
+        }
+
+        val profilesResult = SupabaseClient.fetchProfiles()
+        if (profilesResult.isSuccess) {
+            val remoteUsers = profilesResult.getOrNull().orEmpty()
+            if (remoteUsers.isNotEmpty()) {
+                userDao.insertUsers(remoteUsers)
             }
         }
+        fetchRequestQuota()
+
+        if (res.isSuccess) {
+            Log.i("JustFanRepository", "Remote subscription updated in Supabase for $targetIdOrEmail ($effectiveEmailHint) to $normalizedTier")
+        } else {
+            Log.w("JustFanRepository", "Remote subscription update failed: ${res.exceptionOrNull()?.message}")
+        }
+        return res
     }
 
     suspend fun createRequest(name: String, email: String, telegram: String?, message: String, imageUrl: String?): Result<Boolean> {
@@ -863,15 +992,29 @@ class JustFanRepository(private val context: Context) {
         val resolvedRefresh = session?.refreshToken ?: prefs.getString("cached_refresh_$cleanEmail", null)
         val cachedWallpaper = loadAccountPreferences(cleanEmail)?.customWallpaperUri
 
+        val remoteSub = SupabaseClient.fetchUserSubscriptionDetails(
+            userId = resolvedUid,
+            email = cleanEmail,
+            accessToken = resolvedToken,
+            deviceId = getDeviceId(context)
+        ).getOrNull()
+        val initialTier = remoteSub?.tier ?: if (isRey) "Legendary" else "Free"
+        val initialExpires = when {
+            initialTier.equals("Legendary", ignoreCase = true) -> Long.MAX_VALUE
+            initialTier.equals("Pro", ignoreCase = true) -> remoteSub?.expiresAtMillis?.takeIf { it > 0L }
+                ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
+            else -> 0L
+        }
+
         val user = UserProfile(
             id = resolvedUid,
             username = if (isRey) "reytherapper12 (Admin)" else username.ifBlank { cleanEmail.substringBefore("@") },
             email = cleanEmail,
             isSignedIn = true,
             authMethod = "password",
-            tier = if (isRey) "Legendary" else "Free",
+            tier = initialTier,
             isAdmin = isRey,
-            proExpiresAt = if (isRey) Long.MAX_VALUE else 0L,
+            proExpiresAt = initialExpires,
             accessToken = resolvedToken,
             refreshToken = resolvedRefresh,
             customWallpaperUri = cachedWallpaper
@@ -889,6 +1032,10 @@ class JustFanRepository(private val context: Context) {
     }
 
     fun signOut() {
+        val hardwareDeviceId = getDeviceId(context)
+        scope.launch {
+            SupabaseClient.clearDeviceBindingInSupabase(hardwareDeviceId)
+        }
         val guest = UserProfile(
             id = "guest_user",
             username = "Guest Fan",
@@ -911,6 +1058,7 @@ class JustFanRepository(private val context: Context) {
         )
         _preferences.value = defaultPref
         prefs.edit()
+            .putBoolean("explicitly_signed_out", true)
             .putString("pref_theme_variant", defaultPref.themeVariant)
             .putBoolean("pref_dark_mode", defaultPref.isDarkMode)
             .putString("pref_wallpaper_uri", null)

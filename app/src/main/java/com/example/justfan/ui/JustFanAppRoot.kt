@@ -349,8 +349,8 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     users = users,
                                     requests = requests,
                                     posts = posts,
-                                    onUpdateUserTier = { idOrEmail, tier ->
-                                        viewModel.updateUserTier(idOrEmail, tier)
+                                    onUpdateUserTier = { idOrEmail, tier, emailHint, onDone ->
+                                        viewModel.updateUserTier(idOrEmail, tier, emailHint, onDone)
                                     },
                                     onUpdateRequestStatus = { id, status, link, reason ->
                                         viewModel.updateRequestStatus(id, status, link, reason)

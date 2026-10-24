@@ -90,74 +90,26 @@ fun CompactPostCard(
                 )
             }
 
-            // Top Badges
-            Row(
+            // Top-Right Favorite Button Only (no FREE/PREMIUM or DIRECT/VIP badges obstructing cover image)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(8.dp),
+                contentAlignment = Alignment.TopEnd
             ) {
-                // Tier / Free badge
-                Surface(
-                    color = if (post.isFree) SuccessGreen else MaterialTheme.colorScheme.primary,
-                    shape = RoundedCornerShape(8.dp)
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                        .testTag("favorite_btn_${post.id}")
                 ) {
-                    Text(
-                        text = if (post.isFree) "FREE" else "PREMIUM",
-                        color = Color.Black,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tint = if (isFavorite) Color.Red else Color.White,
+                        modifier = Modifier.size(18.dp)
                     )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Direct Download button for Paid/Legendary Users
-                    Surface(
-                        color = if (isPaidOrLegendary) GoldAccent else Color.Black.copy(alpha = 0.6f),
-                        shape = CircleShape,
-                        modifier = Modifier
-                            .testTag("direct_download_btn_${post.id}")
-                            .clickable { onDirectDownloadClick() }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isPaidOrLegendary) Icons.Default.Download else Icons.Default.Lock,
-                                contentDescription = "Direct Download",
-                                tint = if (isPaidOrLegendary) Color.Black else Color.White,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (isPaidOrLegendary) "DIRECT" else "VIP",
-                                color = if (isPaidOrLegendary) Color.Black else Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    // Favorite Button
-                    IconButton(
-                        onClick = onToggleFavorite,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                            .testTag("favorite_btn_${post.id}")
-                    ) {
-                        Icon(
-                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Favorite",
-                            tint = if (isFavorite) Color.Red else Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
                 }
             }
 

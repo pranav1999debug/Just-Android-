@@ -116,11 +116,12 @@ object MediaUploadClient {
     }
 
     /**
-     * Generates a description and hashtags given a title using Groq AI via the generate-caption Edge Function,
-     * with smart fallback to Gemini and local generator.
+     * Generates a short, spicy professional description and hashtags given a title
+     * using Groq AI via the generate-caption Edge Function and GeminiAiHelper.
      */
-    suspend fun generateCaption(title: String): Result<GeneratedCaption> = withContext(Dispatchers.IO) {
-        // 1. Try Groq-powered generate-caption edge function
+    suspend fun generateCaption(title: String, variationHint: Int = -1): Result<GeneratedCaption> = withContext(Dispatchers.IO) {
+        val cleanTitle = title.trim().ifBlank { "Midnight Exclusive Drop" }
+        // 1. Try Groq-powered generate-caption edge function first
         try {
             val url = URL("$BASE_FUNCTIONS_URL/generate-caption")
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -128,13 +129,15 @@ object MediaUploadClient {
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("apikey", SUPABASE_KEY)
                 setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
-                connectTimeout = 15000
-                readTimeout = 20000
+                connectTimeout = 12000
+                readTimeout = 15000
                 doOutput = true
             }
 
             val payload = JSONObject().apply {
-                put("title", title.trim())
+                put("title", cleanTitle)
+                put("style", "short_spicy_professional")
+                put("variation", if (variationHint >= 0) variationHint else System.currentTimeMillis() % 1000)
             }
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
 
@@ -143,28 +146,30 @@ object MediaUploadClient {
                 val responseText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
                 conn.disconnect()
                 val json = JSONObject(responseText)
-                val desc = json.optString("description", "")
+                val desc = json.optString("description", "").trim()
                 val tagsArr = json.optJSONArray("hashtags")
                 val tagsList = mutableListOf<String>()
                 if (tagsArr != null) {
                     for (i in 0 until tagsArr.length()) {
-                        tagsList.add(tagsArr.getString(i))
+                        val t = tagsArr.optString(i, "").trim()
+                        if (t.isNotEmpty()) tagsList.add(if (t.startsWith("#")) t else "#$t")
                     }
                 }
-                if (desc.isNotBlank()) {
-                    Log.i(TAG, "Groq generated caption successfully for \"$title\"")
+                // Only use edge function response if it isn't a generic fallback
+                if (desc.isNotBlank() && !desc.startsWith("Check out ", ignoreCase = true) && !desc.startsWith("Explore exclusive", ignoreCase = true)) {
+                    Log.i(TAG, "Groq generated spicy caption for \"$cleanTitle\"")
                     return@withContext Result.success(GeneratedCaption(description = desc, hashtags = tagsList))
                 }
             } else {
                 conn.disconnect()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Groq edge function generate-caption failed, using fallback: ${e.message}")
+            Log.w(TAG, "Groq edge function generate-caption notice, using GeminiAiHelper: ${e.message}")
         }
 
-        // 2. Fallback to Gemini AI / smart generator
-        try {
-            val genResult = GeminiAiHelper.generateDescriptionAndHashtags(title).getOrThrow()
+        // 2. Use Gemini AI / rotating professional spicy copywriter
+        return@withContext try {
+            val genResult = GeminiAiHelper.generateDescriptionAndHashtags(cleanTitle, variationHint).getOrThrow()
             Result.success(GeneratedCaption(description = genResult.description, hashtags = genResult.hashtags))
         } catch (e: Exception) {
             Log.e(TAG, "generateCaption fallback error", e)

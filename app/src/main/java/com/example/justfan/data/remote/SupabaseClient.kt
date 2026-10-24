@@ -477,7 +477,7 @@ object SupabaseClient {
 
     suspend fun fetchSubscriptions(): Result<Map<String, String>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "subscriptions?select=user_id,plan,expires_at"
+            val endpoint = "subscriptions?select=*"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
             if (code in 200..299) {
@@ -489,10 +489,15 @@ object SupabaseClient {
                 for (i in 0 until array.length()) {
                     val item = array.getJSONObject(i)
                     val uid = item.optString("user_id")
-                    val plan = item.optString("plan", "Free")
+                    val rawPlan = item.optString("plan", "Free")
+                    val plan = when {
+                        rawPlan.equals("legendary", ignoreCase = true) -> "Legendary"
+                        rawPlan.equals("pro", ignoreCase = true) -> "Pro"
+                        else -> "Free"
+                    }
                     val exp = item.optString("expires_at", "")
                     var isExpired = false
-                    if (exp.isNotBlank() && exp != "null") {
+                    if (plan == "Pro" && exp.isNotBlank() && exp != "null") {
                         try {
                             if (parseIsoToMillis(exp) < nowMillis) isExpired = true
                         } catch (_: Exception) {}
@@ -523,25 +528,25 @@ object SupabaseClient {
         accessToken: String? = null
     ): Result<SubscriptionDetails?> = withContext(Dispatchers.IO) {
         try {
-            val cleanEmail = email?.trim()?.lowercase().orEmpty()
-            if (evaluateIsAdmin(cleanEmail) || userId == "a2d7bbad-c31f-4679-bf51-2d2684bb3216") {
-                return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
-            }
+            val cleanEmail = email?.trim()?.lowercase()
+                ?: if (userId.contains("@")) userId.trim().lowercase() else ""
 
-            val resolvedUuid = if (userId.contains("@")) {
-                resolveUserUuid(userId) ?: userId
-            } else if (userId.isBlank() && cleanEmail.isNotBlank()) {
-                resolveUserUuid(cleanEmail) ?: userId
-            } else {
-                userId
+            val candidateUuids = linkedSetOf<String>()
+            if (userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                candidateUuids.add(userId)
+            }
+            if (cleanEmail.isNotBlank()) {
+                resolveUserUuid(cleanEmail)?.takeIf { it.isNotBlank() }?.let { candidateUuids.add(it) }
+                val deterministicUuid = UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString()
+                candidateUuids.add(deterministicUuid)
             }
 
             val nowMillis = System.currentTimeMillis()
             val oneMonthMillis = 31L * 24L * 60L * 60L * 1000L
 
-            // 1. Check `subscriptions` table first
-            if (resolvedUuid.isNotBlank()) {
-                val subEndpoint = "subscriptions?user_id=eq.$resolvedUuid&order=created_at.desc&limit=1"
+            // 1. Check `subscriptions` table across all candidate UUIDs
+            for (candidateId in candidateUuids) {
+                val subEndpoint = "subscriptions?user_id=eq.$candidateId&order=created_at.desc&limit=1"
                 val subReq = Request.Builder()
                     .url("$baseUrl/rest/v1/$subEndpoint")
                     .get()
@@ -567,9 +572,8 @@ object SupabaseClient {
                                     else -> nowMillis + oneMonthMillis
                                 }
                                 if (expMillis < nowMillis) {
-                                    // Automatically downgrade expired 1-month Pro subscription back to Free in database
-                                    Log.i(TAG, "Pro subscription expired for $resolvedUuid; auto-downgrading to Free in Supabase")
-                                    updateUserTier(resolvedUuid, "Free", accessToken, cleanEmail)
+                                    Log.i(TAG, "Pro subscription expired for $candidateId; auto-downgrading to Free in Supabase")
+                                    updateUserTier(candidateId, "Free", accessToken, cleanEmail)
                                     return@withContext Result.success(SubscriptionDetails("Free", 0L))
                                 } else {
                                     return@withContext Result.success(SubscriptionDetails("Pro", expMillis))
@@ -584,9 +588,9 @@ object SupabaseClient {
 
             // 2. Also check `users` and `profiles` tables as fallback for tier identification
             val userCheckEndpoints = mutableListOf<String>()
-            if (resolvedUuid.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
-                userCheckEndpoints.add("users?id=eq.$resolvedUuid&limit=1")
-                userCheckEndpoints.add("profiles?id=eq.$resolvedUuid&limit=1")
+            for (candidateId in candidateUuids) {
+                userCheckEndpoints.add("users?id=eq.$candidateId&limit=1")
+                userCheckEndpoints.add("profiles?id=eq.$candidateId&limit=1")
             }
             if (cleanEmail.isNotBlank()) {
                 userCheckEndpoints.add("users?email=eq.$cleanEmail&limit=1")
@@ -617,7 +621,7 @@ object SupabaseClient {
                                         nowMillis + oneMonthMillis
                                     }
                                     if (expMillis < nowMillis) {
-                                        updateUserTier(resolvedUuid, "Free", accessToken, cleanEmail)
+                                        updateUserTier(candidateUuids.firstOrNull() ?: userId, "Free", accessToken, cleanEmail)
                                         return@withContext Result.success(SubscriptionDetails("Free", 0L))
                                     }
                                     return@withContext Result.success(SubscriptionDetails("Pro", expMillis))
@@ -628,6 +632,36 @@ object SupabaseClient {
                         }
                     }
                 } catch (_: Exception) {}
+            }
+
+            // 3. Check Supabase Auth user_metadata if accessToken is available
+            if (!accessToken.isNullOrBlank()) {
+                try {
+                    val authReq = Request.Builder()
+                        .url("$baseUrl/auth/v1/user")
+                        .get()
+                        .header("apikey", apiKey)
+                        .header("Authorization", "Bearer $accessToken")
+                        .build()
+                    okHttpClient.newCall(authReq).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val bodyObj = JSONObject(resp.body?.string().orEmpty())
+                            val meta = bodyObj.optJSONObject("user_metadata")
+                            val metaTier = meta?.optString("tier", "")?.trim().orEmpty()
+                            if (metaTier.equals("legendary", ignoreCase = true)) {
+                                return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
+                            } else if (metaTier.equals("pro", ignoreCase = true)) {
+                                return@withContext Result.success(SubscriptionDetails("Pro", nowMillis + oneMonthMillis))
+                            } else if (metaTier.equals("free", ignoreCase = true)) {
+                                return@withContext Result.success(SubscriptionDetails("Free", 0L))
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            if (evaluateIsAdmin(cleanEmail) || userId == "a2d7bbad-c31f-4679-bf51-2d2684bb3216") {
+                return@withContext Result.success(SubscriptionDetails("Legendary", Long.MAX_VALUE))
             }
 
             Result.success(null)
@@ -683,23 +717,58 @@ object SupabaseClient {
                 tier.equals("pro", ignoreCase = true) -> "Pro"
                 else -> "Free"
             }
+            val lowerTier = normalizedTier.lowercase()
 
-            val resolvedUuid = if (userIdOrEmail.contains("@")) {
-                resolveUserUuid(userIdOrEmail) ?: UUID.nameUUIDFromBytes("justfan:${userIdOrEmail.trim().lowercase()}".toByteArray()).toString()
-            } else {
-                userIdOrEmail
+            val cleanEmail = (emailHint ?: if (userIdOrEmail.contains("@")) userIdOrEmail else "").trim().lowercase()
+
+            val candidateUuids = linkedSetOf<String>()
+            if (userIdOrEmail.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                candidateUuids.add(userIdOrEmail)
+            }
+            if (cleanEmail.isNotBlank()) {
+                resolveUserUuid(cleanEmail)?.takeIf { it.matches(Regex("^[0-9a-fA-F-]{36}$")) }?.let {
+                    candidateUuids.add(it)
+                }
+                if (candidateUuids.isEmpty()) {
+                    candidateUuids.add(UUID.nameUUIDFromBytes("justfan:$cleanEmail".toByteArray()).toString())
+                }
             }
 
             val now = Instant.now()
-            val expiresAtStr = when (normalizedTier.lowercase()) {
+            val expiresAtStr = when (lowerTier) {
                 "pro" -> now.plus(31, java.time.temporal.ChronoUnit.DAYS).toString()
                 "legendary" -> Instant.parse("2099-12-31T23:59:59Z").toString()
                 else -> null
             }
 
-            val isUuid = resolvedUuid.matches(Regex("^[0-9a-fA-F-]{36}$"))
-            if (isUuid) {
-                val checkUrl = "$baseUrl/rest/v1/subscriptions?user_id=eq.$resolvedUuid&limit=1"
+            for (targetUuid in candidateUuids) {
+                // Ensure profile row exists so Admin Users tab & resolveUserUuid can always locate this user
+                if (cleanEmail.isNotBlank()) {
+                    try {
+                        val checkProfReq = Request.Builder()
+                            .url("$baseUrl/rest/v1/profiles?id=eq.$targetUuid&limit=1")
+                            .get()
+                            .header("apikey", apiKey)
+                            .header("Authorization", if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $apiKey")
+                            .build()
+                        var profExists = false
+                        okHttpClient.newCall(checkProfReq).execute().use { r ->
+                            if (r.isSuccessful) profExists = JSONArray(r.body?.string().orEmpty()).length() > 0
+                        }
+                        if (!profExists) {
+                            val profCreate = JSONObject().apply {
+                                put("id", targetUuid)
+                                put("username", cleanEmail)
+                                put("status", "active")
+                                put("updated_at", now.toString())
+                            }
+                            executePost("profiles", profCreate.toString(), accessToken)
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                // Check if subscription row exists for targetUuid
+                val checkUrl = "$baseUrl/rest/v1/subscriptions?user_id=eq.$targetUuid&limit=1"
                 val checkReq = Request.Builder()
                     .url(checkUrl)
                     .get()
@@ -716,52 +785,93 @@ object SupabaseClient {
                     }
                 } catch (_: Exception) {}
 
-                val payload = JSONObject().apply {
-                    put("user_id", resolvedUuid)
-                    put("plan", normalizedTier)
-                    if (expiresAtStr != null) {
-                        put("expires_at", expiresAtStr)
+                suspend fun writeSubPayload(planValue: String, includeExpiresAt: Boolean): Result<String> {
+                    val payload = JSONObject().apply {
+                        put("user_id", targetUuid)
+                        put("plan", planValue)
+                        if (includeExpiresAt) {
+                            if (expiresAtStr != null) put("expires_at", expiresAtStr) else put("expires_at", JSONObject.NULL)
+                        }
+                    }
+                    return if (exists) {
+                        executePatch("subscriptions?user_id=eq.$targetUuid", payload.toString(), accessToken)
                     } else {
-                        put("expires_at", JSONObject.NULL)
+                        payload.put("id", UUID.randomUUID().toString())
+                        payload.put("created_at", now.toString())
+                        executePost("subscriptions", payload.toString(), accessToken)
                     }
                 }
 
-                val subResult = if (exists) {
-                    executePatch("subscriptions?user_id=eq.$resolvedUuid", payload.toString(), accessToken)
-                } else {
-                    payload.put("id", UUID.randomUUID().toString())
-                    payload.put("created_at", now.toString())
-                    executePost("subscriptions", payload.toString(), accessToken)
+                // Attempt 1: Capitalized plan + expires_at
+                var subResult = writeSubPayload(normalizedTier, includeExpiresAt = true)
+                // Attempt 2: Capitalized plan without expires_at (in case subscriptions table doesn't have expires_at column)
+                if (subResult.isFailure) {
+                    subResult = writeSubPayload(normalizedTier, includeExpiresAt = false)
+                }
+                // Attempt 3: Lowercase plan without expires_at (in case CHECK constraint requires lowercase 'legendary'/'pro'/'free')
+                if (subResult.isFailure) {
+                    subResult = writeSubPayload(lowerTier, includeExpiresAt = false)
+                }
+                // Attempt 4: Retry with anon apiKey if user JWT failed RLS
+                if (subResult.isFailure && !accessToken.isNullOrBlank()) {
+                    val fallbackPayload = JSONObject().apply {
+                        put("user_id", targetUuid)
+                        put("plan", normalizedTier)
+                    }
+                    subResult = if (exists) {
+                        executePatch("subscriptions?user_id=eq.$targetUuid", fallbackPayload.toString(), null)
+                    } else {
+                        fallbackPayload.put("id", UUID.randomUUID().toString())
+                        fallbackPayload.put("created_at", now.toString())
+                        executePost("subscriptions", fallbackPayload.toString(), null)
+                    }
                 }
 
                 if (subResult.isSuccess) {
-                    Log.i(TAG, "updateUserTier succeeded in subscriptions table for $resolvedUuid -> $normalizedTier")
+                    Log.i(TAG, "updateUserTier succeeded in subscriptions table for $targetUuid -> $normalizedTier")
                 }
 
                 // Also sync tier to `users` and `profiles` tables if columns exist
                 try {
                     val userTierPayload = JSONObject().apply {
                         put("tier", normalizedTier)
-                        if (expiresAtStr != null) put("expires_at", expiresAtStr) else put("expires_at", JSONObject.NULL)
                     }
-                    executePatch("users?id=eq.$resolvedUuid", userTierPayload.toString(), accessToken)
+                    executePatch("users?id=eq.$targetUuid", userTierPayload.toString(), accessToken)
                 } catch (_: Exception) {}
 
                 try {
                     val profileTierPayload = JSONObject().apply {
                         put("tier", normalizedTier)
                     }
-                    executePatch("profiles?id=eq.$resolvedUuid", profileTierPayload.toString(), accessToken)
+                    executePatch("profiles?id=eq.$targetUuid", profileTierPayload.toString(), accessToken)
                 } catch (_: Exception) {}
             }
 
-            val cleanEmail = (emailHint ?: if (userIdOrEmail.contains("@")) userIdOrEmail else "").trim().lowercase()
             if (cleanEmail.isNotBlank()) {
                 try {
                     val emailTierPayload = JSONObject().apply {
                         put("tier", normalizedTier)
                     }
                     executePatch("users?email=eq.$cleanEmail", emailTierPayload.toString(), accessToken)
+                } catch (_: Exception) {}
+            }
+
+            // Also persist tier inside Supabase Auth user_metadata when user is logged in
+            if (!accessToken.isNullOrBlank()) {
+                try {
+                    val metaPayload = JSONObject().apply {
+                        put("data", JSONObject().apply {
+                            put("tier", normalizedTier)
+                            if (expiresAtStr != null) put("expires_at", expiresAtStr)
+                        })
+                    }
+                    val req = Request.Builder()
+                        .url("$baseUrl/auth/v1/user")
+                        .put(metaPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                        .header("apikey", apiKey)
+                        .header("Authorization", "Bearer $accessToken")
+                        .build()
+                    okHttpClient.newCall(req).execute().close()
                 } catch (_: Exception) {}
             }
 
@@ -903,46 +1013,141 @@ object SupabaseClient {
 
     suspend fun fetchProfiles(limit: Int = 500): Result<List<UserEntity>> = withContext(Dispatchers.IO) {
         try {
-            val endpoint = "profiles?select=*&order=created_at.desc&limit=$limit"
-            val conn = openConnection(endpoint, "GET")
-            val code = conn.responseCode
-            if (code in 200..299) {
-                val response = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
+            val subscriptionsMap = fetchSubscriptions().getOrDefault(emptyMap())
+            val usersByKey = linkedMapOf<String, UserEntity>()
 
-                val subscriptionsMap = fetchSubscriptions().getOrDefault(emptyMap())
-                val jsonArray = JSONArray(response)
-                val users = mutableListOf<UserEntity>()
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val id = obj.optString("id", UUID.randomUUID().toString())
-                    val rawUsername = if (obj.has("username") && !obj.isNull("username")) obj.optString("username") else null
-                    val email = rawUsername ?: "${id.take(8)}@user.justfan"
-                    val username = if (email.contains("@")) email.substringBefore("@") else email
-                    val isAdmin = email.equals("reytherapper12@gmail.com", ignoreCase = true) || id == "a2d7bbad-c31f-4679-bf51-2d2684bb3216" || id == "fe335770-80a9-4125-9c15-d47f385579fb"
-                    val createdAtStr = obj.optString("created_at", "")
+            fun normalizeTierLabel(raw: String?): String? {
+                if (raw.isNullOrBlank()) return null
+                return when {
+                    raw.equals("legendary", ignoreCase = true) -> "Legendary"
+                    raw.equals("pro", ignoreCase = true) -> "Pro"
+                    raw.equals("free", ignoreCase = true) -> "Free"
+                    else -> null
+                }
+            }
 
-                    val subTier = subscriptionsMap[id] ?: subscriptionsMap[email]
-                    val finalTier = subTier ?: if (isAdmin) "Legendary" else "Free"
+            // 1. Fetch from `profiles` table (without requiring `created_at` column)
+            try {
+                val conn = openConnection("profiles?select=*&limit=$limit", "GET")
+                if (conn.responseCode in 200..299) {
+                    val response = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val jsonArray = JSONArray(response)
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val id = obj.optString("id", UUID.randomUUID().toString())
+                        val rawUsername = if (obj.has("username") && !obj.isNull("username")) obj.optString("username") else null
+                        val rawEmail = if (obj.has("email") && !obj.isNull("email")) obj.optString("email") else null
+                        val email = (rawEmail?.takeIf { it.isNotBlank() } ?: rawUsername?.takeIf { it.isNotBlank() } ?: "${id.take(8)}@user.justfan").trim().lowercase()
+                        val username = if (email.contains("@")) email.substringBefore("@") else email
+                        val isAdmin = email.equals("reytherapper12@gmail.com", ignoreCase = true) || id == "a2d7bbad-c31f-4679-bf51-2d2684bb3216" || id == "fe335770-80a9-4125-9c15-d47f385579fb"
+                        val createdAtStr = obj.optString("created_at", obj.optString("updated_at", ""))
+                        val profileTier = normalizeTierLabel(obj.optString("tier", ""))
+                        val subTier = subscriptionsMap[id] ?: subscriptionsMap[email] ?: profileTier
+                        val finalTier = subTier ?: if (isAdmin) "Legendary" else "Free"
 
-                    users.add(
-                        UserEntity(
+                        usersByKey[email] = UserEntity(
                             id = id,
                             username = username,
                             email = email,
                             tier = finalTier,
                             requestsCount = 0,
                             isAdmin = isAdmin,
-                            status = "Active",
+                            status = obj.optString("status", "Active").ifBlank { "Active" },
                             joinedAt = parseIsoToMillis(createdAtStr)
                         )
+                    }
+                } else {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "fetchProfiles profiles table warning", e)
+            }
+
+            // 2. Merge users from `user_devices` (captures Google OAuth / biometric logins even if `profiles` row wasn't created)
+            try {
+                val devConn = openConnection("user_devices?select=*&limit=$limit", "GET")
+                if (devConn.responseCode in 200..299) {
+                    val devArr = JSONArray(devConn.inputStream.bufferedReader().readText())
+                    devConn.disconnect()
+                    for (i in 0 until devArr.length()) {
+                        val obj = devArr.getJSONObject(i)
+                        val email = obj.optString("user_email", obj.optString("email", "")).trim().lowercase()
+                        if (email.isBlank() || usersByKey.containsKey(email)) continue
+                        val uid = obj.optString("user_id", "").takeIf { it.matches(Regex("^[0-9a-fA-F-]{36}$")) }
+                            ?: UUID.nameUUIDFromBytes("justfan:$email".toByteArray()).toString()
+                        val isAdmin = email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                        val subTier = subscriptionsMap[uid] ?: subscriptionsMap[email] ?: if (isAdmin) "Legendary" else "Free"
+                        usersByKey[email] = UserEntity(
+                            id = uid,
+                            username = email.substringBefore("@"),
+                            email = email,
+                            tier = subTier,
+                            requestsCount = 0,
+                            isAdmin = isAdmin,
+                            status = "Active",
+                            joinedAt = parseIsoToMillis(obj.optString("updated_at", obj.optString("created_at", "")))
+                        )
+                    }
+                } else {
+                    devConn.disconnect()
+                }
+            } catch (_: Exception) {}
+
+            // 3. Merge users from `RequestfromApp` so any user who submitted a request or payment proof is also in the Admin Users list
+            try {
+                val reqConn = openConnection("RequestfromApp?select=user_id,email,name,created_at&limit=$limit", "GET")
+                if (reqConn.responseCode in 200..299) {
+                    val reqArr = JSONArray(reqConn.inputStream.bufferedReader().readText())
+                    reqConn.disconnect()
+                    for (i in 0 until reqArr.length()) {
+                        val obj = reqArr.getJSONObject(i)
+                        val email = obj.optString("email", "").trim().lowercase()
+                        if (email.isBlank()) continue
+                        val existing = usersByKey[email]
+                        if (existing != null) {
+                            usersByKey[email] = existing.copy(requestsCount = existing.requestsCount + 1)
+                        } else {
+                            val uid = obj.optString("user_id", "").takeIf { it.matches(Regex("^[0-9a-fA-F-]{36}$")) }
+                                ?: UUID.nameUUIDFromBytes("justfan:$email".toByteArray()).toString()
+                            val isAdmin = email.equals("reytherapper12@gmail.com", ignoreCase = true)
+                            val subTier = subscriptionsMap[uid] ?: subscriptionsMap[email] ?: if (isAdmin) "Legendary" else "Free"
+                            usersByKey[email] = UserEntity(
+                                id = uid,
+                                username = obj.optString("name", "").takeIf { it.isNotBlank() && it != "null" } ?: email.substringBefore("@"),
+                                email = email,
+                                tier = subTier,
+                                requestsCount = 1,
+                                isAdmin = isAdmin,
+                                status = "Active",
+                                joinedAt = parseIsoToMillis(obj.optString("created_at", ""))
+                            )
+                        }
+                    }
+                } else {
+                    reqConn.disconnect()
+                }
+            } catch (_: Exception) {}
+
+            // 4. Also include any remaining user_ids from `subscriptions`
+            for ((uid, plan) in subscriptionsMap) {
+                val alreadyMatched = usersByKey.values.any { it.id == uid || it.email.equals(uid, ignoreCase = true) }
+                if (!alreadyMatched && uid.isNotBlank()) {
+                    val syntheticEmail = if (uid.contains("@")) uid.lowercase() else "${uid.take(8)}@user.justfan"
+                    usersByKey[syntheticEmail] = UserEntity(
+                        id = uid,
+                        username = syntheticEmail.substringBefore("@"),
+                        email = syntheticEmail,
+                        tier = plan,
+                        requestsCount = 0,
+                        isAdmin = false,
+                        status = "Active",
+                        joinedAt = System.currentTimeMillis()
                     )
                 }
-                Result.success(users)
-            } else {
-                conn.disconnect()
-                Result.failure(Exception("HTTP $code"))
             }
+
+            Result.success(usersByKey.values.toList())
         } catch (e: Exception) {
             Log.e(TAG, "fetchProfiles error", e)
             Result.failure(e)

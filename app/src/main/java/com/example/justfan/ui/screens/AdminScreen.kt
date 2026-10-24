@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -230,6 +232,7 @@ fun AdminUsersTab(
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var tierFilter by remember { mutableStateOf("All") }
+    var targetUserInput by remember { mutableStateOf("") }
 
     val freeCount = remember(users) { users.count { it.tier.equals("free", ignoreCase = true) } }
     val proCount = remember(users) { users.count { it.tier.equals("pro", ignoreCase = true) } }
@@ -288,6 +291,128 @@ fun AdminUsersTab(
             }
         }
 
+        // Admin-Only Manual Membership Plan Upgrade Card for a Particular User
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(14.dp),
+                elevation = CardDefaults.cardElevation(3.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = null,
+                            tint = GoldAccent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "Manual Membership Plan Upgrade (Specific User)",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = "Enter a subscriber's email or user ID (or tap a user below) to manually assign their Membership Plan.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = targetUserInput,
+                        onValueChange = { targetUserInput = it },
+                        placeholder = { Text("Enter user email (e.g. user@gmail.com) or User ID") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_manual_upgrade_email_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val trimmedTarget = targetUserInput.trim()
+                        val matchingUser = users.find {
+                            it.email.equals(trimmedTarget, ignoreCase = true) ||
+                                    it.id.equals(trimmedTarget, ignoreCase = true) ||
+                                    it.username.equals(trimmedTarget, ignoreCase = true)
+                        }
+                        val resolvedIdOrEmail = matchingUser?.id ?: trimmedTarget
+                        val resolvedEmailLabel = matchingUser?.email ?: trimmedTarget
+
+                        Button(
+                            onClick = {
+                                if (trimmedTarget.isNotBlank()) {
+                                    onUpdateTier(resolvedIdOrEmail, "Free", resolvedEmailLabel)
+                                }
+                            },
+                            enabled = trimmedTarget.isNotBlank(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("admin_manual_upgrade_free")
+                        ) {
+                            Text("Set Free", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                if (trimmedTarget.isNotBlank()) {
+                                    onUpdateTier(resolvedIdOrEmail, "Pro", resolvedEmailLabel)
+                                }
+                            },
+                            enabled = trimmedTarget.isNotBlank(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("admin_manual_upgrade_pro")
+                        ) {
+                            Text("Upgrade Pro", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+
+                        Button(
+                            onClick = {
+                                if (trimmedTarget.isNotBlank()) {
+                                    onUpdateTier(resolvedIdOrEmail, "Legendary", resolvedEmailLabel)
+                                }
+                            },
+                            enabled = trimmedTarget.isNotBlank(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = GoldAccent,
+                                contentColor = Color.Black
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1.2f)
+                                .testTag("admin_manual_upgrade_legendary")
+                        ) {
+                            Text("★ Legendary", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             OutlinedTextField(
                 value = searchQuery,
@@ -326,6 +451,7 @@ fun AdminUsersTab(
                     elevation = CardDefaults.cardElevation(2.dp),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clickable { targetUserInput = user.email }
                         .testTag("admin_user_item_${user.id}")
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -792,11 +918,39 @@ fun AdminUploadPostTab(
     var isFree by remember { mutableStateOf(false) }
     var isUploadingImg by remember { mutableStateOf(false) }
     var isUploadingMulti by remember { mutableStateOf(false) }
+    var isGeneratingAiCopy by remember { mutableStateOf(false) }
+    var aiVariationCounter by remember { mutableIntStateOf(0) }
     var isPublishing by remember { mutableStateOf(false) }
     var statusBanner by remember { mutableStateOf<String?>(null) }
     var editingPost by remember { mutableStateOf<PostEntity?>(null) }
 
-    // Cover Image/Video Picker -> Imgchest API
+    fun triggerAiCopyGeneration(forceRegenerate: Boolean) {
+        val currentTitle = title.trim()
+        if (!forceRegenerate && description.isNotBlank() && tagsInput != "Exclusive, VIP, Glamour") {
+            return
+        }
+        scope.launch {
+            isGeneratingAiCopy = true
+            aiVariationCounter += 1
+            val effectiveTitle = currentTitle.ifBlank { "Midnight Velvet Exclusive Drop" }
+            statusBanner = "✨ AI Writer crafting a short & spicy description + hashtags for \"$effectiveTitle\"..."
+            val aiRes = MediaUploadClient.generateCaption(effectiveTitle, aiVariationCounter)
+            isGeneratingAiCopy = false
+            aiRes.onSuccess { generated ->
+                if (generated.description.isNotBlank()) {
+                    description = generated.description
+                }
+                if (generated.hashtags.isNotEmpty()) {
+                    tagsInput = generated.hashtags.joinToString(", ")
+                }
+                statusBanner = "✨ AI generated spicy description & ${generated.hashtags.size} hashtags! ✓"
+            }.onFailure { err ->
+                statusBanner = "AI generation note: ${err.message}"
+            }
+        }
+    }
+
+    // Cover Image/Video Picker -> Imgchest API + Auto AI Description & Hashtags
     val coverPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -816,6 +970,7 @@ fun AdminUploadPostTab(
                     val url = res.getOrNull().orEmpty()
                     imageUrl = url
                     statusBanner = "Cover media uploaded to Imgchest: $url ✓"
+                    triggerAiCopyGeneration(forceRegenerate = description.isBlank())
                 } else {
                     statusBanner = "Imgchest upload error: ${res.exceptionOrNull()?.message}"
                 }
@@ -823,7 +978,7 @@ fun AdminUploadPostTab(
         }
     }
 
-    // Multiple Content Images/Videos Picker -> Imgchest API
+    // Multiple Content Images/Videos Picker -> Imgchest API + Auto AI Description & Hashtags
     val multiContentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris: List<Uri> ->
@@ -854,6 +1009,7 @@ fun AdminUploadPostTab(
                     uploadedContentUrls = (uploadedContentUrls + newUrls).distinct()
                     if (imageUrl.isBlank()) imageUrl = newUrls.first()
                     statusBanner = "Uploaded ${newUrls.size} content file(s) via Imgchest API! ✓"
+                    triggerAiCopyGeneration(forceRegenerate = description.isBlank())
                 } else {
                     statusBanner = "Failed to upload content files."
                 }
@@ -912,15 +1068,60 @@ fun AdminUploadPostTab(
         }
 
         item {
-            OutlinedTextField(
-                value = description,
-                onValueChange = { description = it },
-                label = { Text("Description") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(100.dp),
-                maxLines = 3
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Short & Spicy Description + Hashtags",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Button(
+                        onClick = { triggerAiCopyGeneration(forceRegenerate = true) },
+                        enabled = !isGeneratingAiCopy,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = GoldAccent,
+                            contentColor = Color.Black
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("admin_ai_generate_caption_btn")
+                    ) {
+                        if (isGeneratingAiCopy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.Black
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Writing...", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        } else {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = "AI Generate Spicy Description & Hashtags",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("✨ AI Spicy Copy & #Tags", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description (Auto-generated on upload or tap ✨ AI button)") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(105.dp)
+                        .testTag("admin_post_description_input"),
+                    maxLines = 4
+                )
+            }
         }
 
         item {

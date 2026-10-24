@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for Payment Screenshot Upload & Admin Cross-Verification (PayPal & Google Pay/UPI) and Calendar-Month Request Quota Reset on the 1st of each month per device and account.",
-  "updatedAt":  "2026-10-20T18:35:04.359746659Z",
+  "summary":  "Implementation plan to move manual Membership Plan upgrades exclusively to the Admin Dashboard for targeting specific users (removing unverified self-upgrade buttons from the public Membership page) and to remove the top FREE/PREMIUM and DIRECT/VIP overlay badges from Home page post cards so cover images remain clean and unobstructed.",
+  "updatedAt":  "2026-10-24T15:36:48.505269562Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -128,60 +128,13 @@ fun ContentCard(
                     }
                 }
 
-                // Top badges row
-                Row(
+                // Top-Right Favorite Button Only (clean cover image without FREE/PREMIUM badge)
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    contentAlignment = Alignment.TopEnd
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (post.isFree) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.primary,
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "FREE",
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        } else {
-                            Surface(
-                                color = GoldAccent,
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "PREMIUM",
-                                    color = Color.Black,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        if (isVideo) {
-                            Surface(
-                                color = Color.Red.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "▶ VIDEO",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Favorite Button
                     IconButton(
                         onClick = onToggleFavorite,
                         modifier = Modifier

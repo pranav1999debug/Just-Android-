@@ -277,6 +277,22 @@ class JustFanRepository(private val context: Context) {
                     userDao.insertUsers(remoteUsers)
                 }
             }
+
+            // 4. Refresh active signed-in user's subscription tier if changed remotely
+            val current = _userProfile.value
+            if (current.isSignedIn && current.id != "guest_user") {
+                val cleanEmail = current.email.trim().lowercase()
+                val activeToken = ensureValidAccessToken(current)
+                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(current.id, cleanEmail, activeToken).getOrNull()
+                if (subDetails != null) {
+                    val updated = current.copy(
+                        tier = subDetails.tier,
+                        proExpiresAt = subDetails.expiresAtMillis
+                    )
+                    _userProfile.value = updated
+                    saveProfileToPrefs(updated)
+                }
+            }
         } catch (e: Exception) {
             Log.e("JustFanRepository", "syncData error", e)
         } finally {
@@ -299,6 +315,18 @@ class JustFanRepository(private val context: Context) {
             }
         }
 
+        // Restore cached per-account manual tier override immediately if present
+        val cachedAccountTier = prefs.getString("account_tier_$cleanEmail", null)
+        val cachedAccountExpires = prefs.getLong("account_expires_$cleanEmail", 0L)
+        if (!cachedAccountTier.isNullOrBlank()) {
+            val restoredProfile = _userProfile.value.copy(
+                tier = cachedAccountTier,
+                proExpiresAt = cachedAccountExpires
+            )
+            _userProfile.value = restoredProfile
+            saveProfileToPrefs(restoredProfile)
+        }
+
         scope.launch {
             try {
                 val isRey = cleanEmail.equals("reytherapper12@gmail.com", ignoreCase = true)
@@ -307,29 +335,39 @@ class JustFanRepository(private val context: Context) {
 
                 // 1. Sync subscription tier from Supabase subscriptions and users tables (auto-downgrades expired 1-month Pro to Free)
                 val subDetails = SupabaseClient.fetchUserSubscriptionDetails(activeUserId, cleanEmail, activeToken).getOrNull()
-                if (subDetails != null || isRey) {
-                    val isLegendary = subDetails?.tier?.equals("legendary", ignoreCase = true) == true || isRey
-                    val isPro = subDetails?.tier?.equals("pro", ignoreCase = true) == true
-                    val expiresAt = when {
-                        isLegendary -> Long.MAX_VALUE
-                        isPro -> subDetails?.expiresAtMillis?.takeIf { it > 0L } ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
-                        else -> 0L
-                    }
-                    val finalTier = when {
-                        isLegendary -> "Legendary"
-                        isPro -> "Pro"
-                        else -> "Free"
-                    }
-
-                    val updatedProfile = _userProfile.value.copy(
-                        tier = finalTier,
-                        isAdmin = isRey,
-                        proExpiresAt = expiresAt
-                    )
-                    _userProfile.value = updatedProfile
-                    saveProfileToPrefs(updatedProfile)
-                    userDao.updateUserTier(activeUserId, finalTier)
+                val effectiveTier = when {
+                    subDetails != null -> subDetails.tier
+                    !cachedAccountTier.isNullOrBlank() -> cachedAccountTier
+                    isRey -> "Legendary"
+                    else -> _userProfile.value.tier
                 }
+                val isLegendary = effectiveTier.equals("legendary", ignoreCase = true)
+                val isPro = effectiveTier.equals("pro", ignoreCase = true)
+                val expiresAt = when {
+                    isLegendary -> Long.MAX_VALUE
+                    isPro -> subDetails?.expiresAtMillis?.takeIf { it > 0L }
+                        ?: cachedAccountExpires.takeIf { it > 0L }
+                        ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
+                    else -> 0L
+                }
+                val finalTier = when {
+                    isLegendary -> "Legendary"
+                    isPro -> "Pro"
+                    else -> "Free"
+                }
+
+                val updatedProfile = _userProfile.value.copy(
+                    tier = finalTier,
+                    isAdmin = isRey,
+                    proExpiresAt = expiresAt
+                )
+                _userProfile.value = updatedProfile
+                saveProfileToPrefs(updatedProfile)
+                prefs.edit()
+                    .putString("account_tier_$cleanEmail", finalTier)
+                    .putLong("account_expires_$cleanEmail", expiresAt)
+                    .apply()
+                userDao.updateUserTier(activeUserId, finalTier)
 
                 // 2. Sync theme & wallpaper from Supabase user_preferences table
                 val prefResult = SupabaseClient.fetchUserPreferences(activeUserId, activeToken)
@@ -401,7 +439,7 @@ class JustFanRepository(private val context: Context) {
             }
         }
 
-        if (current.tier.equals("legendary", ignoreCase = true) || current.isProActive || current.isAdmin) {
+        if (current.tier.equals("legendary", ignoreCase = true) || current.isProActive) {
             val unlimited = RequestQuota(unlimited = true, limit = 9999, used = 0, remaining = 9999)
             _requestQuota.value = unlimited
             return unlimited
@@ -442,29 +480,93 @@ class JustFanRepository(private val context: Context) {
     }
 
     suspend fun updateUserTier(userId: String, newTier: String) {
-        userDao.updateUserTier(userId, newTier)
+        val trimmedInput = userId.trim()
+        val normalizedTier = when {
+            newTier.equals("legendary", ignoreCase = true) -> "Legendary"
+            newTier.equals("pro", ignoreCase = true) -> "Pro"
+            else -> "Free"
+        }
+        val isLegendary = normalizedTier == "Legendary"
+        val isPro = normalizedTier == "Pro"
+        val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (31L * 24 * 60 * 60 * 1000L) else 0L
+
+        val existingUser = userDao.findUserById(trimmedInput)
+            ?: userDao.findUserByEmail(trimmedInput.lowercase())
+            ?: userDao.getAllUsersList().find {
+                it.email.equals(trimmedInput, ignoreCase = true) ||
+                        it.id.equals(trimmedInput, ignoreCase = true) ||
+                        it.username.equals(trimmedInput, ignoreCase = true)
+            }
+
+        if (existingUser != null) {
+            userDao.insertUsers(listOf(existingUser.copy(tier = normalizedTier)))
+        } else if (trimmedInput.isNotBlank()) {
+            val isEmail = trimmedInput.contains("@")
+            val emailVal = if (isEmail) trimmedInput.lowercase() else "${trimmedInput.take(8)}@user.justfan"
+            val idVal = if (trimmedInput.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                trimmedInput
+            } else {
+                UUID.nameUUIDFromBytes("justfan:$emailVal".toByteArray()).toString()
+            }
+            userDao.insertUsers(
+                listOf(
+                    UserEntity(
+                        id = idVal,
+                        username = emailVal.substringBefore("@"),
+                        email = emailVal,
+                        tier = normalizedTier,
+                        requestsCount = 0,
+                        isAdmin = emailVal.equals("reytherapper12@gmail.com", ignoreCase = true),
+                        status = "Active",
+                        joinedAt = System.currentTimeMillis()
+                    )
+                )
+            )
+        }
+        userDao.updateUserTier(trimmedInput, normalizedTier)
 
         val current = _userProfile.value
-        if (current.id == userId || current.email.equals(userId, ignoreCase = true) || userId == "guest_user") {
-            val isRey = current.email.equals("reytherapper12@gmail.com", ignoreCase = true)
-            val isLegendary = newTier.equals("legendary", ignoreCase = true) || isRey
-            val isPro = newTier.equals("pro", ignoreCase = true)
-            val expiresAt = if (isLegendary) Long.MAX_VALUE else if (isPro) System.currentTimeMillis() + (31L * 24 * 60 * 60 * 1000L) else 0L
+        val resolvedTargetEmail = existingUser?.email ?: if (trimmedInput.contains("@")) trimmedInput.lowercase() else ""
+        val isCurrentTarget = current.id.equals(trimmedInput, ignoreCase = true) ||
+                current.email.equals(trimmedInput, ignoreCase = true) ||
+                (resolvedTargetEmail.isNotBlank() && current.email.equals(resolvedTargetEmail, ignoreCase = true)) ||
+                trimmedInput == "guest_user" ||
+                trimmedInput.isBlank()
 
+        if (isCurrentTarget) {
             val updated = current.copy(
-                tier = if (isLegendary) "Legendary" else if (isPro) "Pro" else "Free",
+                tier = normalizedTier,
                 proExpiresAt = expiresAt
             )
             _userProfile.value = updated
             saveProfileToPrefs(updated)
+            val cleanCurrentEmail = current.email.trim().lowercase()
+            if (cleanCurrentEmail.isNotBlank()) {
+                prefs.edit()
+                    .putString("account_tier_$cleanCurrentEmail", normalizedTier)
+                    .putLong("account_expires_$cleanCurrentEmail", expiresAt)
+                    .apply()
+            }
+        } else if (resolvedTargetEmail.isNotBlank()) {
+            val cleanTargetEmail = resolvedTargetEmail.trim().lowercase()
+            prefs.edit()
+                .putString("account_tier_$cleanTargetEmail", normalizedTier)
+                .putLong("account_expires_$cleanTargetEmail", expiresAt)
+                .apply()
         }
 
         scope.launch {
             val adminToken = ensureValidAccessToken(_userProfile.value)
-            val res = SupabaseClient.updateUserTier(userId, newTier, adminToken, _userProfile.value.email)
+            val emailHint = when {
+                resolvedTargetEmail.isNotBlank() -> resolvedTargetEmail
+                isCurrentTarget -> _userProfile.value.email
+                else -> null
+            }
+            val targetIdOrEmail = existingUser?.id ?: if (trimmedInput.isBlank()) _userProfile.value.id else trimmedInput
+            val res = SupabaseClient.updateUserTier(targetIdOrEmail, normalizedTier, adminToken, emailHint)
             fetchRequestQuota()
             if (res.isSuccess) {
-                Log.i("JustFanRepository", "Remote subscription updated in Supabase for $userId to $newTier")
+                Log.i("JustFanRepository", "Remote subscription updated in Supabase for $targetIdOrEmail ($emailHint) to $normalizedTier")
             } else {
                 Log.w("JustFanRepository", "Remote subscription update failed: ${res.exceptionOrNull()?.message}")
             }

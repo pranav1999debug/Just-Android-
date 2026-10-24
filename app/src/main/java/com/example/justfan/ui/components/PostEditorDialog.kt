@@ -72,10 +72,40 @@ fun PostEditorDialog(
 
     var isUploadingCover by remember { mutableStateOf(false) }
     var isUploadingContent by remember { mutableStateOf(false) }
+    var isGeneratingAiCopy by remember { mutableStateOf(false) }
+    var aiVariationCounter by remember { mutableIntStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isStatusError by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var sectionExpanded by remember { mutableStateOf(false) }
+
+    fun triggerAiCopyGeneration(forceRegenerate: Boolean) {
+        if (!forceRegenerate && description.isNotBlank() && tagsInput.isNotBlank()) {
+            return
+        }
+        scope.launch {
+            isGeneratingAiCopy = true
+            isStatusError = false
+            aiVariationCounter += 1
+            val effectiveTitle = title.trim().ifBlank { "Midnight Velvet Exclusive Drop" }
+            statusMessage = "✨ AI Writer crafting a short & spicy description + hashtags for \"$effectiveTitle\"..."
+            val aiRes = MediaUploadClient.generateCaption(effectiveTitle, aiVariationCounter)
+            isGeneratingAiCopy = false
+            aiRes.onSuccess { generated ->
+                if (generated.description.isNotBlank()) {
+                    description = generated.description
+                }
+                if (generated.hashtags.isNotEmpty()) {
+                    tagsInput = generated.hashtags.joinToString(", ")
+                }
+                statusMessage = "✨ AI generated spicy description & ${generated.hashtags.size} hashtags! ✓"
+                isStatusError = false
+            }.onFailure { err ->
+                statusMessage = "AI generation failed: ${err.message}"
+                isStatusError = true
+            }
+        }
+    }
 
     // Cover Image / Video Picker -> Uploads via Imgchest API (or MediaUploadClient for video)
     val coverPickerLauncher = rememberLauncherForActivityResult(
@@ -107,6 +137,7 @@ fun PostEditorDialog(
                     imageUrl = url
                     statusMessage = "Cover media uploaded to Imgchest! ✓"
                     isStatusError = false
+                    triggerAiCopyGeneration(forceRegenerate = description.isBlank())
                 } else {
                     statusMessage = "Cover upload failed: ${uploadRes.exceptionOrNull()?.message}"
                     isStatusError = true
@@ -170,6 +201,7 @@ fun PostEditorDialog(
                     }
                     statusMessage = "Uploaded ${uploadedUrls.size} content media file(s) to Imgchest! ✓"
                     isStatusError = false
+                    triggerAiCopyGeneration(forceRegenerate = description.isBlank())
                 } else {
                     statusMessage = "Content upload failed: ${lastErr ?: "Unable to reach Imgchest"}"
                     isStatusError = true
@@ -450,17 +482,58 @@ fun PostEditorDialog(
                     }
                 }
 
-                // Description
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Description", fontSize = 12.sp, color = Color.LightGray, fontWeight = FontWeight.SemiBold)
+                // Description + AI Generator Button
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Description & Hashtags",
+                            fontSize = 12.sp,
+                            color = Color.LightGray,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Button(
+                            onClick = { triggerAiCopyGeneration(forceRegenerate = true) },
+                            enabled = !isGeneratingAiCopy,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFF59E0B),
+                                contentColor = Color.Black
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp),
+                            modifier = Modifier.testTag("editor_ai_generate_caption_btn")
+                        ) {
+                            if (isGeneratingAiCopy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.Black
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Writing...", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            } else {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = "AI Generate Spicy Description & Hashtags",
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text("✨ AI Spicy Copy & #Tags", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = description,
                         onValueChange = { description = it },
-                        placeholder = { Text("Gallery description...") },
+                        placeholder = { Text("Short & spicy gallery description (auto-generated on upload or tap ✨ AI)...") },
                         maxLines = 4,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(95.dp)
+                            .height(98.dp)
+                            .testTag("editor_description_input")
                     )
                 }
 

@@ -8,7 +8,7 @@ serve(async (req) => {
   }
 
   try {
-    const { title } = await req.json();
+    const { title, variation } = await req.json();
     if (!title || typeof title !== "string" || title.trim().length === 0) {
       return new Response(
         JSON.stringify({ error: "Missing or invalid 'title' parameter" }),
@@ -27,11 +27,27 @@ serve(async (req) => {
       // Fallback to default Groq model if not specified
     }
 
-    const prompt = `You are a social media specialist. Given the post title: "${title.trim()}", generate an engaging social media description and 3-5 trending hashtags.
+    const angles = [
+      "Velvet & Late-Night Intrigue — sultry, magnetic, and effortlessly confident",
+      "High-Voltage Glamour — bold, unapologetic, and impossible to scroll past",
+      "Playful Tease & Siren Energy — witty, seductive, and leaving just enough to the imagination",
+      "Editorial Luxury & Heat — sleek after-dark sophistication with a spicy edge",
+      "Behind-Closed-Doors Exclusive — intimate, raw, and dangerously captivating"
+    ];
+    const chosenAngle = angles[Math.abs(Number(variation || Date.now())) % angles.length];
+
+    const prompt = `You are an elite, high-converting creative copywriter for an exclusive glamour creator platform.
+Given the post title: "${title.trim()}"
+Creative Angle: ${chosenAngle}
+
+Write:
+1. A SHORT, SPICY, teasing, and magnetic description (1 to 2 punchy sentences, max 32 words) written like a professional human writer. Never use boring clichés like "Explore exclusive" or "Dive into".
+2. 5 to 7 trending, relevant hashtags tailored to "${title.trim()}".
+
 You must respond with ONLY valid JSON with this exact structure:
 {
-  "description": "Engaging description text here",
-  "hashtags": ["#tag1", "#tag2", "#tag3"]
+  "description": "Short, spicy professional copywriter description here",
+  "hashtags": ["#Tag1", "#Tag2", "#Tag3", "#Tag4", "#Tag5"]
 }`;
 
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -45,7 +61,7 @@ You must respond with ONLY valid JSON with this exact structure:
         messages: [
           {
             role: "system",
-            content: "You are a social media copywriter. Output ONLY valid JSON with 'description' and 'hashtags' keys. No explanation, no markdown backticks.",
+            content: "You are an elite glamour & creator copywriter. Output ONLY valid JSON with 'description' and 'hashtags' keys. No explanation, no markdown backticks.",
           },
           {
             role: "user",
@@ -53,7 +69,7 @@ You must respond with ONLY valid JSON with this exact structure:
           },
         ],
         response_format: { type: "json_object" },
-        temperature: 0.7,
+        temperature: 0.92,
       }),
     });
 
@@ -80,10 +96,10 @@ You must respond with ONLY valid JSON with this exact structure:
       }
     }
 
-    const description = parsed.description || `Check out ${title}!`;
+    const description = parsed.description || "";
     const hashtags = Array.isArray(parsed.hashtags)
       ? parsed.hashtags.map((h) => (h.startsWith("#") ? h : `#${h}`))
-      : ["#JustFan", "#Exclusive", "#Trending"];
+      : ["#Exclusive", "#SpicyDrop", "#AfterHours"];
 
     return new Response(
       JSON.stringify({

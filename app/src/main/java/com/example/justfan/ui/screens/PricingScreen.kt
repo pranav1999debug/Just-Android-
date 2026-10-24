@@ -397,40 +397,21 @@ fun PricingScreen(
                             ) {
                                 Text("Current Active Tier", fontWeight = FontWeight.Bold)
                             }
-                        } else if (isAdmin) {
+                        } else if (plan.name != "Free") {
                             Button(
-                                onClick = {
-                                    onSelectPlan(plan.name)
-                                    upgradedPlanName = plan.name
-                                },
+                                onClick = { checkoutPlan = plan },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (plan.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
                                     contentColor = if (plan.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
                                 ),
                                 modifier = Modifier
-                                    .testTag("btn_select_plan_${plan.name.lowercase()}")
+                                    .testTag("btn_pay_plan_${plan.name.lowercase()}")
                                     .fillMaxWidth()
                             ) {
-                                Text("Set Tier: ${plan.name} (Admin Override)", fontWeight = FontWeight.Bold)
-                            }
-                        } else if (plan.name != "Free") {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { checkoutPlan = plan },
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (plan.name == "Legendary") GoldAccent else MaterialTheme.colorScheme.primary,
-                                        contentColor = if (plan.name == "Legendary") Color.Black else MaterialTheme.colorScheme.onPrimary
-                                    ),
-                                    modifier = Modifier
-                                        .testTag("btn_pay_plan_${plan.name.lowercase()}")
-                                        .fillMaxWidth()
-                                    ) {
-                                        Icon(Icons.Default.Diamond, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Upgrade to ${plan.name} (${plan.price} / ${plan.inrPrice})", fontWeight = FontWeight.Bold)
-                                    }
+                                Icon(Icons.Default.Diamond, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Upgrade to ${plan.name} (${plan.price} / ${plan.inrPrice})", fontWeight = FontWeight.Bold)
                             }
                         }
                     }

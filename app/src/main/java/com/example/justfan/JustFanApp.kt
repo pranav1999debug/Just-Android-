@@ -6,13 +6,30 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.example.justfan.data.notification.OneSignalManager
+import com.onesignal.OneSignal
+import com.onesignal.debug.LogLevel
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 class JustFanApp : Application(), ImageLoaderFactory {
 
+    companion object {
+        const val ONESIGNAL_APP_ID = "1fbba4bb-4446-4bae-829d-36a74cd95adb"
+    }
+
     override fun onCreate() {
         super.onCreate()
+
+        // 1. Configure privacy consent requirement before initWithContext
+        OneSignal.consentRequired = false
+
+        // 2. Enable verbose logging in debug builds for troubleshooting
+        OneSignal.Debug.logLevel = LogLevel.VERBOSE
+
+        // 3. Initialize OneSignal Android SDK v5 with application context and App ID
+        OneSignal.initWithContext(this, ONESIGNAL_APP_ID)
+
+        // 4. Register foreground & click listeners and local notification channel via OneSignalManager
         OneSignalManager.initialize(this)
     }
 

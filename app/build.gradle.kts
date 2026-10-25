@@ -22,6 +22,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "SUPABASE_URL", "\"https://zlboyxbqppoimhhbvrax.supabase.co\"")
     buildConfigField("String", "SUPABASE_KEY", "\"sb_publishable_GhUYsZ9tE9XnFHPmqmYBXw_p2pf1meg\"")
+    buildConfigField("String", "ONESIGNAL_APP_ID", "\"1fbba4bb-4446-4bae-829d-36a74cd95adb\"")
   }
 
   signingConfigs {
@@ -105,6 +106,7 @@ dependencies {
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.biometric)
   implementation(libs.zxing.core)
+  implementation(libs.onesignal)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

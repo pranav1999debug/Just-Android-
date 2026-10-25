@@ -118,6 +118,7 @@ data class ActivityEntity(
     val type: String = "general",
     val title: String = "",
     val body: String? = null,
+    val targetPostId: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 

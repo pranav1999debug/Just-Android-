@@ -939,6 +939,17 @@ fun AdminUploadPostTab(
     var isPublishing by remember { mutableStateOf(false) }
     var statusBanner by remember { mutableStateOf<String?>(null) }
     var editingPost by remember { mutableStateOf<PostEntity?>(null) }
+    var manageSearchQuery by remember { mutableStateOf("") }
+
+    val filteredManagePosts = remember(posts, manageSearchQuery) {
+        val q = manageSearchQuery.trim().lowercase()
+        if (q.isBlank()) posts
+        else posts.filter {
+            it.title.lowercase().contains(q) ||
+                    it.author.lowercase().contains(q) ||
+                    it.tags.any { tag -> tag.lowercase().contains(q) }
+        }
+    }
 
     fun triggerAiCopyGeneration(forceRegenerate: Boolean) {
         val currentTitle = title.trim()
@@ -1374,13 +1385,25 @@ fun AdminUploadPostTab(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    "Manage Existing Posts (${posts.size})",
+                    "Manage Existing Posts (${filteredManagePosts.size} / ${posts.size})",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = manageSearchQuery,
+                    onValueChange = { manageSearchQuery = it },
+                    placeholder = { Text("Search all ${posts.size} posts by title, creator, or tag...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("admin_manage_posts_search_input")
+                )
             }
 
-            items(posts.take(40), key = { it.id }) { postItem ->
+            items(filteredManagePosts, key = { it.id }) { postItem ->
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     shape = RoundedCornerShape(12.dp),

@@ -11,6 +11,7 @@ import com.example.justfan.data.model.RequestQuota
 import com.example.justfan.data.model.UserEntity
 import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
+import com.example.justfan.data.notification.OneSignalManager
 import com.example.justfan.data.remote.SupabaseClient
 import com.example.justfan.util.BiometricAuthManager
 import com.example.justfan.util.DeviceBiometricInfo
@@ -294,12 +295,21 @@ class JustFanRepository(private val context: Context) {
                 }
             }
 
-            // 1. Sync Posts (includes click counts from post_click_counts)
+            // 1. Sync Posts (includes click counts from post_click_counts across all paginated batches)
             val postsResult = SupabaseClient.fetchPosts()
             if (postsResult.isSuccess) {
                 val remotePosts = postsResult.getOrNull().orEmpty()
                 if (remotePosts.isNotEmpty()) {
-                    postDao.insertPosts(remotePosts)
+                    val remoteIds = remotePosts.map { it.id }.toSet()
+                    val existingLocal = postDao.getAllPostsList()
+                    existingLocal.forEach { localPost ->
+                        if (localPost.id !in remoteIds) {
+                            postDao.deletePost(localPost.id)
+                        }
+                    }
+                    remotePosts.chunked(500).forEach { chunk ->
+                        postDao.insertPosts(chunk)
+                    }
                 }
             }
 
@@ -430,6 +440,17 @@ class JustFanRepository(private val context: Context) {
                     .putLong("account_expires_$cleanEmail", expiresAt)
                     .apply()
                 userDao.updateUserTier(activeUserId, finalTier)
+
+                // Sync identity & tags with OneSignal SDK v5
+                OneSignalManager.login(activeUserId)
+                OneSignalManager.setEmail(cleanEmail)
+                OneSignalManager.setTags(
+                    mapOf(
+                        "tier" to finalTier,
+                        "is_admin" to isRey.toString(),
+                        "email" to cleanEmail
+                    )
+                )
 
                 // Persist device binding in Supabase so even after uninstall & reinstall on this device,
                 // the account and its upgraded tier are recovered automatically!
@@ -739,6 +760,13 @@ class JustFanRepository(private val context: Context) {
             )
             requestDao.insertRequest(newEntity)
             fetchRequestQuota()
+            OneSignalManager.triggerNewRequestNotification(
+                name = name,
+                email = email,
+                requestMessage = message,
+                imageUrl = imageUrl,
+                context = context
+            )
         }
         return res
     }
@@ -789,6 +817,14 @@ class JustFanRepository(private val context: Context) {
             createdAt = System.currentTimeMillis()
         )
         requestDao.insertRequest(newEntity)
+        OneSignalManager.triggerNewPaymentNotification(
+            tier = tier.trim(),
+            method = method.trim(),
+            amount = amount.trim(),
+            userEmail = userEmail,
+            proofImageUrl = proofImageUrl,
+            context = context
+        )
         return res
     }
 
@@ -848,6 +884,7 @@ class JustFanRepository(private val context: Context) {
         postDao.insertPost(post)
         val token = ensureValidAccessToken(_userProfile.value)
         val res = SupabaseClient.insertPost(post, token)
+        OneSignalManager.triggerNewPostNotification(post, context)
         return res
     }
 
@@ -1033,6 +1070,7 @@ class JustFanRepository(private val context: Context) {
 
     fun signOut() {
         val hardwareDeviceId = getDeviceId(context)
+        OneSignalManager.logout()
         scope.launch {
             SupabaseClient.clearDeviceBindingInSupabase(hardwareDeviceId)
         }

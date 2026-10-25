@@ -43,9 +43,11 @@ googleid = "1.1.1"
 media3 = "1.5.1"
 biometric = "1.2.0-alpha05"
 zxing = "3.5.3"
+onesignal = "[5.1.6, 5.1.99]"
 
 
 [libraries]
+onesignal = { group = "com.onesignal", name = "OneSignal", version.ref = "onesignal" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

@@ -20,6 +20,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.ActivityEntity
 import com.example.justfan.data.model.PostEntity
+import com.example.justfan.data.notification.OneSignalManager
 import com.example.justfan.ui.components.AuthDialog
 import com.example.justfan.ui.components.BiometricSetupDialog
 import com.example.justfan.ui.components.MoreBottomSheet
@@ -98,6 +100,64 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     val isOwnerOrAdmin = userProfile.isSignedIn && (userProfile.isAdmin || userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true))
     val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
             userProfile.isProActive || isOwnerOrAdmin
+
+    val livePushEvents by OneSignalManager.liveEvents.collectAsState()
+
+    // Request Android 13+ POST_NOTIFICATIONS permission automatically inside a coroutine
+    // right after sign-in or app unlock, and associate the signed-in user with OneSignal v5.
+    LaunchedEffect(isStartupGateVisible, userProfile.id) {
+        if (!isStartupGateVisible && userProfile.isSignedIn) {
+            OneSignalManager.requestPushPermissionSuspend(true)
+            OneSignalManager.login(userProfile.id)
+            OneSignalManager.setEmail(userProfile.email)
+            OneSignalManager.setTags(
+                mapOf(
+                    "tier" to userProfile.tier,
+                    "is_admin" to isOwnerOrAdmin.toString(),
+                    "email" to userProfile.email
+                )
+            )
+        }
+    }
+
+    val combinedActivities = remember(livePushEvents, posts, requests) {
+        val list = mutableListOf<ActivityEntity>()
+        list.addAll(livePushEvents)
+        posts.take(15).forEach { post ->
+            list.add(
+                ActivityEntity(
+                    id = "post_${post.id}",
+                    type = "post_created",
+                    title = "🔥 New Post: ${post.title}",
+                    body = "By ${post.author} (${if (post.isFree) "Free Gallery" else "VIP Exclusive"})",
+                    targetPostId = post.id,
+                    createdAt = post.createdAt
+                )
+            )
+        }
+        requests.take(15).forEach { req ->
+            val isPayment = req.message.startsWith("[PAYMENT_PROOF]")
+            list.add(
+                ActivityEntity(
+                    id = "req_${req.id}",
+                    type = if (isPayment) "new_payment" else if (req.status.equals("fulfilled", true) || req.status.equals("delivered", true)) "request_delivered" else "new_request",
+                    title = if (isPayment) "💎 Membership Payment Proof (${req.name})" else "📩 Creator Request (${req.name})",
+                    body = req.message.removePrefix("[PAYMENT_PROOF]").trim(),
+                    createdAt = req.createdAt
+                )
+            )
+        }
+        if (list.isEmpty()) {
+            list.add(
+                ActivityEntity(
+                    type = "welcome",
+                    title = "Welcome to JUSTFAN",
+                    body = "Explore trending 4K galleries, exclusive creator drops, and custom request fulfillment."
+                )
+            )
+        }
+        list.sortedByDescending { it.createdAt }
+    }
 
     fun navigateTo(screen: AppScreen) {
         if (screenBackstack.lastOrNull() != screen) {
@@ -169,7 +229,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             onNotificationsClick = { navigateTo(AppScreen.Activity) },
                             onAdminClick = { navigateTo(AppScreen.Admin) },
                             onPricingClick = { navigateTo(AppScreen.Membership) },
-                            unreadNotificationsCount = 0,
+                            unreadNotificationsCount = livePushEvents.size,
                             isSyncing = isRefreshing,
                             onSyncClick = { viewModel.refreshAll() },
                             userProfile = userProfile,
@@ -238,6 +298,8 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             favoriteIds = favoriteIds,
                             isPaidOrLegendary = isPaidOrLegendary,
                             requests = requests,
+                            isRefreshing = isRefreshing,
+                            onRefresh = { viewModel.refreshAll() },
                             externalSearchQuery = globalSearchQuery,
                             onViewAllTrending = { navigateRoot(AppScreen.Trending) },
                             onPostClick = {
@@ -329,13 +391,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                             }
                         )
                         is AppScreen.Activity -> NotificationsScreen(
-                            activities = listOf(
-                                ActivityEntity(
-                                    type = "welcome",
-                                    title = "Welcome to JUSTFAN",
-                                    body = "Explore trending 4K galleries, exclusive creator drops, and custom request fulfillment."
-                                )
-                            ),
+                            activities = combinedActivities,
                             onSelectPost = { postId ->
                                 posts.find { it.id == postId }?.let {
                                     viewModel.recordPostClick(it.id)
@@ -373,6 +429,8 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                     favoriteIds = favoriteIds,
                                     isPaidOrLegendary = isPaidOrLegendary,
                                     requests = requests,
+                                    isRefreshing = isRefreshing,
+                                    onRefresh = { viewModel.refreshAll() },
                                     externalSearchQuery = globalSearchQuery,
                                     onViewAllTrending = { navigateRoot(AppScreen.Trending) },
                                     onPostClick = {

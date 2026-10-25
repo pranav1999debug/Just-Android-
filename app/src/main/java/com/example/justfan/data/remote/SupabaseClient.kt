@@ -193,22 +193,36 @@ object SupabaseClient {
 
     private fun fetchPostClickCounts(): Map<String, Int> {
         val map = mutableMapOf<String, Int>()
+        val pageSize = 1000
+        var offset = 0
+        val maxPages = 25
+        var page = 0
         try {
-            val conn = openConnection("post_click_counts?select=post_id,count&order=count.desc&limit=1000", "GET")
-            if (conn.responseCode in 200..299) {
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val arr = JSONArray(body)
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    val pid = obj.optString("post_id", "")
-                    val count = obj.optInt("count", obj.optInt("clicks_count", 0))
-                    if (pid.isNotBlank()) {
-                        map[pid] = count
+            while (page < maxPages) {
+                val conn = openConnection(
+                    "post_click_counts?select=post_id,count&order=count.desc,post_id.asc&limit=$pageSize&offset=$offset",
+                    "GET"
+                )
+                if (conn.responseCode in 200..299) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val arr = JSONArray(body)
+                    val length = arr.length()
+                    for (i in 0 until length) {
+                        val obj = arr.getJSONObject(i)
+                        val pid = obj.optString("post_id", "")
+                        val count = obj.optInt("count", obj.optInt("clicks_count", 0))
+                        if (pid.isNotBlank()) {
+                            map[pid] = count
+                        }
                     }
+                    if (length < pageSize) break
+                    offset += pageSize
+                    page++
+                } else {
+                    conn.disconnect()
+                    break
                 }
-            } else {
-                conn.disconnect()
             }
         } catch (e: Exception) {
             Log.w(TAG, "fetchPostClickCounts warning", e)
@@ -216,53 +230,59 @@ object SupabaseClient {
         return map
     }
 
-    suspend fun fetchPosts(limit: Int = 1000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
+    suspend fun fetchPosts(maxTotal: Int = 25000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
             val clickCountsMap = fetchPostClickCounts()
-            val endpoint = "posts?select=*&order=created_at.desc&limit=$limit"
-            val conn = openConnection(endpoint, "GET")
-            val code = conn.responseCode
-            if (code in 200..299) {
-                val response = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val jsonArray = JSONArray(response)
-                val list = mutableListOf<PostEntity>()
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val id = obj.optString("id", UUID.randomUUID().toString())
-                    val title = obj.optString("title", "Untitled Post")
-                    val desc = obj.optString("description", "")
-                    val img = obj.optString("image_url", "")
-                    val link = obj.optString("link_url", "")
-                    val direct = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
-                    val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
-                    val isFree = obj.optBoolean("is_free", false)
-                    val isNsfw = obj.optBoolean("is_nsfw", false)
-                    val clicks = clickCountsMap[id] ?: obj.optInt("clicks_count", 0)
-                    val likes = obj.optInt("likes_count", 0)
-                    val section = obj.optString("section", "home")
-                    val author = obj.optString("author", "JustFan Creator")
-                    val createdAtStr = obj.optString("created_at", "")
+            val pageSize = 1000
+            var offset = 0
+            val postsById = LinkedHashMap<String, PostEntity>()
 
-                    val tagsList = mutableListOf<String>()
-                    val tagsArr = obj.optJSONArray("tags")
-                    if (tagsArr != null) {
-                        for (j in 0 until tagsArr.length()) {
-                            tagsList.add(tagsArr.getString(j))
+            while (postsById.size < maxTotal) {
+                val endpoint = "posts?select=*&order=created_at.desc,id.desc&limit=$pageSize&offset=$offset"
+                val conn = openConnection(endpoint, "GET")
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val response = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val jsonArray = JSONArray(response)
+                    val batchCount = jsonArray.length()
+                    if (batchCount == 0) break
+
+                    for (i in 0 until batchCount) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val id = obj.optString("id", UUID.randomUUID().toString())
+                        val title = obj.optString("title", "Untitled Post")
+                        val desc = obj.optString("description", "")
+                        val img = obj.optString("image_url", "")
+                        val link = obj.optString("link_url", "")
+                        val direct = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
+                        val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
+                        val isFree = obj.optBoolean("is_free", false)
+                        val isNsfw = obj.optBoolean("is_nsfw", false)
+                        val clicks = clickCountsMap[id] ?: obj.optInt("clicks_count", 0)
+                        val likes = obj.optInt("likes_count", 0)
+                        val section = obj.optString("section", "home")
+                        val author = obj.optString("author", "JustFan Creator")
+                        val createdAtStr = obj.optString("created_at", "")
+
+                        val tagsList = mutableListOf<String>()
+                        val tagsArr = obj.optJSONArray("tags")
+                        if (tagsArr != null) {
+                            for (j in 0 until tagsArr.length()) {
+                                tagsList.add(tagsArr.getString(j))
+                            }
                         }
-                    }
 
-                    val contentImagesList = mutableListOf<String>()
-                    val contentImgsArr = obj.optJSONArray("content_images")
-                    if (contentImgsArr != null) {
-                        for (j in 0 until contentImgsArr.length()) {
-                            val url = contentImgsArr.optString(j, "").trim()
-                            if (url.isNotEmpty()) contentImagesList.add(url)
+                        val contentImagesList = mutableListOf<String>()
+                        val contentImgsArr = obj.optJSONArray("content_images")
+                        if (contentImgsArr != null) {
+                            for (j in 0 until contentImgsArr.length()) {
+                                val url = contentImgsArr.optString(j, "").trim()
+                                if (url.isNotEmpty()) contentImagesList.add(url)
+                            }
                         }
-                    }
 
-                    list.add(
-                        PostEntity(
+                        postsById[id] = PostEntity(
                             id = id,
                             title = title,
                             description = desc,
@@ -280,13 +300,20 @@ object SupabaseClient {
                             likesCount = likes,
                             createdAt = parseIsoToMillis(createdAtStr)
                         )
-                    )
+                    }
+
+                    if (batchCount < pageSize) break
+                    offset += batchCount
+                } else {
+                    conn.disconnect()
+                    if (offset == 0) {
+                        return@withContext Result.failure(Exception("HTTP $code"))
+                    }
+                    break
                 }
-                Result.success(list)
-            } else {
-                conn.disconnect()
-                Result.failure(Exception("HTTP $code"))
             }
+
+            Result.success(postsById.values.toList())
         } catch (e: Exception) {
             Log.e(TAG, "fetchPosts error", e)
             Result.failure(e)

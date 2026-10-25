@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to fix the Admin Dashboard Manual Membership Plan Upgrade so tier changes persist reliably in the remote Supabase database and survive app uninstall and reinstall.",
-  "updatedAt":  "2026-10-24T16:52:26.640742660Z",
+  "summary":  "Implementation plan for Compose Pull-to-Refresh on the main feed and OneSignal Android SDK v5 push notifications & triggers for New Post, New Request, and New Payment events.",
+  "updatedAt":  "2026-10-25T02:15:00.896613867Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

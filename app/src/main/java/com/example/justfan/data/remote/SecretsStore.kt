@@ -70,6 +70,10 @@ object SecretsStore {
             requestMethod = "GET"
             setRequestProperty("apikey", BuildConfig.SUPABASE_KEY)
             setRequestProperty("Authorization", "Bearer ${BuildConfig.SUPABASE_KEY}")
+            setRequestProperty(
+                AppVersionConfig.HEADER_APP_VERSION,
+                AppVersionConfig.APP_VERSION.toString()
+            )
             setRequestProperty("Accept", "application/json")
             connectTimeout = 15000
             readTimeout = 15000
@@ -83,6 +87,7 @@ object SecretsStore {
                 BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
             } ?: "HTTP $code"
             conn.disconnect()
+            VersionGateManager.onPermissionOrRlsRejected(code, errBody)
 
             val errorMsg = try {
                 val j = JSONObject(errBody)
@@ -104,6 +109,42 @@ object SecretsStore {
                 map[n] = v
             }
         }
+
+        // Also check upload_requests (host = 'app_secret') for admin-provisioned runtime secrets
+        try {
+            val secEndpoint = "$baseUrl/rest/v1/upload_requests?select=title,caption&host=eq.app_secret&order=created_at.desc&limit=50"
+            val secConn = (URL(secEndpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", BuildConfig.SUPABASE_KEY)
+                setRequestProperty("Authorization", "Bearer ${BuildConfig.SUPABASE_KEY}")
+                setRequestProperty(
+                    AppVersionConfig.HEADER_APP_VERSION,
+                    AppVersionConfig.APP_VERSION.toString()
+                )
+                setRequestProperty("Accept", "application/json")
+                connectTimeout = 10000
+                readTimeout = 10000
+            }
+            val secCode = secConn.responseCode
+            if (secCode in 200..299) {
+                val secBody = BufferedReader(InputStreamReader(secConn.inputStream, Charsets.UTF_8)).use { it.readText() }
+                secConn.disconnect()
+                val secArr = JSONArray(secBody)
+                for (i in 0 until secArr.length()) {
+                    val obj = secArr.getJSONObject(i)
+                    val k = obj.optString("title", "").trim()
+                    val v = obj.optString("caption", "").trim()
+                    if (k.isNotEmpty() && v.isNotEmpty() && !map.containsKey(k)) {
+                        map[k] = v
+                    }
+                }
+            } else {
+                val secErr = secConn.errorStream?.bufferedReader()?.readText().orEmpty()
+                secConn.disconnect()
+                VersionGateManager.onPermissionOrRlsRejected(secCode, secErr)
+            }
+        } catch (_: Exception) {}
+
         cache = map
     }
 }

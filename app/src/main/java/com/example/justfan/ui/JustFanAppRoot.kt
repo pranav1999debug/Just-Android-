@@ -3,6 +3,7 @@ package com.example.justfan.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -20,11 +21,13 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -33,15 +36,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.example.justfan.data.model.ActivityEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.notification.OneSignalManager
+import com.example.justfan.data.remote.VersionGateManager
+import com.example.justfan.data.remote.VersionGateState
 import com.example.justfan.ui.components.AuthDialog
 import com.example.justfan.ui.components.BiometricSetupDialog
 import com.example.justfan.ui.components.MoreBottomSheet
 import com.example.justfan.ui.components.StartupSecurityGate
 import com.example.justfan.ui.components.TopHeader
+import com.example.justfan.ui.components.UpdateAvailableBanner
+import com.example.justfan.ui.components.UpdateRequiredScreen
+import com.example.justfan.ui.components.VersionGateCheckingScreen
+import kotlinx.coroutines.launch
 import com.example.justfan.ui.screens.AdminScreen
 import com.example.justfan.ui.screens.CategoriesScreen
 import com.example.justfan.ui.screens.FavoritesScreen
@@ -96,7 +108,34 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     var requestIdeaPreFill by remember { mutableStateOf("") }
     var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
 
-    val isStartupGateVisible = !userProfile.isSignedIn || !isAppUnlocked
+    val versionGateState by VersionGateManager.state.collectAsState()
+    val bannerDismissed by VersionGateManager.bannerDismissed.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Check app_config on launch and re-check whenever the app returns from background to foreground
+    LaunchedEffect(Unit) {
+        VersionGateManager.checkVersionGate()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                coroutineScope.launch {
+                    VersionGateManager.checkVersionGate()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val isVersionGateResolved = versionGateState !is VersionGateState.Checking &&
+            versionGateState !is VersionGateState.UpdateRequired
+
+    val isStartupGateVisible = isVersionGateResolved && (!userProfile.isSignedIn || !isAppUnlocked)
     val isOwnerOrAdmin = userProfile.isSignedIn && (userProfile.isAdmin || userProfile.email.equals("reytherapper12@gmail.com", ignoreCase = true))
     val isPaidOrLegendary = userProfile.tier.equals("legendary", ignoreCase = true) ||
             userProfile.isProActive || isOwnerOrAdmin
@@ -105,8 +144,8 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
 
     // Request Android 13+ POST_NOTIFICATIONS permission automatically inside a coroutine
     // right after sign-in or app unlock, and associate the signed-in user with OneSignal v5.
-    LaunchedEffect(isStartupGateVisible, userProfile.id) {
-        if (!isStartupGateVisible && userProfile.isSignedIn) {
+    LaunchedEffect(isVersionGateResolved, isStartupGateVisible, userProfile.id) {
+        if (isVersionGateResolved && !isStartupGateVisible && userProfile.isSignedIn) {
             OneSignalManager.requestPushPermissionSuspend(true)
             OneSignalManager.login(userProfile.id)
             OneSignalManager.setEmail(userProfile.email)
@@ -192,52 +231,69 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
         themeVariant = preferences.themeVariant,
         darkTheme = preferences.isDarkMode
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            // Main App Content Layer (Blurred whenever Startup Login or Biometric Gate is active)
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (isStartupGateVisible) Modifier.blur(20.dp) else Modifier)
-            ) {
-                // Custom Wallpaper Layer
-                if (!preferences.customWallpaperUri.isNullOrBlank()) {
-                    AsyncImage(
-                        model = preferences.customWallpaperUri,
-                        contentDescription = "Background Wallpaper",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+        when (val gateState = versionGateState) {
+            is VersionGateState.Checking -> {
+                VersionGateCheckingScreen()
+            }
+            is VersionGateState.UpdateRequired -> {
+                UpdateRequiredScreen(config = gateState.config)
+            }
+            is VersionGateState.Allowed,
+            is VersionGateState.OptionalUpdateAvailable -> {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // Main App Content Layer (Blurred whenever Startup Login or Biometric Gate is active)
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = preferences.wallpaperDim))
-                    )
-                }
+                            .then(if (isStartupGateVisible) Modifier.blur(20.dp) else Modifier)
+                    ) {
+                        // Custom Wallpaper Layer
+                        if (!preferences.customWallpaperUri.isNullOrBlank()) {
+                            AsyncImage(
+                                model = preferences.customWallpaperUri,
+                                contentDescription = "Background Wallpaper",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = preferences.wallpaperDim))
+                            )
+                        }
 
-                Scaffold(
-                containerColor = if (!preferences.customWallpaperUri.isNullOrBlank()) Color.Transparent else MaterialTheme.colorScheme.background,
-                topBar = {
-                    if (currentScreen !is AppScreen.PostDetail) {
-                        TopHeader(
-                            searchQuery = globalSearchQuery,
-                            onSearchChange = {
-                                globalSearchQuery = it
-                                if (currentScreen !is AppScreen.Feed) {
-                                    navigateRoot(AppScreen.Feed)
+                        Scaffold(
+                        containerColor = if (!preferences.customWallpaperUri.isNullOrBlank()) Color.Transparent else MaterialTheme.colorScheme.background,
+                        topBar = {
+                            Column {
+                                if (gateState is VersionGateState.OptionalUpdateAvailable && !bannerDismissed) {
+                                    UpdateAvailableBanner(
+                                        config = gateState.config,
+                                        onDismiss = { VersionGateManager.dismissOptionalBanner() }
+                                    )
                                 }
-                            },
-                            onNotificationsClick = { navigateTo(AppScreen.Activity) },
-                            onAdminClick = { navigateTo(AppScreen.Admin) },
-                            onPricingClick = { navigateTo(AppScreen.Membership) },
-                            unreadNotificationsCount = livePushEvents.size,
-                            isSyncing = isRefreshing,
-                            onSyncClick = { viewModel.refreshAll() },
-                            userProfile = userProfile,
-                            onAuthClick = { showAuthDialog = true },
-                            hasCustomWallpaper = !preferences.customWallpaperUri.isNullOrBlank()
-                        )
-                    }
-                },
+                                if (currentScreen !is AppScreen.PostDetail) {
+                                    TopHeader(
+                                        searchQuery = globalSearchQuery,
+                                        onSearchChange = {
+                                            globalSearchQuery = it
+                                            if (currentScreen !is AppScreen.Feed) {
+                                                navigateRoot(AppScreen.Feed)
+                                            }
+                                        },
+                                        onNotificationsClick = { navigateTo(AppScreen.Activity) },
+                                        onAdminClick = { navigateTo(AppScreen.Admin) },
+                                        onPricingClick = { navigateTo(AppScreen.Membership) },
+                                        unreadNotificationsCount = livePushEvents.size,
+                                        isSyncing = isRefreshing,
+                                        onSyncClick = { viewModel.refreshAll() },
+                                        userProfile = userProfile,
+                                        onAuthClick = { showAuthDialog = true },
+                                        hasCustomWallpaper = !preferences.customWallpaperUri.isNullOrBlank()
+                                    )
+                                }
+                            }
+                        },
                 bottomBar = {
                     if (currentScreen !is AppScreen.PostDetail) {
                         NavigationBar(
@@ -574,36 +630,38 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                 }
             )
 
-            // Blurred Startup Login & Biometric Unlock Gate
-            if (isStartupGateVisible) {
-                StartupSecurityGate(
-                    userProfile = userProfile,
-                    onSignInWithGoogle = { email, name ->
-                        viewModel.signInWithGoogle(email, name)
-                        isAppUnlocked = true
-                    },
-                    onSignInWithPasskey = { name ->
-                        viewModel.signInWithPasskey(name)
-                        isAppUnlocked = true
-                    },
-                    onSignInWithEmail = { email, pass ->
-                        val res = viewModel.signInWithEmail(email, pass)
-                        if (res.isSuccess) {
-                            isAppUnlocked = true
-                        }
-                        res
-                    },
-                    onSignOut = {
-                        isAppUnlocked = false
-                        viewModel.signOut()
-                    },
-                    onUnlocked = {
-                        isAppUnlocked = true
-                    },
-                    onBiometricVerified = { info ->
-                        viewModel.completeBiometricDeviceSetup(info)
+                    // Blurred Startup Login & Biometric Unlock Gate
+                    if (isStartupGateVisible) {
+                        StartupSecurityGate(
+                            userProfile = userProfile,
+                            onSignInWithGoogle = { email, name ->
+                                viewModel.signInWithGoogle(email, name)
+                                isAppUnlocked = true
+                            },
+                            onSignInWithPasskey = { name ->
+                                viewModel.signInWithPasskey(name)
+                                isAppUnlocked = true
+                            },
+                            onSignInWithEmail = { email, pass ->
+                                val res = viewModel.signInWithEmail(email, pass)
+                                if (res.isSuccess) {
+                                    isAppUnlocked = true
+                                }
+                                res
+                            },
+                            onSignOut = {
+                                isAppUnlocked = false
+                                viewModel.signOut()
+                            },
+                            onUnlocked = {
+                                isAppUnlocked = true
+                            },
+                            onBiometricVerified = { info ->
+                                viewModel.completeBiometricDeviceSetup(info)
+                            }
+                        )
                     }
-                )
+                }
             }
         }
     }

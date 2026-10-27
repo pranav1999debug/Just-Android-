@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.justfan.zktrf"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "SUPABASE_URL", "\"https://zlboyxbqppoimhhbvrax.supabase.co\"")
@@ -143,3 +143,43 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+  val keystoreProps: Map<String, String> = keystorePropertiesFile
+    .readLines()
+    .map { it.trim() }
+    .filter { it.isNotEmpty() && !it.startsWith("#") && it.contains("=") }
+    .associate { line ->
+      val key = line.substringBefore("=").trim()
+      val value = line.substringAfter("=").trim()
+      key to value
+    }
+  android.signingConfigs.named("release").configure {
+    val path = keystoreProps["storeFile"]?.takeIf { it.isNotEmpty() }
+      ?: throw GradleException("keystore.properties is missing 'storeFile'")
+    storeFile = rootProject.file(path)
+    storePassword = keystoreProps["storePassword"]?.takeIf { it.isNotEmpty() }
+      ?: throw GradleException("keystore.properties is missing 'storePassword'")
+    keyAlias = keystoreProps["keyAlias"]?.takeIf { it.isNotEmpty() }
+      ?: throw GradleException("keystore.properties is missing 'keyAlias'")
+    keyPassword = keystoreProps["keyPassword"]?.takeIf { it.isNotEmpty() }
+      ?: throw GradleException("keystore.properties is missing 'keyPassword'")
+  }
+}
+
+tasks.configureEach {
+  if (
+    name.contains("Release", ignoreCase = true) &&
+      !keystorePropertiesFile.exists() &&
+      System.getenv("KEYSTORE_PATH").isNullOrBlank()
+  ) {
+    doFirst {
+      throw GradleException(
+        "Release build aborted: keystore.properties is missing in the project root (${rootProject.projectDir}/keystore.properties). " +
+          "Create keystore.properties with storeFile, storePassword, keyAlias, and keyPassword before building a release APK."
+      )
+    }
+  }
+}
+

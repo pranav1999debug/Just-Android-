@@ -23,3 +23,7 @@ node-compile-cache/
 hsperfdata_*
 .build-outputs/
 *.log
+keystore.properties
+*.jks
+*.keystore
+

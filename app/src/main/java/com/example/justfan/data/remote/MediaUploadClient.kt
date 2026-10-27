@@ -71,6 +71,10 @@ object MediaUploadClient {
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("apikey", SUPABASE_KEY)
                 setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+                setRequestProperty(
+                    AppVersionConfig.HEADER_APP_VERSION,
+                    AppVersionConfig.APP_VERSION.toString()
+                )
                 connectTimeout = 20000
                 readTimeout = 25000
                 doOutput = true
@@ -86,6 +90,7 @@ object MediaUploadClient {
                     BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: "HTTP $code"
                 conn.disconnect()
+                VersionGateManager.onPermissionOrRlsRejected(code, err)
                 return@withContext Result.failure(Exception("Failed to fetch Buffer channels ($code): $err"))
             }
             conn.disconnect()
@@ -129,6 +134,10 @@ object MediaUploadClient {
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("apikey", SUPABASE_KEY)
                 setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+                setRequestProperty(
+                    AppVersionConfig.HEADER_APP_VERSION,
+                    AppVersionConfig.APP_VERSION.toString()
+                )
                 connectTimeout = 12000
                 readTimeout = 15000
                 doOutput = true
@@ -590,6 +599,10 @@ object MediaUploadClient {
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("apikey", SUPABASE_KEY)
                 setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+                setRequestProperty(
+                    AppVersionConfig.HEADER_APP_VERSION,
+                    AppVersionConfig.APP_VERSION.toString()
+                )
                 setRequestProperty("Prefer", "return=representation")
             }
 
@@ -613,6 +626,9 @@ object MediaUploadClient {
                 } ?: "HTTP $code"
             }
             conn.disconnect()
+            if (code !in 200..299) {
+                VersionGateManager.onPermissionOrRlsRejected(code, responseBody)
+            }
 
             Log.d(DEBUG_TAG, "HTTP $code $responseBody")
 
@@ -634,6 +650,20 @@ object MediaUploadClient {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .writeTimeout(25, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val req = chain.request().newBuilder()
+                .header(
+                    AppVersionConfig.HEADER_APP_VERSION,
+                    AppVersionConfig.APP_VERSION.toString()
+                )
+                .build()
+            val response = chain.proceed(req)
+            if (response.code == 401 || response.code == 403) {
+                val peek = runCatching { response.peekBody(2048).string() }.getOrDefault("")
+                VersionGateManager.onPermissionOrRlsRejected(response.code, peek)
+            }
+            response
+        }
         .build()
 
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
@@ -705,6 +735,10 @@ object MediaUploadClient {
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("apikey", SUPABASE_KEY)
             setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+            setRequestProperty(
+                AppVersionConfig.HEADER_APP_VERSION,
+                AppVersionConfig.APP_VERSION.toString()
+            )
         }
 
         val json = JSONObject().apply {
@@ -733,6 +767,9 @@ object MediaUploadClient {
             } ?: "HTTP $code"
         }
         conn.disconnect()
+        if (code !in 200..299) {
+            VersionGateManager.onPermissionOrRlsRejected(code, responseBody)
+        }
 
         Log.d(DEBUG_TAG, "HTTP $code $responseBody")
 

@@ -45,6 +45,20 @@ object SupabaseClient {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
             .writeTimeout(25, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val requestWithVersion = chain.request().newBuilder()
+                    .header(
+                        AppVersionConfig.HEADER_APP_VERSION,
+                        AppVersionConfig.APP_VERSION.toString()
+                    )
+                    .build()
+                val response = chain.proceed(requestWithVersion)
+                if (response.code == 401 || response.code == 403) {
+                    val errPreview = runCatching { response.peekBody(2048).string() }.getOrDefault("")
+                    VersionGateManager.onPermissionOrRlsRejected(response.code, errPreview)
+                }
+                response
+            }
             .build()
     }
 
@@ -56,6 +70,10 @@ object SupabaseClient {
         connection.readTimeout = 15000
         connection.setRequestProperty("apikey", apiKey)
         connection.setRequestProperty("Authorization", "Bearer $apiKey")
+        connection.setRequestProperty(
+            AppVersionConfig.HEADER_APP_VERSION,
+            AppVersionConfig.APP_VERSION.toString()
+        )
         connection.setRequestProperty("Content-Type", "application/json")
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Prefer", "return=representation")
@@ -305,9 +323,11 @@ object SupabaseClient {
                     if (batchCount < pageSize) break
                     offset += batchCount
                 } else {
+                    val errText = runCatching { conn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
                     conn.disconnect()
+                    VersionGateManager.onPermissionOrRlsRejected(code, errText)
                     if (offset == 0) {
-                        return@withContext Result.failure(Exception("HTTP $code"))
+                        return@withContext Result.failure(Exception("HTTP $code: $errText"))
                     }
                     break
                 }
@@ -837,7 +857,9 @@ object SupabaseClient {
                     )
                 }
             } else {
+                val errText = runCatching { conn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
                 conn.disconnect()
+                VersionGateManager.onPermissionOrRlsRejected(code, errText)
             }
 
             // Also merge fallback requests/payment proofs stored in `upload_requests` (`host = "app_request"`)
@@ -883,7 +905,10 @@ object SupabaseClient {
                         )
                     }
                 } else {
+                    val upCode = upReqConn.responseCode
+                    val errText = runCatching { upReqConn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
                     upReqConn.disconnect()
+                    VersionGateManager.onPermissionOrRlsRejected(upCode, errText)
                 }
             } catch (_: Exception) {}
 

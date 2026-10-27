@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for Compose Pull-to-Refresh on the main feed and OneSignal Android SDK v5 push notifications & triggers for New Post, New Request, and New Payment events.",
-  "updatedAt":  "2026-10-25T02:15:00.896613867Z",
+  "summary":  "Implementation plan for updating JustFan Android app configuration and Supabase version gate SQL seed to Version 2.0 (versionCode = 2, versionName = \"2.0\", APP_VERSION = 2, and Supabase app_config min_version = 2 / latest_version = 2 upsert).",
+  "updatedAt":  "2026-10-27T02:15:09.934403565Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

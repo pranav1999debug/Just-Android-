@@ -27,16 +27,19 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import com.example.justfan.data.remote.BufferClient
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -932,6 +935,7 @@ fun AdminUploadPostTab(
     var author by remember { mutableStateOf("JustFan Creator") }
     var tagsInput by remember { mutableStateOf("Exclusive, VIP, Glamour") }
     var isFree by remember { mutableStateOf(false) }
+    var forwardToSocialMedia by remember { mutableStateOf(true) }
     var isUploadingImg by remember { mutableStateOf(false) }
     var isUploadingMulti by remember { mutableStateOf(false) }
     var isGeneratingAiCopy by remember { mutableStateOf(false) }
@@ -1308,6 +1312,54 @@ fun AdminUploadPostTab(
         }
 
         item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { forwardToSocialMedia = !forwardToSocialMedia }
+                    .testTag("admin_forward_social_checkbox_card")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = forwardToSocialMedia,
+                        onCheckedChange = { forwardToSocialMedia = it },
+                        modifier = Modifier.testTag("admin_forward_social_checkbox")
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Forward to Social Media",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Text(
+                            text = "Auto-posts Cover Image + Description + Hashtags + ${BufferClient.DEFAULT_SOCIAL_DOWNLOAD_LINK} via Buffer API",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
             Button(
                 onClick = {
                     val effectiveCover = imageUrl.trim().ifBlank { uploadedContentUrls.firstOrNull().orEmpty() }
@@ -1316,7 +1368,12 @@ fun AdminUploadPostTab(
                         return@Button
                     }
                     isPublishing = true
-                    statusBanner = "Publishing post to Supabase database..."
+                    val shouldForwardBuffer = forwardToSocialMedia
+                    statusBanner = if (shouldForwardBuffer) {
+                        "Publishing post to Supabase & forwarding to Buffer social media..."
+                    } else {
+                        "Publishing post to Supabase database..."
+                    }
                     val tags = tagsInput.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     val galleryUrls = buildList {
                         add(effectiveCover)
@@ -1346,7 +1403,6 @@ fun AdminUploadPostTab(
                         createdAt = System.currentTimeMillis()
                     )
                     onCreatePost(post) { success, err ->
-                        isPublishing = false
                         if (success) {
                             title = ""
                             description = ""
@@ -1356,9 +1412,35 @@ fun AdminUploadPostTab(
                             adsLinkUrl = ""
                             premiumLinkUrl = ""
                             directLinkUrl = ""
-                            statusBanner = "Published '${post.title}' to Supabase database! ✓"
+                        }
+                        if (shouldForwardBuffer) {
+                            scope.launch {
+                                val bufferRes = BufferClient.forwardPostToSocialMedia(
+                                    post = post,
+                                    downloadLink = BufferClient.DEFAULT_SOCIAL_DOWNLOAD_LINK
+                                )
+                                isPublishing = false
+                                val dbMsg = if (success) {
+                                    "Published '${post.title}' to Supabase!"
+                                } else {
+                                    "Saved locally (${err ?: "DB sync note"})."
+                                }
+                                statusBanner = bufferRes.fold(
+                                    onSuccess = { res ->
+                                        "$dbMsg Forwarded to Buffer (${res.channelNames.joinToString(", ")}) with link ${BufferClient.DEFAULT_SOCIAL_DOWNLOAD_LINK}! ✓"
+                                    },
+                                    onFailure = { bErr ->
+                                        "$dbMsg Buffer status: ${bErr.message}"
+                                    }
+                                )
+                            }
                         } else {
-                            statusBanner = "Saved locally. Remote DB status: ${err ?: "Requires Supabase Auth session"}"
+                            isPublishing = false
+                            if (success) {
+                                statusBanner = "Published '${post.title}' to Supabase database! ✓"
+                            } else {
+                                statusBanner = "Saved locally. Remote DB status: ${err ?: "Requires Supabase Auth session"}"
+                            }
                         }
                     }
                 },
@@ -1373,7 +1455,7 @@ fun AdminUploadPostTab(
                 if (isPublishing) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.Black)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("PUBLISHING TO SUPABASE...", fontWeight = FontWeight.Bold)
+                    Text("PUBLISHING...", fontWeight = FontWeight.Bold)
                 } else {
                     Text("PUBLISH GALLERY TO DATABASE", fontWeight = FontWeight.Bold)
                 }

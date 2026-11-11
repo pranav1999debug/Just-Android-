@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for updating JustFan Android app configuration and Supabase version gate SQL seed to Version 2.0 (versionCode = 2, versionName = \"2.0\", APP_VERSION = 2, and Supabase app_config min_version = 2 / latest_version = 2 upsert).",
-  "updatedAt":  "2026-10-27T02:15:09.934403565Z",
+  "summary":  "Implementation plan for bumping the JustFan app and Supabase database version to v3.0 (versionCode 3), enforcing RLS version gating across all content tables including posts so previous versions cannot access database contents, checking both app_config and app_version on startup/resume/sync, and adding an in-app APK download progress tracker with install prompt on the Update Required screen and banner.",
+  "updatedAt":  "2026-11-11T11:41:00.975249044Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

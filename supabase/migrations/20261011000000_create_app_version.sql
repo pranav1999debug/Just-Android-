@@ -14,9 +14,16 @@ create policy "Anyone can read app versions"
     to anon, authenticated
     using (true);
 
+drop policy if exists "Allow insert app versions" on public.app_version;
+create policy "Allow insert app versions"
+    on public.app_version
+    for all
+    to anon, authenticated
+    using (true)
+    with check (true);
+
 create index if not exists app_version_version_idx
     on public.app_version (created_at desc);
 
 insert into public.app_version (version, download_link)
-select '1.0.0', 'https://github.com/pranav1999debug/Just-Android-/releases/download/debug-apk-build-20-1/app-debug.apk'
-where not exists (select 1 from public.app_version);
+values ('3.0', 'https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk');

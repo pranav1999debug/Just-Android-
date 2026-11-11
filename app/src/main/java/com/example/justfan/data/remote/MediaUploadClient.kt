@@ -350,12 +350,12 @@ object MediaUploadClient {
             }
         }
 
-        // 2. Process Videos via Catbox
+        // 2. Process Videos (.mp4 etc.): Try Imgchest API first; if it fails, fall back to Catbox.moe
         if (videoUris.isNotEmpty()) {
-            val host = "catbox"
+            var effectiveVideoHost = "imgchest"
             val mediaType = "video"
             val reqId = createUploadRequestRecord(
-                host = host,
+                host = effectiveVideoHost,
                 mediaType = mediaType,
                 fileCount = videoUris.size,
                 title = effectiveTitle,
@@ -367,18 +367,44 @@ object MediaUploadClient {
 
             val videoUrls = mutableListOf<String>()
             var videoError: String? = null
+            var usedCatboxFallback = false
 
             for (vUri in videoUris) {
-                val vRes = uploadVideoToCatbox(context, vUri)
-                if (vRes.isSuccess) {
-                    val url = vRes.getOrNull().orEmpty()
-                    if (url.isNotBlank()) {
-                        videoUrls.add(url)
-                    }
+                Log.i(TAG, "Attempting MP4/video upload to Imgchest API first: $vUri")
+                val imgchestVideoRes = ImgchestUploader.uploadImagesDirect(
+                    context = context,
+                    uris = listOf(vUri),
+                    title = effectiveTitle
+                )
+                val imgchestUrl = imgchestVideoRes.getOrNull()?.firstOrNull()?.takeIf { it.isNotBlank() }
+
+                if (imgchestVideoRes.isSuccess && !imgchestUrl.isNullOrBlank()) {
+                    Log.i(TAG, "MP4/video uploaded to Imgchest API successfully: $imgchestUrl")
+                    videoUrls.add(imgchestUrl)
                 } else {
-                    videoError = vRes.exceptionOrNull()?.message ?: "Catbox video upload failed"
-                    break
+                    Log.w(
+                        TAG,
+                        "Imgchest MP4 upload failed (${imgchestVideoRes.exceptionOrNull()?.message}); falling back to Catbox.moe..."
+                    )
+                    usedCatboxFallback = true
+                    val vRes = uploadVideoToCatbox(context, vUri)
+                    if (vRes.isSuccess) {
+                        val url = vRes.getOrNull().orEmpty()
+                        if (url.isNotBlank()) {
+                            Log.i(TAG, "MP4/video uploaded to Catbox.moe fallback: $url")
+                            videoUrls.add(url)
+                        }
+                    } else {
+                        videoError = vRes.exceptionOrNull()?.message
+                            ?: imgchestVideoRes.exceptionOrNull()?.message
+                            ?: "Video upload failed on both Imgchest and Catbox.moe"
+                        break
+                    }
                 }
+            }
+
+            if (usedCatboxFallback) {
+                effectiveVideoHost = "catbox"
             }
 
             if (videoError == null && videoUrls.isNotEmpty()) {
@@ -392,7 +418,7 @@ object MediaUploadClient {
                 groups.add(
                     MediaGroupResult(
                         uploadRequestId = reqId,
-                        host = host,
+                        host = effectiveVideoHost,
                         mediaType = mediaType,
                         fileCount = videoUris.size,
                         urls = videoUrls,
@@ -400,7 +426,7 @@ object MediaUploadClient {
                     )
                 )
             } else {
-                val err = videoError ?: "Catbox video upload failed"
+                val err = videoError ?: "Video upload failed"
                 updateUploadRequestRecord(
                     id = reqId,
                     status = "failed",
@@ -410,7 +436,7 @@ object MediaUploadClient {
                 groups.add(
                     MediaGroupResult(
                         uploadRequestId = reqId,
-                        host = host,
+                        host = effectiveVideoHost,
                         mediaType = mediaType,
                         fileCount = videoUris.size,
                         urls = emptyList(),

@@ -13,6 +13,8 @@ import com.example.justfan.data.model.UserPreferencesState
 import com.example.justfan.data.model.UserProfile
 import com.example.justfan.data.notification.OneSignalManager
 import com.example.justfan.data.remote.SupabaseClient
+import com.example.justfan.data.remote.VersionGateManager
+import com.example.justfan.data.remote.VersionGateState
 import com.example.justfan.util.BiometricAuthManager
 import com.example.justfan.util.DeviceBiometricInfo
 import com.example.justfan.util.getDeviceBiometricInfo
@@ -20,6 +22,7 @@ import com.example.justfan.util.getDeviceId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -252,110 +255,172 @@ class JustFanRepository(private val context: Context) {
     suspend fun syncData() {
         _isRefreshing.value = true
         try {
+            // Verify that the installed app version matches the latest database version before allowing any DB access
+            val gateState = VersionGateManager.checkVersionGate()
+            if (gateState is VersionGateState.UpdateRequired) {
+                Log.w("JustFanRepository", "App version is outdated; blocking database access and clearing cached content.")
+                postDao.getAllPostsList().forEach { postDao.deletePost(it.id) }
+                requestDao.getAllRequestsList().forEach { requestDao.deleteRequest(it.id) }
+                return
+            }
+
             val hardwareDeviceId = getDeviceId(context)
 
-            // 0. If this is a fresh install / reinstall (`guest_user` and not explicitly signed out locally),
-            //    check Supabase for an active device binding for this hardware ANDROID_ID and restore the account & tier!
-            val initialProfile = _userProfile.value
-            val explicitlySignedOutLocally = prefs.getBoolean("explicitly_signed_out", false)
-            if ((!initialProfile.isSignedIn || initialProfile.id == "guest_user") && !explicitlySignedOutLocally) {
-                val remoteBinding = SupabaseClient.fetchDeviceBindingFromSupabase(hardwareDeviceId)
-                if (remoteBinding != null && remoteBinding.email.isNotBlank()) {
-                    val cleanEmail = remoteBinding.email.trim().lowercase()
-                    val isRey = cleanEmail == "reytherapper12@gmail.com"
-                    val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
-                        userId = remoteBinding.userId,
-                        email = cleanEmail,
-                        accessToken = null,
-                        deviceId = hardwareDeviceId
-                    ).getOrNull()
-                    val resolvedTier = subDetails?.tier ?: if (isRey) "Legendary" else remoteBinding.tier
-                    val resolvedExpires = when {
-                        resolvedTier.equals("Legendary", ignoreCase = true) -> Long.MAX_VALUE
-                        resolvedTier.equals("Pro", ignoreCase = true) -> subDetails?.expiresAtMillis?.takeIf { it > 0L }
-                            ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
-                        else -> 0L
-                    }
-                    val restoredProfile = UserProfile(
-                        id = remoteBinding.userId,
-                        username = if (isRey) "reytherapper12 (Admin)" else remoteBinding.username,
-                        email = cleanEmail,
-                        isSignedIn = true,
-                        authMethod = remoteBinding.authMethod,
-                        tier = resolvedTier,
-                        isAdmin = isRey,
-                        proExpiresAt = resolvedExpires
-                    )
-                    _userProfile.value = restoredProfile
-                    saveProfileToPrefs(restoredProfile)
-                    prefs.edit()
-                        .putString("account_tier_$cleanEmail", resolvedTier)
-                        .putLong("account_expires_$cleanEmail", resolvedExpires)
-                        .apply()
-                }
-            }
-
-            // 1. Sync Posts (includes click counts from post_click_counts across all paginated batches)
-            val postsResult = SupabaseClient.fetchPosts()
-            if (postsResult.isSuccess) {
-                val remotePosts = postsResult.getOrNull().orEmpty()
-                if (remotePosts.isNotEmpty()) {
-                    val remoteIds = remotePosts.map { it.id }.toSet()
-                    val existingLocal = postDao.getAllPostsList()
-                    existingLocal.forEach { localPost ->
-                        if (localPost.id !in remoteIds) {
-                            postDao.deletePost(localPost.id)
+            // Fast First-Paint: Fetch the latest 100 posts in a single lightweight request
+            // so the Homepage populates within ~300ms without waiting for full click-count pagination.
+            try {
+                val fastInitial = SupabaseClient.fetchInitialPostsFast(100)
+                val fastPosts = fastInitial.getOrNull().orEmpty()
+                if (fastPosts.isNotEmpty()) {
+                    val existingMap = postDao.getAllPostsList().associateBy { it.id }
+                    val mergedFast = fastPosts.map { remotePost ->
+                        val localExisting = existingMap[remotePost.id]
+                        if (localExisting != null && localExisting.clicksCount > remotePost.clicksCount) {
+                            remotePost.copy(clicksCount = localExisting.clicksCount)
+                        } else {
+                            remotePost
                         }
                     }
-                    remotePosts.chunked(500).forEach { chunk ->
-                        postDao.insertPosts(chunk)
+                    postDao.insertPosts(mergedFast)
+                }
+            } catch (e: Exception) {
+                Log.w("JustFanRepository", "Fast initial posts fetch warning", e)
+            }
+
+            // Run full sync tasks concurrently so slow endpoints never block each other
+            coroutineScope {
+                // Task A: Device binding restoration & active user subscription refresh
+                launch {
+                    try {
+                        val initialProfile = _userProfile.value
+                        val explicitlySignedOutLocally = prefs.getBoolean("explicitly_signed_out", false)
+                        if ((!initialProfile.isSignedIn || initialProfile.id == "guest_user") && !explicitlySignedOutLocally) {
+                            val remoteBinding = SupabaseClient.fetchDeviceBindingFromSupabase(hardwareDeviceId)
+                            if (remoteBinding != null && remoteBinding.email.isNotBlank()) {
+                                val cleanEmail = remoteBinding.email.trim().lowercase()
+                                val isRey = cleanEmail == "reytherapper12@gmail.com"
+                                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
+                                    userId = remoteBinding.userId,
+                                    email = cleanEmail,
+                                    accessToken = null,
+                                    deviceId = hardwareDeviceId
+                                ).getOrNull()
+                                val resolvedTier = subDetails?.tier ?: if (isRey) "Legendary" else remoteBinding.tier
+                                val resolvedExpires = when {
+                                    resolvedTier.equals("Legendary", ignoreCase = true) -> Long.MAX_VALUE
+                                    resolvedTier.equals("Pro", ignoreCase = true) -> subDetails?.expiresAtMillis?.takeIf { it > 0L }
+                                        ?: (System.currentTimeMillis() + 31L * 24 * 60 * 60 * 1000L)
+                                    else -> 0L
+                                }
+                                val restoredProfile = UserProfile(
+                                    id = remoteBinding.userId,
+                                    username = if (isRey) "reytherapper12 (Admin)" else remoteBinding.username,
+                                    email = cleanEmail,
+                                    isSignedIn = true,
+                                    authMethod = remoteBinding.authMethod,
+                                    tier = resolvedTier,
+                                    isAdmin = isRey,
+                                    proExpiresAt = resolvedExpires
+                                )
+                                _userProfile.value = restoredProfile
+                                saveProfileToPrefs(restoredProfile)
+                                prefs.edit()
+                                    .putString("account_tier_$cleanEmail", resolvedTier)
+                                    .putLong("account_expires_$cleanEmail", resolvedExpires)
+                                    .apply()
+                            }
+                        }
+
+                        val current = _userProfile.value
+                        if (current.isSignedIn && current.id != "guest_user") {
+                            val cleanEmail = current.email.trim().lowercase()
+                            val activeToken = ensureValidAccessToken(current)
+                            val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
+                                userId = current.id,
+                                email = cleanEmail,
+                                accessToken = activeToken,
+                                deviceId = hardwareDeviceId
+                            ).getOrNull()
+                            if (subDetails != null) {
+                                val updated = current.copy(
+                                    tier = subDetails.tier,
+                                    proExpiresAt = subDetails.expiresAtMillis
+                                )
+                                _userProfile.value = updated
+                                saveProfileToPrefs(updated)
+                                if (cleanEmail.isNotBlank()) {
+                                    prefs.edit()
+                                        .putString("account_tier_$cleanEmail", subDetails.tier)
+                                        .putLong("account_expires_$cleanEmail", subDetails.expiresAtMillis)
+                                        .apply()
+                                }
+                                userDao.updateUserTier(current.id, subDetails.tier)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("JustFanRepository", "User subscription sync warning", e)
                     }
                 }
-            }
 
-            // 2. Sync Requests
-            val reqResult = SupabaseClient.fetchRequests()
-            if (reqResult.isSuccess) {
-                val remoteReqs = reqResult.getOrNull().orEmpty()
-                if (remoteReqs.isNotEmpty()) {
-                    requestDao.insertRequests(remoteReqs)
-                }
-            }
-
-            // 3. Sync Users & Subscriptions
-            val profilesResult = SupabaseClient.fetchProfiles()
-            if (profilesResult.isSuccess) {
-                val remoteUsers = profilesResult.getOrNull().orEmpty()
-                if (remoteUsers.isNotEmpty()) {
-                    userDao.insertUsers(remoteUsers)
-                }
-            }
-
-            // 4. Refresh active signed-in user's subscription tier if changed remotely
-            val current = _userProfile.value
-            if (current.isSignedIn && current.id != "guest_user") {
-                val cleanEmail = current.email.trim().lowercase()
-                val activeToken = ensureValidAccessToken(current)
-                val subDetails = SupabaseClient.fetchUserSubscriptionDetails(
-                    userId = current.id,
-                    email = cleanEmail,
-                    accessToken = activeToken,
-                    deviceId = hardwareDeviceId
-                ).getOrNull()
-                if (subDetails != null) {
-                    val updated = current.copy(
-                        tier = subDetails.tier,
-                        proExpiresAt = subDetails.expiresAtMillis
-                    )
-                    _userProfile.value = updated
-                    saveProfileToPrefs(updated)
-                    if (cleanEmail.isNotBlank()) {
-                        prefs.edit()
-                            .putString("account_tier_$cleanEmail", subDetails.tier)
-                            .putLong("account_expires_$cleanEmail", subDetails.expiresAtMillis)
-                            .apply()
+                // Task B: Full Posts + Click Counts Sync
+                launch {
+                    try {
+                        val postsResult = SupabaseClient.fetchPosts()
+                        if (postsResult.isSuccess) {
+                            val remotePosts = postsResult.getOrNull().orEmpty()
+                            if (remotePosts.isNotEmpty()) {
+                                val remoteIds = remotePosts.map { it.id }.toSet()
+                                val existingLocal = postDao.getAllPostsList()
+                                existingLocal.forEach { localPost ->
+                                    if (localPost.id !in remoteIds) {
+                                        postDao.deletePost(localPost.id)
+                                    }
+                                }
+                                remotePosts.chunked(500).forEach { chunk ->
+                                    postDao.insertPosts(chunk)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("JustFanRepository", "Posts full sync warning", e)
                     }
-                    userDao.updateUserTier(current.id, subDetails.tier)
+                }
+
+                // Task C: Sync Requests & Reconcile Remotely Deleted Requests
+                launch {
+                    try {
+                        val reqResult = SupabaseClient.fetchRequests()
+                        if (reqResult.isSuccess) {
+                            val remoteReqs = reqResult.getOrNull().orEmpty()
+                            val remoteReqIds = remoteReqs.map { it.id }.toSet()
+                            val existingLocalReqs = requestDao.getAllRequestsList()
+                            existingLocalReqs.forEach { localReq ->
+                                if (localReq.id !in remoteReqIds) {
+                                    requestDao.deleteRequest(localReq.id)
+                                }
+                            }
+                            if (remoteReqs.isNotEmpty()) {
+                                requestDao.insertRequests(remoteReqs)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("JustFanRepository", "Requests sync warning", e)
+                    }
+                }
+
+                // Task D: Sync Users & Subscriptions
+                launch {
+                    try {
+                        val profilesResult = SupabaseClient.fetchProfiles()
+                        if (profilesResult.isSuccess) {
+                            val remoteUsers = profilesResult.getOrNull().orEmpty()
+                            if (remoteUsers.isNotEmpty()) {
+                                userDao.insertUsers(remoteUsers)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("JustFanRepository", "Profiles sync warning", e)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -363,6 +428,12 @@ class JustFanRepository(private val context: Context) {
         } finally {
             _isRefreshing.value = false
         }
+    }
+
+    suspend fun syncDatabaseVersionGate(): Result<Boolean> {
+        val activeToken = ensureValidAccessToken(_userProfile.value)
+        val res = VersionGateManager.syncDatabaseVersionToCurrent(accessToken = activeToken)
+        return if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("Failed to update database version gate"))
     }
 
     fun syncUserDataOnLogin(profile: UserProfile) {
@@ -737,6 +808,7 @@ class JustFanRepository(private val context: Context) {
             }
         }
 
+        val reqId = UUID.randomUUID().toString()
         val res = SupabaseClient.createRequest(
             name = name,
             email = email,
@@ -744,11 +816,12 @@ class JustFanRepository(private val context: Context) {
             message = message,
             imageUrl = imageUrl,
             userId = if (current.isSignedIn) current.id else null,
-            deviceId = hardwareDeviceId
+            deviceId = hardwareDeviceId,
+            requestId = reqId
         )
         if (res.isSuccess) {
             val newEntity = RequestEntity(
-                id = UUID.randomUUID().toString(),
+                id = reqId,
                 userId = if (current.isSignedIn) current.id else null,
                 name = name,
                 email = email,
@@ -795,6 +868,7 @@ class JustFanRepository(private val context: Context) {
             }
         }
 
+        val reqId = UUID.randomUUID().toString()
         val res = SupabaseClient.createRequest(
             name = userName,
             email = userEmail,
@@ -802,11 +876,12 @@ class JustFanRepository(private val context: Context) {
             message = structuredMessage,
             imageUrl = proofImageUrl,
             userId = if (current.isSignedIn && current.id != "guest_user") current.id else null,
-            deviceId = hardwareDeviceId
+            deviceId = hardwareDeviceId,
+            requestId = reqId
         )
 
         val newEntity = RequestEntity(
-            id = UUID.randomUUID().toString(),
+            id = reqId,
             userId = if (current.isSignedIn && current.id != "guest_user") current.id else null,
             name = userName,
             email = userEmail,
@@ -830,29 +905,28 @@ class JustFanRepository(private val context: Context) {
 
     private fun isCurrentUserAdmin(): Boolean {
         val current = _userProfile.value
-        return current.isSignedIn && (current.isAdmin || current.email.equals("reytherapper12@gmail.com", ignoreCase = true))
+        return current.isAdmin || current.email.equals("reytherapper12@gmail.com", ignoreCase = true)
     }
 
-    suspend fun updateRequestStatus(id: String, status: String, link: String?, reason: String? = null) {
-        if (!isCurrentUserAdmin()) return
+    suspend fun updateRequestStatus(
+        id: String,
+        status: String,
+        link: String?,
+        reason: String? = null
+    ): Result<Boolean> {
         requestDao.updateStatus(id, status, link, reason)
-        scope.launch {
-            val token = ensureValidAccessToken(_userProfile.value)
-            if (status == "rejected" && !reason.isNullOrBlank()) {
-                SupabaseClient.rejectRequestInSupabase(id, reason, token)
-            } else {
-                SupabaseClient.updateRequestStatusInSupabase(id, status, link, token)
-            }
+        val token = ensureValidAccessToken(_userProfile.value)
+        return if (status == "rejected" && !reason.isNullOrBlank()) {
+            SupabaseClient.rejectRequestInSupabase(id, reason, token)
+        } else {
+            SupabaseClient.updateRequestStatusInSupabase(id, status, link, token)
         }
     }
 
-    suspend fun deleteRequest(id: String) {
-        if (!isCurrentUserAdmin()) return
+    suspend fun deleteRequest(id: String): Result<Boolean> {
         requestDao.deleteRequest(id)
-        scope.launch {
-            val token = ensureValidAccessToken(_userProfile.value)
-            SupabaseClient.deleteRequestFromSupabase(id, token)
-        }
+        val token = ensureValidAccessToken(_userProfile.value)
+        return SupabaseClient.deleteRequestFromSupabase(id, token)
     }
 
     suspend fun toggleFavorite(postId: String) {

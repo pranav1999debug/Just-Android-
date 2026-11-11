@@ -110,15 +110,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateRequestStatus(id: String, status: String, link: String?, reason: String? = null) {
+    fun updateRequestStatus(
+        id: String,
+        status: String,
+        link: String?,
+        reason: String? = null,
+        onResult: (Boolean) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            repository.updateRequestStatus(id, status, link, reason)
+            val res = repository.updateRequestStatus(id, status, link, reason)
+            onResult(res.isSuccess)
         }
     }
 
-    fun deleteRequest(id: String) {
+    fun deleteRequest(id: String, onResult: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
-            repository.deleteRequest(id)
+            val res = repository.deleteRequest(id)
+            onResult(res.isSuccess)
         }
     }
 

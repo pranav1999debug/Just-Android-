@@ -20,16 +20,7 @@ class JustFanApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Configure privacy consent requirement before initWithContext
-        OneSignal.consentRequired = false
-
-        // 2. Enable verbose logging in debug builds for troubleshooting
-        OneSignal.Debug.logLevel = LogLevel.VERBOSE
-
-        // 3. Initialize OneSignal Android SDK v5 with application context and App ID
-        OneSignal.initWithContext(this, ONESIGNAL_APP_ID)
-
-        // 4. Register foreground & click listeners and local notification channel via OneSignalManager
+        // Initialize OneSignal SDK v5, notification channels, and listeners once via OneSignalManager
         OneSignalManager.initialize(this)
     }
 

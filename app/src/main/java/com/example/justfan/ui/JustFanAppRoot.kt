@@ -141,6 +141,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
             userProfile.isProActive || isOwnerOrAdmin
 
     val livePushEvents by OneSignalManager.liveEvents.collectAsState()
+    val pendingTargetScreen by OneSignalManager.pendingTargetScreen.collectAsState()
 
     // Request Android 13+ POST_NOTIFICATIONS permission automatically inside a coroutine
     // right after sign-in or app unlock, and associate the signed-in user with OneSignal v5.
@@ -216,6 +217,18 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
 
     BackHandler(enabled = screenBackstack.size > 1) {
         navigateBack()
+    }
+
+    LaunchedEffect(pendingTargetScreen, isVersionGateResolved, isStartupGateVisible) {
+        val target = pendingTargetScreen
+        if (isVersionGateResolved && !isStartupGateVisible && !target.isNullOrBlank()) {
+            when (target.lowercase()) {
+                "requests", "request" -> navigateTo(AppScreen.Requests)
+                "admin" -> if (isOwnerOrAdmin) navigateTo(AppScreen.Admin) else navigateTo(AppScreen.Requests)
+                "home", "feed" -> navigateRoot(AppScreen.Feed)
+            }
+            OneSignalManager.consumePendingTargetScreen()
+        }
     }
 
     val deliveredRequests = remember(requests) {
@@ -379,6 +392,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                         is AppScreen.Free -> FreeScreen(
                             freePosts = posts.filter { it.isFree },
                             favoritePostIds = favoriteIds,
+                            isPaidOrLegendary = isPaidOrLegendary,
                             onPostClick = { postId ->
                                 posts.find { it.id == postId }?.let {
                                     viewModel.recordPostClick(it.id)

@@ -19,7 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.justfan.data.model.PostEntity
-import com.example.justfan.ui.components.ContentCard
+import com.example.justfan.ui.components.CompactPostCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +29,7 @@ fun FreeScreen(
     onPostClick: (String) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onIncrementClicks: (String) -> Unit,
+    isPaidOrLegendary: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -40,6 +41,7 @@ fun FreeScreen(
             val q = query.trim().lowercase()
             freePosts.filter {
                 it.title.lowercase().contains(q) ||
+                        it.description.lowercase().contains(q) ||
                         it.author.lowercase().contains(q) ||
                         it.tags.any { tag -> tag.lowercase().contains(q) }
             }
@@ -68,55 +70,73 @@ fun FreeScreen(
             modifier = modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 16.dp)
         ) {
-            Text(
-                text = "${filtered.size} free sets — no subscription required",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("Filter free content…") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
+            Column(
                 modifier = Modifier
-                    .testTag("free_search_input")
                     .fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 160.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 80.dp),
-                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = 16.dp)
             ) {
-                items(filtered, key = { it.id }) { post ->
-                    ContentCard(
-                        post = post,
-                        isFavorite = favoritePostIds.contains(post.id),
-                        autoPlay = true,
-                        onPostClick = { onPostClick(post.id) },
-                        onToggleFavorite = { onToggleFavorite(post.id) },
-                        onDownloadClick = {
-                            onIncrementClicks(post.id)
-                            val target = post.linkUrl.ifBlank { post.imageUrl }
-                            com.example.justfan.util.DownloadHelper.enqueueDownload(
-                                context = context,
-                                url = target,
-                                title = post.title,
-                                isPremium = false
-                            )
-                        }
+                Text(
+                    text = "${filtered.size} free sets — no subscription required",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Filter free content…") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .testTag("free_search_input")
+                        .fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            if (filtered.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No free galleries found matching your filter.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 160.dp),
+                    contentPadding = PaddingValues(start = 10.dp, top = 6.dp, end = 10.dp, bottom = 80.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(filtered, key = { it.id }) { post ->
+                        CompactPostCard(
+                            post = post,
+                            isFavorite = favoritePostIds.contains(post.id),
+                            isPaidOrLegendary = isPaidOrLegendary,
+                            onCardClick = { onPostClick(post.id) },
+                            onToggleFavorite = { onToggleFavorite(post.id) },
+                            onDirectDownloadClick = {
+                                onIncrementClicks(post.id)
+                                val url = post.directLinkUrl?.ifBlank { null }
+                                    ?: post.linkUrl.ifBlank { post.imageUrl }
+                                if (url.isNotBlank()) {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()))
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }

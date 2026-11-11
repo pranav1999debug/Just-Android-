@@ -62,6 +62,19 @@ object OneSignalManager {
     private val _permissionGranted = MutableStateFlow(false)
     val permissionGranted: StateFlow<Boolean> = _permissionGranted.asStateFlow()
 
+    private val _pendingTargetScreen = MutableStateFlow<String?>(null)
+    val pendingTargetScreen: StateFlow<String?> = _pendingTargetScreen.asStateFlow()
+
+    private const val DEFAULT_WEB_URL = "https://justfan.netlify.app"
+
+    fun consumePendingTargetScreen() {
+        _pendingTargetScreen.value = null
+    }
+
+    fun setPendingTargetScreen(screen: String?) {
+        _pendingTargetScreen.value = screen
+    }
+
     fun getAppId(): String = APP_ID
 
     fun initialize(context: Context) {
@@ -73,9 +86,10 @@ object OneSignalManager {
         createNotificationChannel(appCtx)
 
         try {
-            // Ensure OneSignal SDK v5 is initialized if not already called in Application.onCreate()
+            // Configure OneSignal SDK v5 once and suppress noisy emulator FCM token registration errors
             OneSignal.consentRequired = false
-            OneSignal.Debug.logLevel = LogLevel.VERBOSE
+            OneSignal.Debug.logLevel = LogLevel.NONE
+            OneSignal.Debug.alertLevel = LogLevel.NONE
             OneSignal.initWithContext(appCtx, APP_ID)
 
             _permissionGranted.value = OneSignal.Notifications.permission
@@ -110,6 +124,12 @@ object OneSignalManager {
                     val additional = notification.additionalData
                     val eventType = additional?.optString("type", "push_clicked") ?: "push_clicked"
                     val targetPostId = additional?.optString("post_id", null)
+                    val targetScreen = additional?.optString("target_screen", "")
+                        ?.ifBlank { if (eventType == "new_request") "requests" else "home" }
+
+                    if (!targetScreen.isNullOrBlank()) {
+                        _pendingTargetScreen.value = targetScreen
+                    }
 
                     recordInAppEvent(
                         type = eventType,
@@ -262,7 +282,8 @@ object OneSignalManager {
             context = context ?: appContext,
             title = title,
             message = message,
-            targetPostId = post.id
+            targetPostId = post.id,
+            targetScreen = "home"
         )
         sendNotification(
             title = title,
@@ -270,10 +291,12 @@ object OneSignalManager {
             data = mapOf(
                 "type" to "post_created",
                 "trigger" to "new_post",
+                "target_screen" to "home",
                 "post_id" to post.id,
                 "title" to post.title
             ),
             bigPictureUrl = post.imageUrl,
+            webUrl = DEFAULT_WEB_URL,
             context = context
         )
     }
@@ -281,7 +304,7 @@ object OneSignalManager {
     /**
      * Trigger 2: Fired when a New Content Request is submitted.
      * - Fires OneSignal v5 trigger `new_request`
-     * - Broadcasts push notification to all subscribed users
+     * - Broadcasts push notification via OneSignal REST API to ALL devices (Android app + Webpage)
      * - Displays local system notification & records in-app activity item
      */
     fun triggerNewRequestNotification(
@@ -312,7 +335,8 @@ object OneSignalManager {
         showLocalSystemNotification(
             context = context ?: appContext,
             title = title,
-            message = message
+            message = message,
+            targetScreen = "requests"
         )
         sendNotification(
             title = title,
@@ -320,10 +344,13 @@ object OneSignalManager {
             data = mapOf(
                 "type" to "new_request",
                 "trigger" to "new_request",
+                "target_screen" to "requests",
                 "requester_name" to name,
-                "requester_email" to email
+                "requester_email" to email,
+                "web_url" to DEFAULT_WEB_URL
             ),
             bigPictureUrl = imageUrl,
+            webUrl = DEFAULT_WEB_URL,
             context = context
         )
     }
@@ -364,7 +391,8 @@ object OneSignalManager {
         showLocalSystemNotification(
             context = context ?: appContext,
             title = title,
-            message = message
+            message = message,
+            targetScreen = "admin"
         )
         sendNotification(
             title = title,
@@ -372,12 +400,14 @@ object OneSignalManager {
             data = mapOf(
                 "type" to "new_payment",
                 "trigger" to "new_payment",
+                "target_screen" to "admin",
                 "tier" to tier,
                 "method" to method,
                 "amount" to amount,
                 "email" to userEmail
             ),
             bigPictureUrl = proofImageUrl,
+            webUrl = DEFAULT_WEB_URL,
             context = context
         )
     }
@@ -403,7 +433,8 @@ object OneSignalManager {
         context: Context?,
         title: String,
         message: String,
-        targetPostId: String? = null
+        targetPostId: String? = null,
+        targetScreen: String? = null
     ) {
         val ctx = context ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -419,6 +450,9 @@ object OneSignalManager {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 if (!targetPostId.isNullOrBlank()) {
                     putExtra("post_id", targetPostId)
+                }
+                if (!targetScreen.isNullOrBlank()) {
+                    putExtra("target_screen", targetScreen)
                 }
             }
             val pendingIntent = PendingIntent.getActivity(
@@ -462,13 +496,14 @@ object OneSignalManager {
     }
 
     /**
-     * Sends a push notification to all subscribed users via OneSignal REST API.
+     * Sends a push notification to all subscribed devices (mobile app + webpage) via OneSignal REST API.
      */
     suspend fun sendPushNotificationToAll(
         title: String,
         message: String,
         data: Map<String, String> = emptyMap(),
         bigPictureUrl: String? = null,
+        webUrl: String? = DEFAULT_WEB_URL,
         context: Context? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         val targetContext = context ?: appContext
@@ -479,6 +514,8 @@ object OneSignalManager {
                 com.example.justfan.data.remote.SecretsStore.getOrNull("onesignal_rest_api_key")
                     ?: com.example.justfan.data.remote.SecretsStore.getOrNull("onesignal_api_key")
                     ?: com.example.justfan.data.remote.SecretsStore.getOrNull("ONESIGNAL_REST_API_KEY")
+                    ?: com.example.justfan.data.remote.SecretsStore.getOrNull("one_signal_api_key")
+                    ?: com.example.justfan.data.remote.SecretsStore.getOrNull("onesignal_key")
             } catch (_: Exception) {
                 null
             }
@@ -492,13 +529,18 @@ object OneSignalManager {
             return@withContext Result.success(true)
         }
 
-        try {
+        fun postOneSignalNotification(keyToUse: String, segments: List<String>): Pair<Int, String> {
             val url = URL("https://onesignal.com/api/v1/notifications")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                val cleanKey = apiKey.trim()
-                val authHeader = if (cleanKey.startsWith("Key ") || cleanKey.startsWith("Basic ")) cleanKey else "Key $cleanKey"
+                setRequestProperty("Accept", "application/json")
+                val cleanKey = keyToUse.trim()
+                val authHeader = if (cleanKey.startsWith("Key ") || cleanKey.startsWith("Basic ")) {
+                    cleanKey
+                } else {
+                    "Key $cleanKey"
+                }
                 setRequestProperty("Authorization", authHeader)
                 connectTimeout = 15000
                 readTimeout = 15000
@@ -507,11 +549,21 @@ object OneSignalManager {
 
             val payload = JSONObject().apply {
                 put("app_id", APP_ID)
-                put("included_segments", JSONArray().apply { put("Subscribed Users") })
+                put("target_channel", "push")
+                put("included_segments", JSONArray().apply {
+                    segments.forEach { put(it) }
+                })
+                put("isAnyWeb", true)
+                put("isAndroid", true)
+                put("isIos", true)
                 put("headings", JSONObject().apply { put("en", title) })
                 put("contents", JSONObject().apply { put("en", message) })
+                if (!webUrl.isNullOrBlank()) {
+                    put("web_url", webUrl)
+                }
                 if (!bigPictureUrl.isNullOrBlank() && !bigPictureUrl.endsWith(".mp4", ignoreCase = true)) {
                     put("big_picture", bigPictureUrl)
+                    put("chrome_web_image", bigPictureUrl)
                 }
                 if (data.isNotEmpty()) {
                     val customData = JSONObject()
@@ -529,16 +581,34 @@ object OneSignalManager {
             val responseText = if (code in 200..299) {
                 BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
-                val err = conn.errorStream?.let {
+                conn.errorStream?.let {
                     BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: "HTTP $code"
-                conn.disconnect()
-                Log.e(TAG, "OneSignal send notification failed ($code): $err")
-                return@withContext Result.failure(Exception("OneSignal broadcast failed ($code): $err"))
             }
             conn.disconnect()
-            Log.i(TAG, "OneSignal push notification broadcasted: $title - Response: $responseText")
-            Result.success(true)
+            return Pair(code, responseText)
+        }
+
+        try {
+            // Broadcast to both "Subscribed Users" and "Total Subscriptions" (covers all Android & Web push subscribers)
+            var (code, responseText) = postOneSignalNotification(
+                apiKey,
+                listOf("Subscribed Users", "Total Subscriptions")
+            )
+            if (code !in 200..299) {
+                // Fallback to "All" segment if custom segment names differ
+                val fallback = postOneSignalNotification(apiKey, listOf("All"))
+                code = fallback.first
+                responseText = fallback.second
+            }
+
+            if (code in 200..299) {
+                Log.i(TAG, "OneSignal push notification broadcasted to mobile & web: $title - Response: $responseText")
+                Result.success(true)
+            } else {
+                Log.e(TAG, "OneSignal send notification failed ($code): $responseText")
+                Result.failure(Exception("OneSignal broadcast failed ($code): $responseText"))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error broadcasting notification", e)
             Result.failure(e)
@@ -553,10 +623,11 @@ object OneSignalManager {
         message: String,
         data: Map<String, String> = emptyMap(),
         bigPictureUrl: String? = null,
+        webUrl: String? = DEFAULT_WEB_URL,
         context: Context? = null
     ) {
         scope.launch {
-            sendPushNotificationToAll(title, message, data, bigPictureUrl, context)
+            sendPushNotificationToAll(title, message, data, bigPictureUrl, webUrl, context)
         }
     }
 

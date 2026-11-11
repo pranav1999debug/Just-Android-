@@ -209,11 +209,10 @@ object SupabaseClient {
         }
     }
 
-    private fun fetchPostClickCounts(): Map<String, Int> {
+    private fun fetchPostClickCounts(maxPages: Int = 25): Map<String, Int> {
         val map = mutableMapOf<String, Int>()
         val pageSize = 1000
         var offset = 0
-        val maxPages = 25
         var page = 0
         try {
             while (page < maxPages) {
@@ -248,9 +247,92 @@ object SupabaseClient {
         return map
     }
 
+    private fun parsePostObject(obj: JSONObject, clickCountsMap: Map<String, Int>): PostEntity {
+        val id = obj.optString("id", UUID.randomUUID().toString())
+        val title = obj.optString("title", "Untitled Post")
+        val desc = obj.optString("description", "")
+        val img = obj.optString("image_url", "")
+        val link = obj.optString("link_url", "")
+        val direct = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
+        val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
+        val isFree = obj.optBoolean("is_free", false)
+        val isNsfw = obj.optBoolean("is_nsfw", false)
+        val clicks = clickCountsMap[id] ?: obj.optInt("clicks_count", 0)
+        val likes = obj.optInt("likes_count", 0)
+        val section = obj.optString("section", "home")
+        val author = obj.optString("author", "JustFan Creator")
+        val createdAtStr = obj.optString("created_at", "")
+
+        val tagsList = mutableListOf<String>()
+        val tagsArr = obj.optJSONArray("tags")
+        if (tagsArr != null) {
+            for (j in 0 until tagsArr.length()) {
+                tagsList.add(tagsArr.getString(j))
+            }
+        }
+
+        val contentImagesList = mutableListOf<String>()
+        val contentImgsArr = obj.optJSONArray("content_images")
+        if (contentImgsArr != null) {
+            for (j in 0 until contentImgsArr.length()) {
+                val url = contentImgsArr.optString(j, "").trim()
+                if (url.isNotEmpty()) contentImagesList.add(url)
+            }
+        }
+
+        return PostEntity(
+            id = id,
+            title = title,
+            description = desc,
+            imageUrl = img,
+            linkUrl = link,
+            directLinkUrl = direct,
+            premiumLinkUrl = prem,
+            contentImages = contentImagesList,
+            tags = tagsList,
+            section = section,
+            author = author,
+            isNsfw = isNsfw,
+            isFree = isFree,
+            clicksCount = clicks,
+            likesCount = likes,
+            createdAt = parseIsoToMillis(createdAtStr)
+        )
+    }
+
+    /**
+     * Fast single-request fetch of the newest posts so the Home screen renders immediately
+     * without waiting for multi-page click counts or thousands of historical rows.
+     */
+    suspend fun fetchInitialPostsFast(limit: Int = 100): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "posts?select=*&order=created_at.desc,id.desc&limit=$limit&offset=0"
+            val conn = openConnection(endpoint, "GET")
+            val code = conn.responseCode
+            if (code in 200..299) {
+                val response = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val jsonArray = JSONArray(response)
+                val list = ArrayList<PostEntity>(jsonArray.length())
+                for (i in 0 until jsonArray.length()) {
+                    list.add(parsePostObject(jsonArray.getJSONObject(i), emptyMap()))
+                }
+                Result.success(list)
+            } else {
+                val errText = runCatching { conn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
+                conn.disconnect()
+                VersionGateManager.onPermissionOrRlsRejected(code, errText)
+                Result.failure(Exception("HTTP $code: $errText"))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchInitialPostsFast warning", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun fetchPosts(maxTotal: Int = 25000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
-            val clickCountsMap = fetchPostClickCounts()
+            val clickCountsMap = fetchPostClickCounts(maxPages = 5)
             val pageSize = 1000
             var offset = 0
             val postsById = LinkedHashMap<String, PostEntity>()
@@ -809,10 +891,132 @@ object SupabaseClient {
         result
     }
 
+    data class RequestOverrideRecord(
+        val requestId: String,
+        val status: String,
+        val downloadLink: String?,
+        val rejectionReason: String?
+    )
+
+    private fun fetchRequestOverridesMap(): Map<String, RequestOverrideRecord> {
+        val map = mutableMapOf<String, RequestOverrideRecord>()
+        try {
+            val conn = openConnection(
+                "upload_requests?select=id,status,title,caption,description,updated_at&host=eq.request_override&order=updated_at.desc&limit=500",
+                "GET"
+            )
+            if (conn.responseCode in 200..299) {
+                val arr = JSONArray(conn.inputStream.bufferedReader().readText())
+                conn.disconnect()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val targetReqId = obj.optString("title", "").trim()
+                    if (targetReqId.isBlank() || map.containsKey(targetReqId)) continue
+                    val statusVal = obj.optString("status", "").trim()
+                    if (statusVal.isBlank()) continue
+                    val dl = if (obj.has("caption") && !obj.isNull("caption")) {
+                        obj.optString("caption", "").trim().takeIf { it.isNotBlank() && it != "null" }
+                    } else null
+                    val rej = if (obj.has("description") && !obj.isNull("description")) {
+                        obj.optString("description", "").trim().takeIf { it.isNotBlank() && it != "null" }
+                    } else null
+                    map[targetReqId] = RequestOverrideRecord(
+                        requestId = targetReqId,
+                        status = statusVal,
+                        downloadLink = dl,
+                        rejectionReason = rej
+                    )
+                }
+            } else {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchRequestOverridesMap notice", e)
+        }
+        return map
+    }
+
+    private suspend fun upsertRequestOverrideInSupabase(
+        requestId: String,
+        status: String,
+        downloadLink: String? = null,
+        rejectionReason: String? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (requestId.isBlank()) return@withContext false
+        try {
+            val nowIso = Instant.now().toString()
+            var existingId: String? = null
+            val checkConn = openConnection(
+                "upload_requests?select=id&host=eq.request_override&title=eq.$requestId&order=updated_at.desc&limit=1",
+                "GET"
+            )
+            if (checkConn.responseCode in 200..299) {
+                val arr = JSONArray(checkConn.inputStream.bufferedReader().readText())
+                checkConn.disconnect()
+                if (arr.length() > 0) {
+                    existingId = arr.getJSONObject(0).optString("id", "").takeIf { it.isNotBlank() }
+                }
+            } else {
+                checkConn.disconnect()
+            }
+
+            if (existingId != null) {
+                val patchObj = JSONObject().apply {
+                    put("host", "request_override")
+                    put("status", status)
+                    put("title", requestId)
+                    if (!downloadLink.isNullOrBlank()) put("caption", downloadLink)
+                    if (!rejectionReason.isNullOrBlank()) put("description", rejectionReason)
+                    put("updated_at", nowIso)
+                }
+                val patchRes = executePatch("upload_requests?id=eq.$existingId", patchObj.toString(), null)
+                if (patchRes.isSuccess && hasAffectedRows(patchRes.getOrNull())) {
+                    return@withContext true
+                }
+            }
+
+            val postObj = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("host", "request_override")
+                put("status", status)
+                put("title", requestId)
+                if (!downloadLink.isNullOrBlank()) put("caption", downloadLink)
+                if (!rejectionReason.isNullOrBlank()) put("description", rejectionReason)
+                put("created_at", nowIso)
+                put("updated_at", nowIso)
+            }
+            val postRes = executePost("upload_requests", postObj.toString(), null)
+            postRes.isSuccess && hasAffectedRows(postRes.getOrNull())
+        } catch (e: Exception) {
+            Log.w(TAG, "upsertRequestOverrideInSupabase warning", e)
+            false
+        }
+    }
+
+    private fun extractProofOrImageUrl(
+        rawImg: String?,
+        rawDl: String?,
+        rawMsg: String?,
+        rawTelegram: String?
+    ): String? {
+        val candidates = listOfNotNull(rawImg?.trim(), rawDl?.trim(), rawTelegram?.trim())
+        for (c in candidates) {
+            if (c.startsWith("http://", ignoreCase = true) || c.startsWith("https://", ignoreCase = true)) {
+                return c
+            }
+        }
+        if (!rawMsg.isNullOrBlank()) {
+            val match = Regex("""https?://[^\s|]+""").find(rawMsg)?.value?.trim()
+            if (!match.isNullOrBlank()) return match
+        }
+        return rawImg?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+    }
+
     suspend fun fetchRequests(): Result<List<RequestEntity>> = withContext(Dispatchers.IO) {
         try {
             val list = mutableListOf<RequestEntity>()
             val seenIds = mutableSetOf<String>()
+            val overridesMap = fetchRequestOverridesMap()
 
             val endpoint = "RequestfromApp?select=*&order=created_at.desc"
             val conn = openConnection(endpoint, "GET")
@@ -824,6 +1028,11 @@ object SupabaseClient {
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val id = obj.optString("id", UUID.randomUUID().toString())
+                    val override = overridesMap[id]
+                    if (override?.status.equals("deleted", ignoreCase = true)) {
+                        seenIds.add(id)
+                        continue
+                    }
                     val userId = if (obj.has("user_id") && !obj.isNull("user_id")) obj.optString("user_id") else null
                     val name = if (obj.has("name") && !obj.isNull("name")) obj.optString("name") else null
                     val email = obj.optString("email", "")
@@ -833,11 +1042,20 @@ object SupabaseClient {
                     if (msg.startsWith("[TIER_ASSIGNMENT]") || name.equals("TIER_ASSIGNMENT", ignoreCase = true)) {
                         continue
                     }
-                    val img = if (obj.has("image_url") && !obj.isNull("image_url")) obj.optString("image_url") else null
-                    val status = obj.optString("status", "pending")
-                    val dl = if (obj.has("download_link") && !obj.isNull("download_link")) obj.optString("download_link") else null
-                    val rej = if (obj.has("rejection_reason") && !obj.isNull("rejection_reason")) obj.optString("rejection_reason") else null
+                    val rawImg = if (obj.has("image_url") && !obj.isNull("image_url")) obj.optString("image_url") else null
+                    val rawStatus = obj.optString("status", "pending")
+                    if (rawStatus.equals("deleted", ignoreCase = true)) {
+                        seenIds.add(id)
+                        continue
+                    }
+                    val rawDl = if (obj.has("download_link") && !obj.isNull("download_link")) obj.optString("download_link") else null
+                    val rawRej = if (obj.has("rejection_reason") && !obj.isNull("rejection_reason")) obj.optString("rejection_reason") else null
                     val createdAtStr = obj.optString("created_at", "")
+
+                    val effectiveStatus = override?.status?.takeIf { it.isNotBlank() } ?: rawStatus
+                    val effectiveDl = override?.downloadLink?.takeIf { it.isNotBlank() } ?: rawDl
+                    val effectiveRej = override?.rejectionReason?.takeIf { it.isNotBlank() } ?: rawRej
+                    val effectiveImg = extractProofOrImageUrl(rawImg, effectiveDl, msg, telegram)
 
                     seenIds.add(id)
                     list.add(
@@ -848,10 +1066,10 @@ object SupabaseClient {
                             email = email,
                             telegramUsername = telegram,
                             message = msg,
-                            imageUrl = img,
-                            status = status,
-                            downloadLink = dl,
-                            rejectionReason = rej,
+                            imageUrl = effectiveImg,
+                            status = effectiveStatus,
+                            downloadLink = effectiveDl,
+                            rejectionReason = effectiveRej,
                             createdAt = parseIsoToMillis(createdAtStr)
                         )
                     )
@@ -865,7 +1083,7 @@ object SupabaseClient {
             // Also merge fallback requests/payment proofs stored in `upload_requests` (`host = "app_request"`)
             try {
                 val upReqConn = openConnection(
-                    "upload_requests?select=id,user_id,host,status,title,caption,description,created_at,updated_at&host=eq.app_request&order=created_at.desc&limit=300",
+                    "upload_requests?select=id,user_id,host,status,title,caption,description,image_urls,created_at,updated_at&host=eq.app_request&order=created_at.desc&limit=300",
                     "GET"
                 )
                 if (upReqConn.responseCode in 200..299) {
@@ -875,17 +1093,28 @@ object SupabaseClient {
                         val obj = upArr.getJSONObject(i)
                         val id = obj.optString("id", "")
                         if (id.isBlank() || seenIds.contains(id)) continue
-                        val status = obj.optString("status", "pending")
-                        if (status.equals("deleted", ignoreCase = true)) continue
+                        val override = overridesMap[id]
+                        val rawStatus = obj.optString("status", "pending")
+                        val effectiveStatus = override?.status?.takeIf { it.isNotBlank() } ?: rawStatus
+                        if (effectiveStatus.equals("deleted", ignoreCase = true)) {
+                            seenIds.add(id)
+                            continue
+                        }
                         val rawDesc = obj.optString("description", "")
                         if (!rawDesc.startsWith("[APP_REQUEST]")) continue
                         val email = obj.optString("title", "").trim()
                         val name = obj.optString("caption", "Subscriber").takeIf { it.isNotBlank() && it != "null" }
                         val telegram = Regex("""Telegram:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-                        val imgUrl = Regex("""ImageUrl:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-                        val dlLink = Regex("""DownloadLink:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-                        val rejReason = Regex("""RejectionReason:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                        val descImgUrl = Regex("""ImageUrl:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                        val arrImgUrl = obj.optJSONArray("image_urls")?.let { arr ->
+                            if (arr.length() > 0) arr.optString(0, "").trim().takeIf { it.isNotBlank() } else null
+                        }
+                        val dlLink = override?.downloadLink?.takeIf { it.isNotBlank() }
+                            ?: Regex("""DownloadLink:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                        val rejReason = override?.rejectionReason?.takeIf { it.isNotBlank() }
+                            ?: Regex("""RejectionReason:\s*([^|]*)""").find(rawDesc)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
                         val bodyMsg = rawDesc.substringAfter("Message:", "").trim()
+                        val effectiveImgUrl = extractProofOrImageUrl(descImgUrl ?: arrImgUrl, dlLink, bodyMsg, telegram)
                         val createdStr = obj.optString("created_at", "")
                         seenIds.add(id)
                         list.add(
@@ -896,8 +1125,8 @@ object SupabaseClient {
                                 email = email,
                                 telegramUsername = telegram,
                                 message = bodyMsg,
-                                imageUrl = imgUrl,
-                                status = status,
+                                imageUrl = effectiveImgUrl,
+                                status = effectiveStatus,
                                 downloadLink = dlLink,
                                 rejectionReason = rejReason,
                                 createdAt = parseIsoToMillis(createdStr)
@@ -926,9 +1155,10 @@ object SupabaseClient {
         message: String,
         imageUrl: String?,
         userId: String?,
-        deviceId: String?
+        deviceId: String?,
+        requestId: String = UUID.randomUUID().toString()
     ): Result<Boolean> = withContext(Dispatchers.IO) {
-        val reqId = UUID.randomUUID().toString()
+        val reqId = requestId.ifBlank { UUID.randomUUID().toString() }
         val cleanEmail = email.trim().lowercase()
         fun buildPayload(includeUserId: Boolean): JSONObject {
             return JSONObject().apply {
@@ -972,6 +1202,9 @@ object SupabaseClient {
             put("title", cleanEmail)
             put("caption", name.ifBlank { cleanEmail.substringBefore("@") })
             put("description", fallbackDesc)
+            if (!imageUrl.isNullOrBlank()) {
+                put("image_urls", JSONArray().apply { put(imageUrl.trim()) })
+            }
             put("created_at", nowIso)
             put("updated_at", nowIso)
         }
@@ -989,15 +1222,27 @@ object SupabaseClient {
             if (!link.isNullOrBlank()) put("download_link", link)
         }
         val res = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
-        if (res.isSuccess && hasAffectedRows(res.getOrNull())) {
-            return@withContext Result.success(true)
-        }
+        val directUpdated = res.isSuccess && hasAffectedRows(res.getOrNull())
+
         val upPayload = JSONObject().apply {
             put("status", status)
             put("updated_at", Instant.now().toString())
         }
         val upRes = executePatch("upload_requests?id=eq.$id", upPayload.toString(), accessToken)
-        if (upRes.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("UPDATE_FAILED"))
+        val upDirectUpdated = upRes.isSuccess && hasAffectedRows(upRes.getOrNull())
+
+        val overrideSaved = upsertRequestOverrideInSupabase(
+            requestId = id,
+            status = status,
+            downloadLink = link,
+            rejectionReason = null
+        )
+
+        if (directUpdated || upDirectUpdated || overrideSaved) {
+            Result.success(true)
+        } else {
+            Result.failure(res.exceptionOrNull() ?: Exception("UPDATE_FAILED"))
+        }
     }
 
     suspend fun rejectRequestInSupabase(id: String, reason: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -1006,15 +1251,27 @@ object SupabaseClient {
             put("rejection_reason", reason)
         }
         val res = executePatch("RequestfromApp?id=eq.$id", payload.toString(), accessToken)
-        if (res.isSuccess && hasAffectedRows(res.getOrNull())) {
-            return@withContext Result.success(true)
-        }
+        val directUpdated = res.isSuccess && hasAffectedRows(res.getOrNull())
+
         val upPayload = JSONObject().apply {
             put("status", "rejected")
             put("updated_at", Instant.now().toString())
         }
         val upRes = executePatch("upload_requests?id=eq.$id", upPayload.toString(), accessToken)
-        if (upRes.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("REJECT_FAILED"))
+        val upDirectUpdated = upRes.isSuccess && hasAffectedRows(upRes.getOrNull())
+
+        val overrideSaved = upsertRequestOverrideInSupabase(
+            requestId = id,
+            status = "rejected",
+            downloadLink = null,
+            rejectionReason = reason
+        )
+
+        if (directUpdated || upDirectUpdated || overrideSaved) {
+            Result.success(true)
+        } else {
+            Result.failure(res.exceptionOrNull() ?: Exception("REJECT_FAILED"))
+        }
     }
 
     suspend fun deleteRequestFromSupabase(id: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -1024,7 +1281,13 @@ object SupabaseClient {
             put("updated_at", Instant.now().toString())
         }
         executePatch("upload_requests?id=eq.$id", upPatch.toString(), accessToken)
-        delRes
+        val overrideSaved = upsertRequestOverrideInSupabase(
+            requestId = id,
+            status = "deleted",
+            downloadLink = null,
+            rejectionReason = null
+        )
+        if (delRes.isSuccess || overrideSaved) Result.success(true) else delRes
     }
 
     suspend fun fetchSubscriptions(): Result<Map<String, String>> = withContext(Dispatchers.IO) {

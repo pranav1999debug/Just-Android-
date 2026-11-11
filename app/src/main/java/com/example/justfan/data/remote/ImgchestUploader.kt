@@ -160,10 +160,12 @@ object ImgchestUploader {
         outputStream.write(title.toByteArray(Charsets.UTF_8))
         outputStream.writeBytes(lineEnd)
 
-        // images[] fields
+        // images[] fields (supports both images and .mp4 videos)
         for (uri in uris) {
-            val fileName = getFileName(context, uri) ?: "image_${System.currentTimeMillis()}.jpg"
             val mime = getMimeType(context, uri)
+            val defaultExt = if (mime.startsWith("video/")) "mp4" else "jpg"
+            val rawName = getFileName(context, uri) ?: "media_${System.currentTimeMillis()}.$defaultExt"
+            val fileName = if (mime.startsWith("video/") && !rawName.contains('.')) "$rawName.mp4" else rawName
 
             outputStream.writeBytes(twoHyphens + boundary + lineEnd)
             outputStream.writeBytes("Content-Disposition: form-data; name=\"images[]\"; filename=\"$fileName\"$lineEnd")
@@ -211,7 +213,8 @@ object ImgchestUploader {
         val links = mutableListOf<String>()
         for (i in 0 until images.length()) {
             val item = images.getJSONObject(i)
-            val link = item.optString("link", "")
+            val mp4Link = if (item.has("mp4") && !item.isNull("mp4")) item.optString("mp4", "") else ""
+            val link = mp4Link.ifBlank { item.optString("link", "") }
             if (link.isNotBlank()) links.add(link)
         }
 
@@ -243,8 +246,10 @@ object ImgchestUploader {
         val outputStream = DataOutputStream(conn.outputStream)
 
         for (uri in uris) {
-            val fileName = getFileName(context, uri) ?: "image_${System.currentTimeMillis()}.jpg"
             val mime = getMimeType(context, uri)
+            val defaultExt = if (mime.startsWith("video/")) "mp4" else "jpg"
+            val rawName = getFileName(context, uri) ?: "media_${System.currentTimeMillis()}.$defaultExt"
+            val fileName = if (mime.startsWith("video/") && !rawName.contains('.')) "$rawName.mp4" else rawName
 
             outputStream.writeBytes(twoHyphens + boundary + lineEnd)
             outputStream.writeBytes("Content-Disposition: form-data; name=\"images[]\"; filename=\"$fileName\"$lineEnd")
@@ -291,7 +296,8 @@ object ImgchestUploader {
         val links = mutableListOf<String>()
         for (i in 0 until images.length()) {
             val item = images.getJSONObject(i)
-            val link = item.optString("link", "")
+            val mp4Link = if (item.has("mp4") && !item.isNull("mp4")) item.optString("mp4", "") else ""
+            val link = mp4Link.ifBlank { item.optString("link", "") }
             if (link.isNotBlank()) links.add(link)
         }
 

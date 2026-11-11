@@ -40,11 +40,15 @@ object SecretsStore {
             if (forceReload || cache == null) {
                 reloadInternal()
             }
-            cache?.get(name) ?: run {
+            val found = cache?.get(name)
+                ?: cache?.entries?.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+            found ?: run {
                 if (!forceReload) {
                     reloadInternal()
                 }
-                cache?.get(name) ?: throw IllegalStateException("Secret $name not found in app_secrets")
+                cache?.get(name)
+                    ?: cache?.entries?.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+                    ?: throw IllegalStateException("Secret $name not found in app_secrets")
             }
         }
     }

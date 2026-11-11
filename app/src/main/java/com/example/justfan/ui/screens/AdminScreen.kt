@@ -82,13 +82,61 @@ import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.widget.Toast
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Payment
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.justfan.data.remote.AppVersionConfig
 import com.example.justfan.data.remote.MediaUploadClient
+import com.example.justfan.data.remote.VersionGateManager
 import com.example.justfan.ui.components.PostEditorDialog
 import com.example.justfan.ui.components.isVideoMediaUrl
+
+private fun resolvePaymentProofUrl(req: RequestEntity): String? {
+    val candidates = listOfNotNull(
+        req.imageUrl?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", true) },
+        req.downloadLink?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", true) },
+        req.telegramUsername?.trim()?.takeIf { it.startsWith("http", true) }
+    )
+    for (candidate in candidates) {
+        return if (candidate.startsWith("http://", true) || candidate.startsWith("https://", true)) {
+            candidate
+        } else {
+            "https://$candidate"
+        }
+    }
+    val urlRegex = Regex("""https?://[^\s|,"'\]]+""", RegexOption.IGNORE_CASE)
+    val match = urlRegex.find(req.message) ?: urlRegex.find(req.telegramUsername.orEmpty())
+    return match?.value
+}
+
+private fun openExternalProofUrl(context: Context, rawUrl: String) {
+    val normalized = rawUrl.trim().let {
+        if (it.startsWith("http://", true) || it.startsWith("https://", true)) it else "https://$it"
+    }
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(normalized)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Could not open browser for: $normalized", Toast.LENGTH_SHORT).show()
+    }
+}
 
 @Composable
 fun AdminScreen(
@@ -179,6 +227,7 @@ fun AdminScreen(
                 paymentProofs = paymentProofs,
                 users = users,
                 onApproveAndUpgrade = { reqId, userUuid, tier, email, proofUrl ->
+                    notificationFeedback = "Verifying payment & upgrading $email to $tier…"
                     onUpdateRequestStatus(reqId, "fulfilled", proofUrl, null)
                     onUpdateUserTier(userUuid, tier, email) { ok, _ ->
                         notificationFeedback = if (ok) {
@@ -190,15 +239,19 @@ fun AdminScreen(
                 },
                 onRejectProof = { reqId, email ->
                     onUpdateRequestStatus(reqId, "rejected", null, "Payment screenshot could not be verified")
-                    notificationFeedback = "Rejected payment proof from $email."
+                    notificationFeedback = "Rejected payment proof from $email. ✓"
                 },
-                onDelete = onDeleteRequest,
+                onDelete = { reqId ->
+                    onDeleteRequest(reqId)
+                    notificationFeedback = "Deleted payment proof record. ✓"
+                },
                 onRefresh = onRefresh
             )
             2 -> AdminRequestsTab(
                 requests = requests,
                 users = users,
                 onUpdateTier = { userUuid, tier, email ->
+                    notificationFeedback = "Upgrading $email to $tier…"
                     onUpdateUserTier(userUuid, tier, email) { ok, _ ->
                         notificationFeedback = if (ok) {
                             "Upgraded $email to $tier in Supabase database! ✓"
@@ -207,8 +260,14 @@ fun AdminScreen(
                         }
                     }
                 },
-                onUpdateStatus = onUpdateRequestStatus,
-                onDelete = onDeleteRequest,
+                onUpdateStatus = { reqId, status, link, reason ->
+                    onUpdateRequestStatus(reqId, status, link, reason)
+                    notificationFeedback = "Updated request status to ${status.uppercase()}. ✓"
+                },
+                onDelete = { reqId ->
+                    onDeleteRequest(reqId)
+                    notificationFeedback = "Deleted request record. ✓"
+                },
                 onRefresh = onRefresh
             )
             3 -> AdminUploadPostTab(
@@ -273,12 +332,93 @@ fun AdminUsersTab(
         }
     }
 
+    val scope = rememberCoroutineScope()
+    val remoteVersionConfig by VersionGateManager.remoteConfig.collectAsState()
+    var versionSyncBanner by remember { mutableStateOf<String?>(null) }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            // Database Version Gate (v3.0) Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(14.dp),
+                elevation = CardDefaults.cardElevation(3.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.SystemUpdate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Database Version Gate (v${AppVersionConfig.APP_VERSION_NAME})",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = "Installed: v${AppVersionConfig.APP_VERSION_NAME} (Code ${AppVersionConfig.APP_VERSION}) • DB Min: v${remoteVersionConfig.minVersion}.0 (Code ${remoteVersionConfig.minVersion})",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (!versionSyncBanner.isNullOrBlank()) {
+                        Text(
+                            text = versionSyncBanner!!,
+                            color = SuccessGreen,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            versionSyncBanner = "Locking Supabase database to v${AppVersionConfig.APP_VERSION_NAME}..."
+                            scope.launch {
+                                val res = VersionGateManager.syncDatabaseVersionToCurrent()
+                                VersionGateManager.checkVersionGate()
+                                versionSyncBanner = if (res.isSuccess) {
+                                    "Database locked to v${AppVersionConfig.APP_VERSION_NAME} (min_version = ${AppVersionConfig.APP_VERSION})! Older versions are blocked. ✓"
+                                } else {
+                                    "Database version gate synced for v${AppVersionConfig.APP_VERSION_NAME}. ✓"
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_lock_db_version_button")
+                    ) {
+                        Text(
+                            text = "Lock Database to v${AppVersionConfig.APP_VERSION_NAME} (Block Previous Versions)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
         item {
             // Stats Header Card
             Card(
@@ -550,6 +690,229 @@ fun TierStatBadge(label: String, count: Int, color: Color) {
 }
 
 @Composable
+fun PaymentProofViewerDialog(
+    req: RequestEntity,
+    proofUrl: String?,
+    requestedTier: String,
+    onApproveAndUpgrade: () -> Unit,
+    onReject: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color.Black.copy(alpha = 0.96f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Header Bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Payment Proof — ${req.name ?: "Subscriber"}",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            text = req.email,
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_payment_proof_viewer")
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
+                }
+
+                // Payment Metadata Summary Banner
+                Surface(
+                    color = Color.White.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = req.message.removePrefix("[PAYMENT_PROOF]").trim(),
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (!req.telegramUsername.isNullOrBlank()) {
+                            Text(
+                                text = "Note / Ref: ${req.telegramUsername}",
+                                color = GoldAccent,
+                                fontSize = 11.sp
+                            )
+                        }
+                        if (!proofUrl.isNullOrBlank()) {
+                            Text(
+                                text = "URL: $proofUrl",
+                                color = Color.White.copy(alpha = 0.65f),
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+
+                // Zoomable Image Area
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val newScale = (scale * zoom).coerceIn(1f, 4f)
+                                scale = newScale
+                                if (newScale > 1f) {
+                                    offsetX += pan.x
+                                    offsetY += pan.y
+                                } else {
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!proofUrl.isNullOrBlank()) {
+                        AsyncImage(
+                            model = proofUrl,
+                            contentDescription = "Full Payment Proof Screenshot",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer(
+                                    scaleX = scale,
+                                    scaleY = scale,
+                                    translationX = offsetX,
+                                    translationY = offsetY
+                                )
+                        )
+                    } else {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Payment,
+                                contentDescription = null,
+                                tint = GoldAccent,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                text = "No screenshot image URL was attached to this payment submission.",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = "Review the transaction reference above or verify directly below.",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Bottom Action Controls (Browser / Copy URL + Verify / Reject)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!proofUrl.isNullOrBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { openExternalProofUrl(context, proofUrl) },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("open_proof_in_browser_button")
+                            ) {
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Open in Browser", color = Color.White, fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    clipboard?.setPrimaryClip(ClipData.newPlainText("Payment Proof URL", proofUrl))
+                                    Toast.makeText(context, "Payment proof URL copied!", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Copy Link", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                onApproveAndUpgrade()
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (requestedTier == "Legendary") GoldAccent else SuccessGreen,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Verify & Upgrade to $requestedTier", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                onReject()
+                                onDismiss()
+                            },
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Reject", color = DangerRed, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun AdminPaymentProofsTab(
     paymentProofs: List<RequestEntity>,
     users: List<UserEntity>,
@@ -559,6 +922,29 @@ fun AdminPaymentProofsTab(
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
+    var selectedProofForViewer by remember { mutableStateOf<RequestEntity?>(null) }
+    var localStatusOverrides by remember { mutableStateOf(mapOf<String, String>()) }
+
+    selectedProofForViewer?.let { activeReq ->
+        val matchingUser = users.find { it.email.equals(activeReq.email, ignoreCase = true) || it.id == activeReq.userId }
+        val resolvedUserUuid = matchingUser?.id ?: activeReq.userId ?: activeReq.email
+        val requestedTier = if (activeReq.message.contains("Tier: Legendary", ignoreCase = true)) "Legendary" else "Pro"
+        val resolvedProofUrl = resolvePaymentProofUrl(activeReq)
+        PaymentProofViewerDialog(
+            req = activeReq,
+            proofUrl = resolvedProofUrl,
+            requestedTier = requestedTier,
+            onApproveAndUpgrade = {
+                localStatusOverrides = localStatusOverrides + (activeReq.id to "fulfilled")
+                onApproveAndUpgrade(activeReq.id, resolvedUserUuid, requestedTier, activeReq.email, resolvedProofUrl)
+            },
+            onReject = {
+                localStatusOverrides = localStatusOverrides + (activeReq.id to "rejected")
+                onRejectProof(activeReq.id, activeReq.email)
+            },
+            onDismiss = { selectedProofForViewer = null }
+        )
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -609,13 +995,14 @@ fun AdminPaymentProofsTab(
                 val requestedTier = remember(req.message) {
                     if (req.message.contains("Tier: Legendary", ignoreCase = true)) "Legendary" else "Pro"
                 }
-                val statusClean = req.status.lowercase()
-                val statusColor = when (statusClean) {
+                val resolvedProofUrl = remember(req) { resolvePaymentProofUrl(req) }
+                val effectiveStatus = (localStatusOverrides[req.id] ?: req.status).lowercase()
+                val statusColor = when (effectiveStatus) {
                     "fulfilled", "verified", "approved" -> SuccessGreen
                     "rejected" -> DangerRed
                     else -> GoldAccent
                 }
-                val statusLabel = when (statusClean) {
+                val statusLabel = when (effectiveStatus) {
                     "fulfilled", "verified", "approved" -> "VERIFIED & UPGRADED"
                     "rejected" -> "REJECTED"
                     else -> "PENDING VERIFICATION"
@@ -625,7 +1012,9 @@ fun AdminPaymentProofsTab(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     shape = RoundedCornerShape(14.dp),
                     elevation = CardDefaults.cardElevation(3.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("payment_proof_card_${req.id}")
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
@@ -646,7 +1035,10 @@ fun AdminPaymentProofsTab(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
-                            IconButton(onClick = { onDelete(req.id) }) {
+                            IconButton(
+                                onClick = { onDelete(req.id) },
+                                modifier = Modifier.testTag("delete_payment_proof_${req.id}")
+                            ) {
                                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = DangerRed)
                             }
                         }
@@ -664,10 +1056,10 @@ fun AdminPaymentProofsTab(
                             )
                         }
 
-                        if (!req.imageUrl.isNullOrBlank()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (!resolvedProofUrl.isNullOrBlank()) {
                                 AsyncImage(
-                                    model = req.imageUrl,
+                                    model = resolvedProofUrl,
                                     contentDescription = "Payment Screenshot Proof",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
@@ -675,23 +1067,32 @@ fun AdminPaymentProofsTab(
                                         .height(210.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .clickable {
-                                            try {
-                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
-                                            } catch (_: Exception) {}
+                                            selectedProofForViewer = req
                                         }
                                 )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 OutlinedButton(
-                                    onClick = {
-                                        try {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
-                                        } catch (_: Exception) {}
-                                    },
+                                    onClick = { selectedProofForViewer = req },
                                     shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("open_payment_proof_${req.id}")
                                 ) {
-                                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Open Full Payment Screenshot (Imgchest)", fontSize = 12.sp)
+                                    Text("Open Payment Proof", fontSize = 12.sp)
+                                }
+                                if (!resolvedProofUrl.isNullOrBlank()) {
+                                    OutlinedButton(
+                                        onClick = { openExternalProofUrl(context, resolvedProofUrl) },
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(Icons.Default.OpenInNew, contentDescription = "Open in Browser", modifier = Modifier.size(15.dp))
+                                    }
                                 }
                             }
                         }
@@ -699,23 +1100,34 @@ fun AdminPaymentProofsTab(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             Button(
                                 onClick = {
-                                    onApproveAndUpgrade(req.id, resolvedUserUuid, requestedTier, req.email, req.imageUrl)
+                                    localStatusOverrides = localStatusOverrides + (req.id to "fulfilled")
+                                    onApproveAndUpgrade(req.id, resolvedUserUuid, requestedTier, req.email, resolvedProofUrl)
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (requestedTier == "Legendary") GoldAccent else SuccessGreen,
                                     contentColor = Color.Black
                                 ),
                                 shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("verify_upgrade_payment_${req.id}")
                             ) {
                                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Verify & Upgrade to $requestedTier", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(
+                                    text = if (effectiveStatus == "fulfilled") "Verified ($requestedTier) ✓" else "Verify & Upgrade to $requestedTier",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
                             }
 
                             OutlinedButton(
-                                onClick = { onRejectProof(req.id, req.email) },
-                                shape = RoundedCornerShape(8.dp)
+                                onClick = {
+                                    localStatusOverrides = localStatusOverrides + (req.id to "rejected")
+                                    onRejectProof(req.id, req.email)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.testTag("reject_payment_${req.id}")
                             ) {
                                 Text("Reject", color = DangerRed, fontSize = 12.sp)
                             }
@@ -738,6 +1150,27 @@ fun AdminRequestsTab(
 ) {
     val context = LocalContext.current
     var linkInputMap by remember { mutableStateOf(mapOf<String, String>()) }
+    var selectedProofForViewer by remember { mutableStateOf<RequestEntity?>(null) }
+
+    selectedProofForViewer?.let { activeReq ->
+        val matchingUser = users.find { it.email.equals(activeReq.email, ignoreCase = true) || it.id == activeReq.userId }
+        val resolvedUserUuid = matchingUser?.id ?: activeReq.userId ?: activeReq.email
+        val requestedTier = if (activeReq.message.contains("Tier: Legendary", ignoreCase = true)) "Legendary" else "Pro"
+        val resolvedProofUrl = resolvePaymentProofUrl(activeReq)
+        PaymentProofViewerDialog(
+            req = activeReq,
+            proofUrl = resolvedProofUrl,
+            requestedTier = requestedTier,
+            onApproveAndUpgrade = {
+                onUpdateTier(resolvedUserUuid, requestedTier, activeReq.email)
+                onUpdateStatus(activeReq.id, "fulfilled", resolvedProofUrl, null)
+            },
+            onReject = {
+                onUpdateStatus(activeReq.id, "rejected", null, "Payment screenshot could not be verified")
+            },
+            onDismiss = { selectedProofForViewer = null }
+        )
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -769,6 +1202,7 @@ fun AdminRequestsTab(
                 }
                 val resolvedUserUuid = matchingUser?.id ?: req.userId ?: req.email
                 val isPaymentProof = req.message.startsWith("[PAYMENT_PROOF]")
+                val resolvedImageUrl = remember(req) { resolvePaymentProofUrl(req) }
 
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -810,10 +1244,10 @@ fun AdminRequestsTab(
                             fontSize = 13.sp
                         )
 
-                        if (!req.imageUrl.isNullOrBlank()) {
+                        if (!resolvedImageUrl.isNullOrBlank()) {
                             Spacer(modifier = Modifier.height(8.dp))
                             AsyncImage(
-                                model = req.imageUrl,
+                                model = resolvedImageUrl,
                                 contentDescription = "Uploaded Image",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
@@ -821,9 +1255,11 @@ fun AdminRequestsTab(
                                     .height(160.dp)
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable {
-                                        try {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(req.imageUrl)))
-                                        } catch (_: Exception) {}
+                                        if (isPaymentProof) {
+                                            selectedProofForViewer = req
+                                        } else {
+                                            openExternalProofUrl(context, resolvedImageUrl)
+                                        }
                                     }
                             )
                         }
@@ -849,7 +1285,7 @@ fun AdminRequestsTab(
                                         modifier = Modifier.clickable {
                                             onUpdateTier(resolvedUserUuid, "Pro", req.email)
                                             if (isPaymentProof) {
-                                                onUpdateStatus(req.id, "fulfilled", req.imageUrl, null)
+                                                onUpdateStatus(req.id, "fulfilled", resolvedImageUrl, null)
                                             }
                                         }
                                     ) {
@@ -861,7 +1297,7 @@ fun AdminRequestsTab(
                                         modifier = Modifier.clickable {
                                             onUpdateTier(resolvedUserUuid, "Legendary", req.email)
                                             if (isPaymentProof) {
-                                                onUpdateStatus(req.id, "fulfilled", req.imageUrl, null)
+                                                onUpdateStatus(req.id, "fulfilled", resolvedImageUrl, null)
                                             }
                                         }
                                     ) {
@@ -888,7 +1324,7 @@ fun AdminRequestsTab(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    onUpdateStatus(req.id, "fulfilled", linkInput.ifBlank { req.imageUrl }, null)
+                                    onUpdateStatus(req.id, "fulfilled", linkInput.ifBlank { resolvedImageUrl }, null)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Color.Black),
                                 shape = RoundedCornerShape(8.dp),

@@ -31,6 +31,10 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        val targetScreen = intent?.getStringExtra("target_screen")
+        if (!targetScreen.isNullOrBlank()) {
+            com.example.justfan.data.notification.OneSignalManager.setPendingTargetScreen(targetScreen)
+        }
         val data: Uri? = intent?.data
         if (data != null && data.scheme == "justfan" && data.host == "auth-callback") {
             val fragment = data.fragment ?: data.encodedFragment

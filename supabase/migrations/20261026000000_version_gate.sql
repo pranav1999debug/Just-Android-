@@ -25,22 +25,22 @@
 --      - public.app_version
 -- ============================================================================
 
--- 1. Create app_config table and set min_version = 3, latest_version = 3 (v3.0)
+-- 1. Create app_config table and set min_version = 4, latest_version = 4 (v4.0)
 create table if not exists public.app_config (
   id int primary key default 1,
   min_version int not null,
   latest_version int not null,
   update_url text not null,
-  update_message text default 'A new version (v3.0) is required to access JustFan database contents. Please download and install the latest update.'
+  update_message text default 'A new version (v4.0) is required to access JustFan database contents. Please download and install the latest update.'
 );
 
 insert into public.app_config (id, min_version, latest_version, update_url, update_message)
 values (
   1,
-  3,
-  3,
+  4,
+  4,
   'https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk',
-  'A new version (v3.0) is required to access JustFan database contents. Please download and install the latest update.'
+  'A new version (v4.0) is required to access JustFan database contents. Please download and install the latest update.'
 )
 on conflict (id) do update set
   min_version = excluded.min_version,
@@ -91,7 +91,7 @@ create policy "Allow insert app versions"
 
 insert into public.app_version (version, download_link)
 values (
-  '3.0',
+  '4.0',
   'https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk'
 );
 
@@ -212,19 +212,18 @@ create policy "version gate"
 
 -- 4. Community Comments table (`public.post_comments` — supports signed-in users and anon_<digits> / device IDs)
 create table if not exists public.post_comments (
-  id text primary key,
-  post_id text not null,
-  user_id text not null,
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null,
+  user_id uuid not null,
   device_id text not null default '',
   author_name text not null default 'anon_fan',
   content text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-alter table public.post_comments add column if not exists user_id text default '';
 alter table public.post_comments add column if not exists device_id text default '';
 alter table public.post_comments add column if not exists author_name text default 'anon_fan';
-alter table public.post_comments add column if not exists content text default '';
 
 alter table public.post_comments enable row level security;
 
@@ -236,14 +235,16 @@ create policy "version gate"
   using (public.app_version_ok());
 
 drop policy if exists "Allow public read post_comments v3" on public.post_comments;
-create policy "Allow public read post_comments v3"
+drop policy if exists "Allow public read post_comments v4" on public.post_comments;
+create policy "Allow public read post_comments v4"
   on public.post_comments
   for select
   to anon, authenticated
   using (public.app_version_ok());
 
 drop policy if exists "Allow everyone insert and delete post_comments v3" on public.post_comments;
-create policy "Allow everyone insert and delete post_comments v3"
+drop policy if exists "Allow everyone insert and delete post_comments v4" on public.post_comments;
+create policy "Allow everyone insert and delete post_comments v4"
   on public.post_comments
   for all
   to anon, authenticated

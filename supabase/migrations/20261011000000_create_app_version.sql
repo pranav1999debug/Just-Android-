@@ -26,4 +26,4 @@ create index if not exists app_version_version_idx
     on public.app_version (created_at desc);
 
 insert into public.app_version (version, download_link)
-values ('3.0', 'https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk');
+values ('4.0', 'https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk');

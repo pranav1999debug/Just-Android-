@@ -724,6 +724,7 @@ fun PostDetailScreen(
                             comments.forEach { comment ->
                                 val canDelete = isAdmin ||
                                     (currentUserId.isNotBlank() && comment.userId == currentUserId) ||
+                                    (currentAuthorName.isNotBlank() && comment.authorName == currentAuthorName) ||
                                     (currentDeviceId.isNotBlank() && comment.deviceId == currentDeviceId)
                                 val displayHandle = comment.authorName.ifBlank {
                                     comment.userId.ifBlank { "anon_fan" }

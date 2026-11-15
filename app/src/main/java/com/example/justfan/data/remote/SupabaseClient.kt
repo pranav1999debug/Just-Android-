@@ -69,6 +69,12 @@ object SupabaseClient {
         connection.requestMethod = method
         connection.connectTimeout = 15000
         connection.readTimeout = 15000
+        if (method.equals("POST", ignoreCase = true) ||
+            method.equals("PUT", ignoreCase = true) ||
+            method.equals("PATCH", ignoreCase = true)
+        ) {
+            connection.doOutput = true
+        }
         connection.setRequestProperty("apikey", apiKey)
         connection.setRequestProperty("Authorization", "Bearer $apiKey")
         connection.setRequestProperty(
@@ -2827,6 +2833,16 @@ object SupabaseClient {
     // COMMUNITY COMMENTS (`public.post_comments` — Signed-in & Unsigned anon_<digits>)
     // =========================================================================
 
+    private fun deriveAnonHandleFromSeed(seed: String): String {
+        if (seed.startsWith("anon_") && seed.length > 5) return seed
+        var hash = 0L
+        for (ch in seed) {
+            hash = (hash * 31L + ch.code) and 0x7FFFFFFFL
+        }
+        val sixDigits = (100000L + (hash % 900000L)).toString()
+        return "anon_$sixDigits"
+    }
+
     private fun serializeCommentPayload(comment: CommentEntity): JSONObject {
         return JSONObject().apply {
             put("id", comment.id)
@@ -2855,12 +2871,23 @@ object SupabaseClient {
             obj.optString("username", obj.optString("author", obj.optString("authorName", "")))
         ).trim()
 
-        val resolvedAuthor = rawAuthor.ifBlank {
-            if (rawUserId.startsWith("anon_")) rawUserId else "anon_fan"
+        val resolvedAuthor = when {
+            rawAuthor.isNotBlank() && !rawAuthor.equals("anon_fan", ignoreCase = true) -> rawAuthor
+            rawUserId.startsWith("anon_") -> rawUserId
+            rawDeviceId.isNotBlank() -> deriveAnonHandleFromSeed(rawDeviceId)
+            rawUserId.isNotBlank() -> deriveAnonHandleFromSeed(rawUserId)
+            else -> "anon_fan"
         }
-        val resolvedUserId = rawUserId.ifBlank { resolvedAuthor }
+
+        // Preserve `anon_<digits>` as the logical userId when the comment was authored by an anon user
+        val resolvedUserId = when {
+            resolvedAuthor.startsWith("anon_") -> resolvedAuthor
+            rawUserId.isNotBlank() -> rawUserId
+            else -> resolvedAuthor
+        }
+
         val createdAtMs = obj.optLong("created_at_ms", 0L).takeIf { it > 0L }
-            ?: parseIsoToMillis(obj.optString("created_at", ""))
+            ?: parseIsoToMillis(obj.optString("created_at", ""), System.currentTimeMillis())
 
         return CommentEntity(
             id = id,
@@ -2882,31 +2909,37 @@ object SupabaseClient {
             } else {
                 "upload_requests?select=id,title,caption,description,status,created_at,updated_at&host=eq.post_comment&order=created_at.asc&limit=1000"
             }
-            val conn = openConnection(filterQuery, "GET")
-            if (conn.responseCode in 200..299) {
-                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                conn.disconnect()
-                val arr = JSONArray(body)
-                for (i in 0 until arr.length()) {
-                    val row = arr.getJSONObject(i)
-                    val status = row.optString("status", "published").trim().lowercase()
-                    val commentId = row.optString("caption", "").trim()
-                    val rawDesc = row.optString("description", "").trim()
-                    if (status == "deleted") {
-                        if (commentId.isNotBlank()) deletedIds.add(commentId)
-                        continue
-                    }
-                    if (rawDesc.startsWith("{")) {
-                        runCatching {
-                            val parsed = parseCommentFromJsonObject(JSONObject(rawDesc))
-                            if (parsed != null && parsed.id !in deletedIds) {
-                                commentsById[parsed.id] = parsed
+            val request = Request.Builder()
+                .url("$baseUrl/rest/v1/$filterQuery")
+                .get()
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $apiKey")
+                .header("Accept", "application/json")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val row = arr.getJSONObject(i)
+                        val status = row.optString("status", "published").trim().lowercase()
+                        val commentId = row.optString("caption", "").trim()
+                        val rawDesc = row.optString("description", "").trim()
+                        if (status == "deleted") {
+                            if (commentId.isNotBlank()) deletedIds.add(commentId)
+                            continue
+                        }
+                        if (rawDesc.startsWith("{")) {
+                            runCatching {
+                                val parsed = parseCommentFromJsonObject(JSONObject(rawDesc))
+                                if (parsed != null && parsed.id !in deletedIds) {
+                                    commentsById[parsed.id] = parsed
+                                }
                             }
                         }
                     }
                 }
-            } else {
-                conn.disconnect()
             }
         } catch (e: Exception) {
             Log.w(TAG, "fetchCommentsFromUploadRequests note: ${e.message}")
@@ -2919,30 +2952,38 @@ object SupabaseClient {
             val (ledgerComments, deletedIds) = fetchCommentsFromUploadRequests(postId)
             val merged = LinkedHashMap<String, CommentEntity>()
 
-            // 1. Query primary `public.post_comments` table in Supabase
+            // 1. Query primary `public.post_comments` table in Supabase using OkHttpClient
             runCatching {
                 val query = if (!postId.isNullOrBlank()) {
                     "post_comments?select=*&post_id=eq.$postId&order=created_at.asc&limit=500"
                 } else {
                     "post_comments?select=*&order=created_at.asc&limit=1000"
                 }
-                val conn = openConnection(query, "GET")
-                if (conn.responseCode in 200..299) {
-                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                    conn.disconnect()
-                    val arr = JSONArray(body)
-                    for (i in 0 until arr.length()) {
-                        val parsed = parseCommentFromJsonObject(arr.getJSONObject(i))
-                        if (parsed != null && parsed.id !in deletedIds) {
-                            merged[parsed.id] = parsed
+                val request = Request.Builder()
+                    .url("$baseUrl/rest/v1/$query")
+                    .get()
+                    .header("apikey", apiKey)
+                    .header("Authorization", "Bearer $apiKey")
+                    .header("Accept", "application/json")
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string().orEmpty()
+                        val arr = JSONArray(body)
+                        for (i in 0 until arr.length()) {
+                            val parsed = parseCommentFromJsonObject(arr.getJSONObject(i))
+                            if (parsed != null && parsed.id !in deletedIds) {
+                                merged[parsed.id] = parsed
+                            }
                         }
+                    } else {
+                        Log.w(TAG, "fetchComments post_comments HTTP ${response.code}: ${response.body?.string()}")
                     }
-                } else {
-                    conn.disconnect()
                 }
             }
 
-            // 2. Merge ledger comments (preserving rich anon_<digits> / device_id metadata if post_comments omitted optional columns)
+            // 2. Merge ledger comments (preserving rich anon_<digits> / device_id metadata)
             for (c in ledgerComments) {
                 if (c.id !in deletedIds) {
                     val existing = merged[c.id]
@@ -2968,15 +3009,22 @@ object SupabaseClient {
 
     private fun postToPostCommentsEndpoint(payload: JSONObject, writeToken: String): Boolean {
         return try {
-            val conn = openConnection("post_comments", "POST").apply {
-                setRequestProperty("Authorization", "Bearer $writeToken")
-                setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
+            val request = Request.Builder()
+                .url("$baseUrl/rest/v1/post_comments")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $writeToken")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "resolution=merge-duplicates,return=minimal")
+                .build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "post_comments insert attempt HTTP ${response.code}: ${response.body?.string()}")
+                }
+                response.isSuccessful
             }
-            OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
-            val code = conn.responseCode
-            conn.disconnect()
-            code in 200..299
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "postToPostCommentsEndpoint error: ${e.message}")
             false
         }
     }
@@ -2990,45 +3038,47 @@ object SupabaseClient {
         val writeToken = resolveAdminWriteToken(accessToken) ?: apiKey
         val isoCreatedAt = Instant.ofEpochMilli(comment.createdAt).toString()
 
-        // 1. Insert into `public.post_comments` table in Supabase (with adaptive fallback for schema variations)
+        // `public.post_comments.user_id` is a `uuid` column in Supabase, while `author_name` and `device_id` are `text`.
+        // Convert unsigned `anon_<digits>` user IDs deterministically to a valid UUID for `user_id` so the first insert succeeds with HTTP 201.
+        val dbUserUuid = if (comment.userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+            comment.userId
+        } else {
+            UUID.nameUUIDFromBytes("justfan:${comment.userId}".toByteArray()).toString()
+        }
+        val dbCommentUuid = if (comment.id.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+            comment.id
+        } else {
+            UUID.nameUUIDFromBytes("justfan:comment:${comment.id}".toByteArray()).toString()
+        }
+
+        // 1. Insert into `public.post_comments` table in Supabase
         val candidatePayloads = listOf(
-            // Full schema with user_id (e.g. "anon_123456" or UUID), device_id, author_name, content
+            // Primary live schema: id (uuid), post_id (uuid), user_id (uuid), device_id (text), author_name (text), content (text)
             JSONObject().apply {
-                put("id", comment.id)
+                put("id", dbCommentUuid)
                 put("post_id", comment.postId)
-                put("user_id", comment.userId)
+                put("user_id", dbUserUuid)
                 put("device_id", comment.deviceId)
                 put("author_name", comment.authorName)
                 put("content", comment.content)
                 put("created_at", isoCreatedAt)
             },
-            // Standard post_comments schema without device_id
+            // Fallback without device_id
             JSONObject().apply {
-                put("id", comment.id)
+                put("id", dbCommentUuid)
+                put("post_id", comment.postId)
+                put("user_id", dbUserUuid)
+                put("author_name", comment.authorName)
+                put("content", comment.content)
+                put("created_at", isoCreatedAt)
+            },
+            // Fallback if user_id is text
+            JSONObject().apply {
+                put("id", dbCommentUuid)
                 put("post_id", comment.postId)
                 put("user_id", comment.userId)
+                put("device_id", comment.deviceId)
                 put("author_name", comment.authorName)
-                put("content", comment.content)
-                put("created_at", isoCreatedAt)
-            },
-            // Schema where user_id is UUID type (convert anon_<digits> deterministically to UUID)
-            JSONObject().apply {
-                val uuidUserId = if (comment.userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
-                    comment.userId
-                } else {
-                    UUID.nameUUIDFromBytes("justfan:${comment.userId}".toByteArray()).toString()
-                }
-                put("id", comment.id)
-                put("post_id", comment.postId)
-                put("user_id", uuidUserId)
-                put("author_name", comment.authorName)
-                put("content", comment.content)
-                put("created_at", isoCreatedAt)
-            },
-            // Minimal post_comments schema (id, post_id, content)
-            JSONObject().apply {
-                put("id", comment.id)
-                put("post_id", comment.postId)
                 put("content", comment.content)
                 put("created_at", isoCreatedAt)
             }
@@ -3043,10 +3093,6 @@ object SupabaseClient {
 
         // 2. Also persist to `public.upload_requests` (`host = "post_comment"`) so comments and `anon_<digits>` metadata sync reliably
         runCatching {
-            val insConn = openConnection("upload_requests", "POST").apply {
-                setRequestProperty("Authorization", "Bearer $writeToken")
-                setRequestProperty("Prefer", "return=minimal")
-            }
             val ledgerPayload = JSONObject().apply {
                 put("host", "post_comment")
                 put("status", "published")
@@ -3054,11 +3100,18 @@ object SupabaseClient {
                 put("caption", comment.id)
                 put("description", serializeCommentPayload(comment).toString())
             }
-            OutputStreamWriter(insConn.outputStream).use { it.write(ledgerPayload.toString()) }
-            val insCode = insConn.responseCode
-            insConn.disconnect()
-            if (insCode in 200..299) {
-                ledgerSaved = true
+            val ledgerReq = Request.Builder()
+                .url("$baseUrl/rest/v1/upload_requests")
+                .post(ledgerPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $writeToken")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .build()
+            okHttpClient.newCall(ledgerReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    ledgerSaved = true
+                }
             }
         }
 
@@ -3077,34 +3130,36 @@ object SupabaseClient {
         var deletedAny = false
         val writeToken = resolveAdminWriteToken(accessToken) ?: apiKey
 
-        // 1. Delete from `public.post_comments` in Supabase
+        // 1. Delete from `public.post_comments` in Supabase using OkHttpClient
         runCatching {
-            val conn = openConnection("post_comments?id=eq.$commentId", "DELETE").apply {
-                setRequestProperty("Authorization", "Bearer $writeToken")
-            }
-            val code = conn.responseCode
-            conn.disconnect()
-            if (code in 200..299) {
-                deletedAny = true
+            val delReq = Request.Builder()
+                .url("$baseUrl/rest/v1/post_comments?id=eq.$commentId")
+                .delete()
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $writeToken")
+                .build()
+            okHttpClient.newCall(delReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    deletedAny = true
+                }
             }
         }
 
         // 2. Delete or mark as deleted in `public.upload_requests` (`host = "post_comment"`)
         runCatching {
-            val delConn = openConnection("upload_requests?host=eq.post_comment&caption=eq.$commentId", "DELETE").apply {
-                setRequestProperty("Authorization", "Bearer $writeToken")
-            }
-            val delCode = delConn.responseCode
-            delConn.disconnect()
-            if (delCode in 200..299) {
-                deletedAny = true
+            val delLedgerReq = Request.Builder()
+                .url("$baseUrl/rest/v1/upload_requests?host=eq.post_comment&caption=eq.$commentId")
+                .delete()
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $writeToken")
+                .build()
+            okHttpClient.newCall(delLedgerReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    deletedAny = true
+                }
             }
 
             // Also insert a tombstone so any un-deleted row is filtered out
-            val tombConn = openConnection("upload_requests", "POST").apply {
-                setRequestProperty("Authorization", "Bearer $writeToken")
-                setRequestProperty("Prefer", "return=minimal")
-            }
             val tombPayload = JSONObject().apply {
                 put("host", "post_comment")
                 put("status", "deleted")
@@ -3116,11 +3171,18 @@ object SupabaseClient {
                     put("status", "deleted")
                 }.toString())
             }
-            OutputStreamWriter(tombConn.outputStream).use { it.write(tombPayload.toString()) }
-            val tombCode = tombConn.responseCode
-            tombConn.disconnect()
-            if (tombCode in 200..299) {
-                deletedAny = true
+            val tombReq = Request.Builder()
+                .url("$baseUrl/rest/v1/upload_requests")
+                .post(tombPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("apikey", apiKey)
+                .header("Authorization", "Bearer $writeToken")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .build()
+            okHttpClient.newCall(tombReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    deletedAny = true
+                }
             }
         }
 

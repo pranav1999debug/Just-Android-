@@ -28,13 +28,13 @@ import java.net.URL
  * Bump both `AppVersionConfig.APP_VERSION` and `versionCode` together on every release.
  */
 object AppVersionConfig {
-    const val APP_VERSION: Int = 3
-    const val APP_VERSION_NAME: String = "3.0"
+    const val APP_VERSION: Int = 4
+    const val APP_VERSION_NAME: String = "4.0"
     const val HEADER_APP_VERSION: String = "x-app-version"
     const val DEFAULT_UPDATE_URL: String =
         "https://github.com/pranav1999debug/Just-Android-/releases/latest/download/app-debug.apk"
     const val DEFAULT_UPDATE_MESSAGE: String =
-        "A new version (v3.0) is required to access JustFan database contents. Please download and install the latest update."
+        "A new version (v4.0) is required to access JustFan database contents. Please download and install the latest update."
 }
 
 data class AppConfig(

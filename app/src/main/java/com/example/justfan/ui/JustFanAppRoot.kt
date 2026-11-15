@@ -92,6 +92,7 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
     val requests by viewModel.requests.collectAsState()
     val users by viewModel.users.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val allComments by viewModel.comments.collectAsState()
     val quota by viewModel.requestQuota.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val deviceBiometricInfo by viewModel.deviceBiometricInfo.collectAsState()
@@ -526,33 +527,65 @@ fun JustFanAppRoot(viewModel: MainViewModel) {
                                 viewModel.signOut()
                             }
                         )
-                        is AppScreen.PostDetail -> PostDetailScreen(
-                            post = posts.find { it.id == scr.post.id } ?: scr.post,
-                            allPosts = posts,
-                            comments = emptyList(),
-                            isFavorite = scr.post.id in favoriteIds,
-                            canAccessDirectLink = isPaidOrLegendary,
-                            isAdmin = isOwnerOrAdmin,
-                            onNavigateToPricing = { navigateTo(AppScreen.Membership) },
-                            onBack = { navigateBack() },
-                            onToggleFavorite = { viewModel.toggleFavorite(scr.post.id) },
-                            onAddComment = { /* In-app discussion */ },
-                            onSelectPost = { postId ->
-                                posts.find { it.id == postId }?.let {
-                                    viewModel.recordPostClick(it.id)
-                                    navigateTo(AppScreen.PostDetail(it))
-                                }
-                            },
-                            onUpdatePost = { updatedPost, onDone ->
-                                viewModel.updatePost(updatedPost, onDone)
-                            },
-                            onDeletePost = { postId, onDone ->
-                                viewModel.deletePost(postId, onDone)
-                            },
-                            onDownloadClick = { postId, _ ->
-                                viewModel.recordDownloadClick(postId)
+                        is AppScreen.PostDetail -> {
+                            val isSignedInMember = userProfile.isSignedIn &&
+                                userProfile.id.isNotBlank() &&
+                                userProfile.id != "guest_user"
+                            val effectiveCommentUserId = if (isSignedInMember) {
+                                userProfile.id
+                            } else {
+                                viewModel.anonCommentUserId
                             }
-                        )
+                            val effectiveCommentAuthorName = if (isSignedInMember) {
+                                userProfile.username.trim().ifBlank {
+                                    userProfile.email.substringBefore("@").ifBlank { viewModel.anonCommentUserId }
+                                }
+                            } else {
+                                viewModel.anonCommentUserId
+                            }
+                            val postComments = remember(allComments, scr.post.id) {
+                                allComments.filter { it.postId == scr.post.id }
+                            }
+
+                            PostDetailScreen(
+                                post = posts.find { it.id == scr.post.id } ?: scr.post,
+                                allPosts = posts,
+                                comments = postComments,
+                                isFavorite = scr.post.id in favoriteIds,
+                                canAccessDirectLink = isPaidOrLegendary,
+                                isAdmin = isOwnerOrAdmin,
+                                currentUserId = effectiveCommentUserId,
+                                currentAuthorName = effectiveCommentAuthorName,
+                                currentDeviceId = viewModel.currentDeviceId,
+                                onNavigateToPricing = { navigateTo(AppScreen.Membership) },
+                                onBack = { navigateBack() },
+                                onToggleFavorite = { viewModel.toggleFavorite(scr.post.id) },
+                                onAddComment = { commentText ->
+                                    viewModel.addComment(scr.post.id, commentText)
+                                },
+                                onDeleteComment = { commentId ->
+                                    viewModel.deleteComment(commentId, scr.post.id)
+                                },
+                                onRefreshComments = {
+                                    viewModel.refreshComments(scr.post.id)
+                                },
+                                onSelectPost = { postId ->
+                                    posts.find { it.id == postId }?.let {
+                                        viewModel.recordPostClick(it.id)
+                                        navigateTo(AppScreen.PostDetail(it))
+                                    }
+                                },
+                                onUpdatePost = { updatedPost, onDone ->
+                                    viewModel.updatePost(updatedPost, onDone)
+                                },
+                                onDeletePost = { postId, onDone ->
+                                    viewModel.deletePost(postId, onDone)
+                                },
+                                onDownloadClick = { postId, _ ->
+                                    viewModel.recordDownloadClick(postId)
+                                }
+                            )
+                        }
                     }
                 }
             }

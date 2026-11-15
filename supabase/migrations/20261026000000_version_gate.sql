@@ -209,3 +209,45 @@ create policy "version gate"
   as restrictive
   for all
   using (public.app_version_ok());
+
+-- 4. Community Comments table (`public.post_comments` — supports signed-in users and anon_<digits> / device IDs)
+create table if not exists public.post_comments (
+  id text primary key,
+  post_id text not null,
+  user_id text not null,
+  device_id text not null default '',
+  author_name text not null default 'anon_fan',
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.post_comments add column if not exists user_id text default '';
+alter table public.post_comments add column if not exists device_id text default '';
+alter table public.post_comments add column if not exists author_name text default 'anon_fan';
+alter table public.post_comments add column if not exists content text default '';
+
+alter table public.post_comments enable row level security;
+
+drop policy if exists "version gate" on public.post_comments;
+create policy "version gate"
+  on public.post_comments
+  as restrictive
+  for all
+  using (public.app_version_ok());
+
+drop policy if exists "Allow public read post_comments v3" on public.post_comments;
+create policy "Allow public read post_comments v3"
+  on public.post_comments
+  for select
+  to anon, authenticated
+  using (public.app_version_ok());
+
+drop policy if exists "Allow everyone insert and delete post_comments v3" on public.post_comments;
+create policy "Allow everyone insert and delete post_comments v3"
+  on public.post_comments
+  for all
+  to anon, authenticated
+  using (public.app_version_ok())
+  with check (public.app_version_ok());
+
+

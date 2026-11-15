@@ -122,9 +122,12 @@ data class ActivityEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "comments")
 data class CommentEntity(
-    val id: String = UUID.randomUUID().toString(),
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val postId: String = "",
+    val userId: String = "",
+    val deviceId: String = "",
     val authorName: String = "Fan Member",
     val content: String = "",
     val createdAt: Long = System.currentTimeMillis()

@@ -10,12 +10,34 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.Update
+import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.FavoriteEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
 import com.example.justfan.data.model.StringListConverter
 import com.example.justfan.data.model.UserEntity
 import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface CommentDao {
+    @Query("SELECT * FROM comments ORDER BY createdAt ASC")
+    fun getAllComments(): Flow<List<CommentEntity>>
+
+    @Query("SELECT * FROM comments ORDER BY createdAt ASC")
+    suspend fun getAllCommentsList(): List<CommentEntity>
+
+    @Query("SELECT * FROM comments WHERE postId = :postId ORDER BY createdAt ASC")
+    fun getCommentsForPost(postId: String): Flow<List<CommentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertComments(comments: List<CommentEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertComment(comment: CommentEntity)
+
+    @Query("DELETE FROM comments WHERE id = :id")
+    suspend fun deleteComment(id: String)
+}
 
 @Dao
 interface PostDao {
@@ -114,8 +136,8 @@ interface FavoriteDao {
 }
 
 @Database(
-    entities = [PostEntity::class, RequestEntity::class, UserEntity::class, FavoriteEntity::class],
-    version = 1,
+    entities = [PostEntity::class, RequestEntity::class, UserEntity::class, FavoriteEntity::class, CommentEntity::class],
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(StringListConverter::class)
@@ -124,6 +146,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun requestDao(): RequestDao
     abstract fun userDao(): UserDao
     abstract fun favoriteDao(): FavoriteDao
+    abstract fun commentDao(): CommentDao
 
     companion object {
         @Volatile

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.example.justfan.data.local.AppDatabase
+import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.FavoriteEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
@@ -17,6 +18,7 @@ import com.example.justfan.data.remote.VersionGateManager
 import com.example.justfan.data.remote.VersionGateState
 import com.example.justfan.util.BiometricAuthManager
 import com.example.justfan.util.DeviceBiometricInfo
+import com.example.justfan.util.getAnonCommentUserId
 import com.example.justfan.util.getDeviceBiometricInfo
 import com.example.justfan.util.getDeviceId
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +40,7 @@ class JustFanRepository(private val context: Context) {
     private val requestDao = database.requestDao()
     private val userDao = database.userDao()
     private val favoriteDao = database.favoriteDao()
+    private val commentDao = database.commentDao()
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("justfan_prefs", Context.MODE_PRIVATE)
@@ -46,6 +49,10 @@ class JustFanRepository(private val context: Context) {
     val allRequests: Flow<List<RequestEntity>> = requestDao.getAllRequests()
     val allUsers: Flow<List<UserEntity>> = userDao.getAllUsers()
     val favorites: Flow<List<FavoriteEntity>> = favoriteDao.getAllFavorites()
+    val allComments: Flow<List<CommentEntity>> = commentDao.getAllComments()
+
+    val currentDeviceId: String = getDeviceId(context)
+    val anonCommentUserId: String = getAnonCommentUserId(context)
 
     private val _userProfile = MutableStateFlow(loadProfileFromPrefs())
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
@@ -420,6 +427,15 @@ class JustFanRepository(private val context: Context) {
                         }
                     } catch (e: Exception) {
                         Log.w("JustFanRepository", "Profiles sync warning", e)
+                    }
+                }
+
+                // Task E: Sync Community Comments
+                launch {
+                    try {
+                        refreshComments()
+                    } catch (e: Exception) {
+                        Log.w("JustFanRepository", "Comments sync warning", e)
                     }
                 }
             }
@@ -948,6 +964,70 @@ class JustFanRepository(private val context: Context) {
 
     suspend fun recordDownloadClick(postId: String) {
         recordPostClick(postId)
+    }
+
+    suspend fun refreshComments(postId: String? = null) {
+        val res = SupabaseClient.fetchComments(postId)
+        if (res.isSuccess) {
+            val remoteComments = res.getOrNull().orEmpty()
+            val remoteIds = remoteComments.map { it.id }.toSet()
+            val existingLocal = commentDao.getAllCommentsList()
+            for (local in existingLocal) {
+                val matchesScope = postId.isNullOrBlank() || local.postId == postId
+                if (matchesScope && local.id !in remoteIds && remoteComments.isNotEmpty()) {
+                    commentDao.deleteComment(local.id)
+                }
+            }
+            if (remoteComments.isNotEmpty()) {
+                commentDao.insertComments(remoteComments)
+            }
+        }
+    }
+
+    suspend fun addComment(postId: String, content: String): Result<CommentEntity> {
+        val trimmed = content.trim()
+        if (postId.isBlank() || trimmed.isBlank()) {
+            return Result.failure(IllegalArgumentException("Comment cannot be empty"))
+        }
+        val current = _userProfile.value
+        val isSignedInMember = current.isSignedIn && current.id.isNotBlank() && current.id != "guest_user"
+        val resolvedUserId = if (isSignedInMember) current.id else anonCommentUserId
+        val resolvedAuthorName = if (isSignedInMember) {
+            current.username.trim().ifBlank {
+                current.email.substringBefore("@").ifBlank { anonCommentUserId }
+            }
+        } else {
+            anonCommentUserId
+        }
+
+        val comment = CommentEntity(
+            id = UUID.randomUUID().toString(),
+            postId = postId,
+            userId = resolvedUserId,
+            deviceId = currentDeviceId,
+            authorName = resolvedAuthorName,
+            content = trimmed,
+            createdAt = System.currentTimeMillis()
+        )
+
+        // Optimistically insert into local Room cache so UI updates immediately
+        commentDao.insertComment(comment)
+
+        // Sync to remote Supabase in background / current coroutine
+        val token = if (isSignedInMember) ensureValidAccessToken(current) else null
+        SupabaseClient.insertComment(comment, token)
+        return Result.success(comment)
+    }
+
+    suspend fun deleteComment(commentId: String, postId: String): Result<Boolean> {
+        commentDao.deleteComment(commentId)
+        val current = _userProfile.value
+        val token = if (current.isSignedIn && current.id != "guest_user") {
+            ensureValidAccessToken(current)
+        } else {
+            null
+        }
+        return SupabaseClient.deleteComment(commentId, postId, token)
     }
 
     suspend fun createPost(post: PostEntity): Result<Boolean> {

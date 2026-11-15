@@ -56,10 +56,15 @@ fun PostDetailScreen(
     isFavorite: Boolean,
     canAccessDirectLink: Boolean = false,
     isAdmin: Boolean = false,
+    currentUserId: String = "",
+    currentAuthorName: String = "",
+    currentDeviceId: String = "",
     onNavigateToPricing: () -> Unit = {},
     onBack: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddComment: (String) -> Unit,
+    onDeleteComment: (String) -> Unit = {},
+    onRefreshComments: () -> Unit = {},
     onSelectPost: (String) -> Unit,
     onUpdatePost: (PostEntity, (Boolean) -> Unit) -> Unit = { _, _ -> },
     onDeletePost: (String, (Boolean) -> Unit) -> Unit = { _, _ -> },
@@ -75,6 +80,10 @@ fun PostDetailScreen(
             CircularProgressIndicator()
         }
         return
+    }
+
+    LaunchedEffect(post.id) {
+        onRefreshComments()
     }
 
     var selectedImageIndex by remember { mutableIntStateOf(0) }
@@ -665,33 +674,130 @@ fun PostDetailScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = "Community Comments (${comments.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Community Comments (${comments.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (currentAuthorName.isNotBlank()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(50)
+                                ) {
+                                    Text(
+                                        text = "ID: $currentAuthorName",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        comments.forEach { comment ->
+                        if (comments.isEmpty()) {
                             Surface(
-                                color = MaterialTheme.colorScheme.surface,
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Text(
-                                        text = comment.authorName,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(
-                                        text = comment.content,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                                Text(
+                                    text = if (currentAuthorName.isNotBlank()) {
+                                        "No comments yet — be the first to comment as $currentAuthorName!"
+                                    } else {
+                                        "No comments yet — be the first to share your thoughts!"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            comments.forEach { comment ->
+                                val canDelete = isAdmin ||
+                                    (currentUserId.isNotBlank() && comment.userId == currentUserId) ||
+                                    (currentDeviceId.isNotBlank() && comment.deviceId == currentDeviceId)
+                                val displayHandle = comment.authorName.ifBlank {
+                                    comment.userId.ifBlank { "anon_fan" }
+                                }
+                                val timeAgoText = remember(comment.createdAt) {
+                                    val diffSec = ((System.currentTimeMillis() - comment.createdAt) / 1000L).coerceAtLeast(0L)
+                                    when {
+                                        diffSec < 60L -> "Just now"
+                                        diffSec < 3600L -> "${diffSec / 60L}m ago"
+                                        diffSec < 86400L -> "${diffSec / 3600L}h ago"
+                                        else -> "${diffSec / 86400L}d ago"
+                                    }
+                                }
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = displayHandle,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                                if (comment.userId.startsWith("anon_") && comment.userId != displayHandle) {
+                                                    Text(
+                                                        text = "(${comment.userId})",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                Text(
+                                                    text = "• $timeAgoText",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(3.dp))
+                                            Text(
+                                                text = comment.content,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                        if (canDelete) {
+                                            IconButton(
+                                                onClick = { onDeleteComment(comment.id) },
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .testTag("delete_comment_${comment.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete comment",
+                                                    tint = DangerRed,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -702,7 +808,15 @@ fun PostDetailScreen(
                             OutlinedTextField(
                                 value = newCommentText,
                                 onValueChange = { newCommentText = it },
-                                placeholder = { Text("Write a comment…") },
+                                placeholder = {
+                                    Text(
+                                        if (currentAuthorName.isNotBlank()) {
+                                            "Comment as $currentAuthorName…"
+                                        } else {
+                                            "Write a comment…"
+                                        }
+                                    )
+                                },
                                 singleLine = true,
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier
@@ -712,11 +826,13 @@ fun PostDetailScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
-                                    if (newCommentText.isNotBlank()) {
-                                        onAddComment(newCommentText.trim())
+                                    val trimmed = newCommentText.trim()
+                                    if (trimmed.isNotBlank()) {
+                                        onAddComment(trimmed)
                                         newCommentText = ""
                                     }
                                 },
+                                enabled = newCommentText.isNotBlank(),
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.testTag("comment_send_button")
                             ) {

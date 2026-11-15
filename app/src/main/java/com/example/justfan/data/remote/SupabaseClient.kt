@@ -2,6 +2,7 @@ package com.example.justfan.data.remote
 
 import android.util.Log
 import com.example.justfan.BuildConfig
+import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RemoteUserPreferences
 import com.example.justfan.data.model.RequestEntity
@@ -2820,5 +2821,309 @@ object SupabaseClient {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    // =========================================================================
+    // COMMUNITY COMMENTS (`public.post_comments` — Signed-in & Unsigned anon_<digits>)
+    // =========================================================================
+
+    private fun serializeCommentPayload(comment: CommentEntity): JSONObject {
+        return JSONObject().apply {
+            put("id", comment.id)
+            put("post_id", comment.postId)
+            put("user_id", comment.userId)
+            put("device_id", comment.deviceId)
+            put("author_name", comment.authorName)
+            put("content", comment.content)
+            put("created_at_ms", comment.createdAt)
+        }
+    }
+
+    private fun parseCommentFromJsonObject(obj: JSONObject): CommentEntity? {
+        val id = obj.optString("id", "").trim()
+        val postId = obj.optString("post_id", obj.optString("postId", "")).trim()
+        val rawContent = obj.optString(
+            "content",
+            obj.optString("comment", obj.optString("text", obj.optString("body", "")))
+        ).trim()
+        if (id.isBlank() || postId.isBlank() || rawContent.isBlank()) return null
+
+        val rawUserId = obj.optString("user_id", obj.optString("userId", "")).trim()
+        val rawDeviceId = obj.optString("device_id", obj.optString("deviceId", "")).trim()
+        val rawAuthor = obj.optString(
+            "author_name",
+            obj.optString("username", obj.optString("author", obj.optString("authorName", "")))
+        ).trim()
+
+        val resolvedAuthor = rawAuthor.ifBlank {
+            if (rawUserId.startsWith("anon_")) rawUserId else "anon_fan"
+        }
+        val resolvedUserId = rawUserId.ifBlank { resolvedAuthor }
+        val createdAtMs = obj.optLong("created_at_ms", 0L).takeIf { it > 0L }
+            ?: parseIsoToMillis(obj.optString("created_at", ""))
+
+        return CommentEntity(
+            id = id,
+            postId = postId,
+            userId = resolvedUserId,
+            deviceId = rawDeviceId,
+            authorName = resolvedAuthor,
+            content = rawContent,
+            createdAt = createdAtMs
+        )
+    }
+
+    private fun fetchCommentsFromUploadRequests(postId: String? = null): Pair<List<CommentEntity>, Set<String>> {
+        val commentsById = LinkedHashMap<String, CommentEntity>()
+        val deletedIds = mutableSetOf<String>()
+        try {
+            val filterQuery = if (!postId.isNullOrBlank()) {
+                "upload_requests?select=id,title,caption,description,status,created_at,updated_at&host=eq.post_comment&title=eq.$postId&order=created_at.asc&limit=500"
+            } else {
+                "upload_requests?select=id,title,caption,description,status,created_at,updated_at&host=eq.post_comment&order=created_at.asc&limit=1000"
+            }
+            val conn = openConnection(filterQuery, "GET")
+            if (conn.responseCode in 200..299) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                conn.disconnect()
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val row = arr.getJSONObject(i)
+                    val status = row.optString("status", "published").trim().lowercase()
+                    val commentId = row.optString("caption", "").trim()
+                    val rawDesc = row.optString("description", "").trim()
+                    if (status == "deleted") {
+                        if (commentId.isNotBlank()) deletedIds.add(commentId)
+                        continue
+                    }
+                    if (rawDesc.startsWith("{")) {
+                        runCatching {
+                            val parsed = parseCommentFromJsonObject(JSONObject(rawDesc))
+                            if (parsed != null && parsed.id !in deletedIds) {
+                                commentsById[parsed.id] = parsed
+                            }
+                        }
+                    }
+                }
+            } else {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCommentsFromUploadRequests note: ${e.message}")
+        }
+        return Pair(commentsById.values.toList(), deletedIds)
+    }
+
+    suspend fun fetchComments(postId: String? = null): Result<List<CommentEntity>> = withContext(Dispatchers.IO) {
+        try {
+            val (ledgerComments, deletedIds) = fetchCommentsFromUploadRequests(postId)
+            val merged = LinkedHashMap<String, CommentEntity>()
+
+            // 1. Query primary `public.post_comments` table in Supabase
+            runCatching {
+                val query = if (!postId.isNullOrBlank()) {
+                    "post_comments?select=*&post_id=eq.$postId&order=created_at.asc&limit=500"
+                } else {
+                    "post_comments?select=*&order=created_at.asc&limit=1000"
+                }
+                val conn = openConnection(query, "GET")
+                if (conn.responseCode in 200..299) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    conn.disconnect()
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val parsed = parseCommentFromJsonObject(arr.getJSONObject(i))
+                        if (parsed != null && parsed.id !in deletedIds) {
+                            merged[parsed.id] = parsed
+                        }
+                    }
+                } else {
+                    conn.disconnect()
+                }
+            }
+
+            // 2. Merge ledger comments (preserving rich anon_<digits> / device_id metadata if post_comments omitted optional columns)
+            for (c in ledgerComments) {
+                if (c.id !in deletedIds) {
+                    val existing = merged[c.id]
+                    if (existing == null) {
+                        merged[c.id] = c
+                    } else {
+                        merged[c.id] = existing.copy(
+                            userId = if (c.userId.isNotBlank()) c.userId else existing.userId,
+                            deviceId = if (c.deviceId.isNotBlank()) c.deviceId else existing.deviceId,
+                            authorName = if (c.authorName.isNotBlank() && c.authorName != "anon_fan") c.authorName else existing.authorName
+                        )
+                    }
+                }
+            }
+
+            val sorted = merged.values.sortedBy { it.createdAt }
+            Result.success(sorted)
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchComments warning: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    private fun postToPostCommentsEndpoint(payload: JSONObject, writeToken: String): Boolean {
+        return try {
+            val conn = openConnection("post_comments", "POST").apply {
+                setRequestProperty("Authorization", "Bearer $writeToken")
+                setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
+            }
+            OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
+            val code = conn.responseCode
+            conn.disconnect()
+            code in 200..299
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun insertComment(
+        comment: CommentEntity,
+        accessToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        var primarySaved = false
+        var ledgerSaved = false
+        val writeToken = resolveAdminWriteToken(accessToken) ?: apiKey
+        val isoCreatedAt = Instant.ofEpochMilli(comment.createdAt).toString()
+
+        // 1. Insert into `public.post_comments` table in Supabase (with adaptive fallback for schema variations)
+        val candidatePayloads = listOf(
+            // Full schema with user_id (e.g. "anon_123456" or UUID), device_id, author_name, content
+            JSONObject().apply {
+                put("id", comment.id)
+                put("post_id", comment.postId)
+                put("user_id", comment.userId)
+                put("device_id", comment.deviceId)
+                put("author_name", comment.authorName)
+                put("content", comment.content)
+                put("created_at", isoCreatedAt)
+            },
+            // Standard post_comments schema without device_id
+            JSONObject().apply {
+                put("id", comment.id)
+                put("post_id", comment.postId)
+                put("user_id", comment.userId)
+                put("author_name", comment.authorName)
+                put("content", comment.content)
+                put("created_at", isoCreatedAt)
+            },
+            // Schema where user_id is UUID type (convert anon_<digits> deterministically to UUID)
+            JSONObject().apply {
+                val uuidUserId = if (comment.userId.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
+                    comment.userId
+                } else {
+                    UUID.nameUUIDFromBytes("justfan:${comment.userId}".toByteArray()).toString()
+                }
+                put("id", comment.id)
+                put("post_id", comment.postId)
+                put("user_id", uuidUserId)
+                put("author_name", comment.authorName)
+                put("content", comment.content)
+                put("created_at", isoCreatedAt)
+            },
+            // Minimal post_comments schema (id, post_id, content)
+            JSONObject().apply {
+                put("id", comment.id)
+                put("post_id", comment.postId)
+                put("content", comment.content)
+                put("created_at", isoCreatedAt)
+            }
+        )
+
+        for (candidate in candidatePayloads) {
+            if (postToPostCommentsEndpoint(candidate, writeToken)) {
+                primarySaved = true
+                break
+            }
+        }
+
+        // 2. Also persist to `public.upload_requests` (`host = "post_comment"`) so comments and `anon_<digits>` metadata sync reliably
+        runCatching {
+            val insConn = openConnection("upload_requests", "POST").apply {
+                setRequestProperty("Authorization", "Bearer $writeToken")
+                setRequestProperty("Prefer", "return=minimal")
+            }
+            val ledgerPayload = JSONObject().apply {
+                put("host", "post_comment")
+                put("status", "published")
+                put("title", comment.postId)
+                put("caption", comment.id)
+                put("description", serializeCommentPayload(comment).toString())
+            }
+            OutputStreamWriter(insConn.outputStream).use { it.write(ledgerPayload.toString()) }
+            val insCode = insConn.responseCode
+            insConn.disconnect()
+            if (insCode in 200..299) {
+                ledgerSaved = true
+            }
+        }
+
+        if (primarySaved || ledgerSaved) {
+            Result.success(true)
+        } else {
+            Result.failure(Exception("Could not sync comment to post_comments in Supabase"))
+        }
+    }
+
+    suspend fun deleteComment(
+        commentId: String,
+        postId: String = "",
+        accessToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        var deletedAny = false
+        val writeToken = resolveAdminWriteToken(accessToken) ?: apiKey
+
+        // 1. Delete from `public.post_comments` in Supabase
+        runCatching {
+            val conn = openConnection("post_comments?id=eq.$commentId", "DELETE").apply {
+                setRequestProperty("Authorization", "Bearer $writeToken")
+            }
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code in 200..299) {
+                deletedAny = true
+            }
+        }
+
+        // 2. Delete or mark as deleted in `public.upload_requests` (`host = "post_comment"`)
+        runCatching {
+            val delConn = openConnection("upload_requests?host=eq.post_comment&caption=eq.$commentId", "DELETE").apply {
+                setRequestProperty("Authorization", "Bearer $writeToken")
+            }
+            val delCode = delConn.responseCode
+            delConn.disconnect()
+            if (delCode in 200..299) {
+                deletedAny = true
+            }
+
+            // Also insert a tombstone so any un-deleted row is filtered out
+            val tombConn = openConnection("upload_requests", "POST").apply {
+                setRequestProperty("Authorization", "Bearer $writeToken")
+                setRequestProperty("Prefer", "return=minimal")
+            }
+            val tombPayload = JSONObject().apply {
+                put("host", "post_comment")
+                put("status", "deleted")
+                put("title", postId)
+                put("caption", commentId)
+                put("description", JSONObject().apply {
+                    put("id", commentId)
+                    put("post_id", postId)
+                    put("status", "deleted")
+                }.toString())
+            }
+            OutputStreamWriter(tombConn.outputStream).use { it.write(tombPayload.toString()) }
+            val tombCode = tombConn.responseCode
+            tombConn.disconnect()
+            if (tombCode in 200..299) {
+                deletedAny = true
+            }
+        }
+
+        Result.success(deletedAny)
     }
 }

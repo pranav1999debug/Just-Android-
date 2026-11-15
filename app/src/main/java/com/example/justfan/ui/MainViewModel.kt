@@ -3,6 +3,7 @@ package com.example.justfan.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.justfan.data.model.CommentEntity
 import com.example.justfan.data.model.FavoriteEntity
 import com.example.justfan.data.model.PostEntity
 import com.example.justfan.data.model.RequestEntity
@@ -31,6 +32,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val favorites: StateFlow<List<FavoriteEntity>> = repository.favorites
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val comments: StateFlow<List<CommentEntity>> = repository.allComments
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val currentDeviceId: String = repository.currentDeviceId
+    val anonCommentUserId: String = repository.anonCommentUserId
 
     val userProfile: StateFlow<UserProfile> = repository.userProfile
     val preferences: StateFlow<UserPreferencesState> = repository.preferences
@@ -207,6 +214,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setUserBlocked(userId: String, isBlocked: Boolean, onResult: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val res = repository.setUserBlocked(userId, isBlocked)
+            onResult(res.isSuccess)
+        }
+    }
+
+    fun refreshComments(postId: String? = null) {
+        viewModelScope.launch {
+            repository.refreshComments(postId)
+        }
+    }
+
+    fun addComment(postId: String, content: String, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.addComment(postId, content)
+            onResult(res.isSuccess)
+        }
+    }
+
+    fun deleteComment(commentId: String, postId: String, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.deleteComment(commentId, postId)
             onResult(res.isSuccess)
         }
     }

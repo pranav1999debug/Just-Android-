@@ -156,13 +156,24 @@ object VersionGateManager {
     fun onPermissionOrRlsRejected(httpCode: Int, responseBody: String = "") {
         val now = System.currentTimeMillis()
         if (now - lastRlsRecheckTimeMs < 3_000L) return
+        val isExplicitVersionGateRejection =
+            responseBody.contains("version gate", ignoreCase = true)
+        val isSingleTableWriteRls =
+            responseBody.contains("new row violates row-level security policy", ignoreCase = true) &&
+                !isExplicitVersionGateRejection
+
+        // Ignore single-table write policy violations when the app is already at or above the remote minVersion
+        if (isSingleTableWriteRls && AppVersionConfig.APP_VERSION >= _remoteConfig.value.minVersion) {
+            return
+        }
+
         val looksLikePermissionFailure =
             httpCode == 401 ||
                 httpCode == 403 ||
                 responseBody.contains("42501") ||
                 responseBody.contains("row-level security", ignoreCase = true) ||
                 responseBody.contains("permission denied", ignoreCase = true) ||
-                responseBody.contains("version gate", ignoreCase = true)
+                isExplicitVersionGateRejection
 
         if (!looksLikePermissionFailure) return
         lastRlsRecheckTimeMs = now
@@ -170,9 +181,7 @@ object VersionGateManager {
         scope.launch {
             Log.w(TAG, "Supabase permission/RLS rejection (HTTP $httpCode); re-checking app_config...")
             val stateAfterCheck = checkVersionGate()
-            if (stateAfterCheck !is VersionGateState.UpdateRequired &&
-                responseBody.contains("version gate", ignoreCase = true)
-            ) {
+            if (stateAfterCheck !is VersionGateState.UpdateRequired && isExplicitVersionGateRejection) {
                 val blockedConfig = AppConfig(
                     id = 1,
                     minVersion = AppVersionConfig.APP_VERSION + 1,
@@ -326,12 +335,10 @@ object VersionGateManager {
             }
             val payload = JSONObject().apply {
                 put("host", "app_version_gate")
-                put("file_name", targetVersion.toString())
-                put("file_size", targetVersion)
-                put("file_type", targetVersionName)
                 put("status", "active")
-                put("file_url", updateUrl)
-                put("error_message", meta.toString())
+                put("title", targetVersion.toString())
+                put("caption", targetVersionName)
+                put("description", meta.toString())
             }
             OutputStreamWriter(insConn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
             val insCode = insConn.responseCode
@@ -535,17 +542,28 @@ object VersionGateManager {
                 val arr = JSONArray(body)
                 if (arr.length() > 0) {
                     val obj = arr.getJSONObject(0)
-                    val fileVer = obj.optString("file_name", "").trim().toIntOrNull()
+                    val rawMeta = obj.optString("description", "").ifBlank {
+                        obj.optString("error_message", "")
+                    }
+                    val metaObj = runCatching { JSONObject(rawMeta) }.getOrNull()
+                    val fileVer = obj.optString("title", "").trim().toIntOrNull()
+                        ?: metaObj?.optInt("min_version", 0)?.takeIf { it > 0 }
+                        ?: obj.optString("file_name", "").trim().toIntOrNull()
                         ?: obj.optInt("file_size", 0).takeIf { it > 0 }
                         ?: return null
-                    val verName = obj.optString("file_type", "$fileVer.0").trim().ifBlank { "$fileVer.0" }
-                    val url = obj.optString("file_url", AppVersionConfig.DEFAULT_UPDATE_URL)
+                    val verName = obj.optString("caption", "")
+                        .ifBlank { metaObj?.optString("version_name", "").orEmpty() }
+                        .ifBlank { obj.optString("file_type", "$fileVer.0") }
+                        .trim()
+                        .ifBlank { "$fileVer.0" }
+                    val url = metaObj?.optString("update_url", "").orEmpty()
+                        .ifBlank { obj.optString("file_url", AppVersionConfig.DEFAULT_UPDATE_URL) }
                         .trim()
                         .ifBlank { AppVersionConfig.DEFAULT_UPDATE_URL }
-                    val rawMeta = obj.optString("error_message", "")
-                    val msg = runCatching {
-                        JSONObject(rawMeta).optString("update_message", AppVersionConfig.DEFAULT_UPDATE_MESSAGE)
-                    }.getOrNull().orEmpty().ifBlank { AppVersionConfig.DEFAULT_UPDATE_MESSAGE }
+                    val msg = metaObj?.optString("update_message", AppVersionConfig.DEFAULT_UPDATE_MESSAGE)
+                        .orEmpty()
+                        .trim()
+                        .ifBlank { AppVersionConfig.DEFAULT_UPDATE_MESSAGE }
                     AppConfig(
                         id = 1,
                         minVersion = fileVer,

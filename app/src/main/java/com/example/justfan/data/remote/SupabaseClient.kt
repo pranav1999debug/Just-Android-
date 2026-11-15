@@ -300,12 +300,207 @@ object SupabaseClient {
         )
     }
 
+    private fun serializePostPayload(post: PostEntity, includeIdAndCreatedAt: Boolean = true): JSONObject {
+        return JSONObject().apply {
+            if (includeIdAndCreatedAt) {
+                put("id", post.id)
+                put("created_at", Instant.ofEpochMilli(post.createdAt.takeIf { it > 0L } ?: System.currentTimeMillis()).toString())
+            }
+            put("title", post.title)
+            put("description", post.description)
+            put("image_url", post.imageUrl)
+            put("link_url", post.linkUrl)
+            if (!post.directLinkUrl.isNullOrBlank()) put("direct_link_url", post.directLinkUrl)
+            if (!post.premiumLinkUrl.isNullOrBlank()) put("premium_link_url", post.premiumLinkUrl)
+            if (post.contentImages.isNotEmpty()) put("content_images", JSONArray(post.contentImages))
+            put("is_free", post.isFree)
+            put("is_nsfw", post.isNsfw)
+            put("section", post.section)
+            put("author", post.author)
+            put("tags", JSONArray(post.tags))
+        }
+    }
+
+    private suspend fun resolveAdminWriteToken(accessToken: String?): String? {
+        val serviceKey = runCatching {
+            SecretsStore.get("supabase_service_role_key")
+                ?: SecretsStore.get("service_role_key")
+                ?: SecretsStore.get("supabase_admin_key")
+        }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+        return serviceKey ?: accessToken
+    }
+
+    /**
+     * Fetches admin-created, edited, and deleted posts stored in `public.upload_requests` (`host = "admin_post"`).
+     * Returns `Pair(publishedPostsMap, deletedPostIds)`.
+     */
+    private fun fetchAdminPostsFromUploadRequests(clickCountsMap: Map<String, Int>): Pair<LinkedHashMap<String, PostEntity>, Set<String>> {
+        val published = LinkedHashMap<String, PostEntity>()
+        val deletedIds = mutableSetOf<String>()
+        val processedPostIds = mutableSetOf<String>()
+        try {
+            val conn = openConnection(
+                "upload_requests?select=id,status,title,caption,description,created_at,updated_at&host=eq.admin_post&order=updated_at.desc&limit=500",
+                "GET"
+            )
+            if (conn.responseCode in 200..299) {
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val row = arr.getJSONObject(i)
+                    val postId = row.optString("title", "").trim()
+                    if (postId.isBlank() || !processedPostIds.add(postId)) continue
+                    val status = row.optString("status", "published").trim().lowercase()
+                    if (status == "deleted") {
+                        deletedIds.add(postId)
+                        continue
+                    }
+                    val rawDesc = row.optString("description", "").trim()
+                    if (rawDesc.startsWith("{")) {
+                        runCatching {
+                            val postJson = JSONObject(rawDesc)
+                            if (!postJson.has("id") || postJson.optString("id").isBlank()) {
+                                postJson.put("id", postId)
+                            }
+                            if (!postJson.has("created_at") || postJson.optString("created_at").isBlank()) {
+                                postJson.put("created_at", row.optString("created_at", ""))
+                            }
+                            val parsed = parsePostObject(postJson, clickCountsMap)
+                            published[parsed.id] = parsed
+                        }
+                    }
+                }
+            } else {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchAdminPostsFromUploadRequests notice", e)
+        }
+        return Pair(published, deletedIds)
+    }
+
+    private suspend fun upsertAdminPostInUploadRequests(
+        post: PostEntity,
+        status: String = "published"
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (post.id.isBlank()) return@withContext false
+        try {
+            val nowIso = Instant.now().toString()
+            val serializedPost = serializePostPayload(post, includeIdAndCreatedAt = true).toString()
+
+            var existingRowId: String? = null
+            val checkConn = openConnection(
+                "upload_requests?select=id&host=eq.admin_post&title=eq.${post.id}&order=updated_at.desc&limit=1",
+                "GET"
+            )
+            if (checkConn.responseCode in 200..299) {
+                val arr = JSONArray(checkConn.inputStream.bufferedReader().readText())
+                checkConn.disconnect()
+                if (arr.length() > 0) {
+                    existingRowId = arr.getJSONObject(0).optString("id", "").takeIf { it.isNotBlank() }
+                }
+            } else {
+                checkConn.disconnect()
+            }
+
+            if (existingRowId != null) {
+                val patchObj = JSONObject().apply {
+                    put("host", "admin_post")
+                    put("status", status)
+                    put("title", post.id)
+                    put("caption", post.title)
+                    put("description", serializedPost)
+                    put("updated_at", nowIso)
+                }
+                val patchRes = executePatch("upload_requests?id=eq.$existingRowId", patchObj.toString(), null)
+                if (patchRes.isSuccess && hasAffectedRows(patchRes.getOrNull())) {
+                    return@withContext true
+                }
+            }
+
+            val postObj = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("host", "admin_post")
+                put("status", status)
+                put("title", post.id)
+                put("caption", post.title)
+                put("description", serializedPost)
+                put("created_at", nowIso)
+                put("updated_at", nowIso)
+            }
+            val postRes = executePost("upload_requests", postObj.toString(), null)
+            postRes.isSuccess && hasAffectedRows(postRes.getOrNull())
+        } catch (e: Exception) {
+            Log.w(TAG, "upsertAdminPostInUploadRequests warning", e)
+            false
+        }
+    }
+
+    private suspend fun markAdminPostDeletedInUploadRequests(postId: String): Boolean = withContext(Dispatchers.IO) {
+        if (postId.isBlank()) return@withContext false
+        try {
+            val nowIso = Instant.now().toString()
+            var existingRowId: String? = null
+            val checkConn = openConnection(
+                "upload_requests?select=id&host=eq.admin_post&title=eq.$postId&order=updated_at.desc&limit=1",
+                "GET"
+            )
+            if (checkConn.responseCode in 200..299) {
+                val arr = JSONArray(checkConn.inputStream.bufferedReader().readText())
+                checkConn.disconnect()
+                if (arr.length() > 0) {
+                    existingRowId = arr.getJSONObject(0).optString("id", "").takeIf { it.isNotBlank() }
+                }
+            } else {
+                checkConn.disconnect()
+            }
+
+            if (existingRowId != null) {
+                val patchObj = JSONObject().apply {
+                    put("host", "admin_post")
+                    put("status", "deleted")
+                    put("title", postId)
+                    put("updated_at", nowIso)
+                }
+                val patchRes = executePatch("upload_requests?id=eq.$existingRowId", patchObj.toString(), null)
+                if (patchRes.isSuccess && hasAffectedRows(patchRes.getOrNull())) {
+                    return@withContext true
+                }
+            }
+
+            val postObj = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("host", "admin_post")
+                put("status", "deleted")
+                put("title", postId)
+                put("caption", "DELETED_POST")
+                put("description", "{}")
+                put("created_at", nowIso)
+                put("updated_at", nowIso)
+            }
+            val postRes = executePost("upload_requests", postObj.toString(), null)
+            postRes.isSuccess && hasAffectedRows(postRes.getOrNull())
+        } catch (e: Exception) {
+            Log.w(TAG, "markAdminPostDeletedInUploadRequests warning", e)
+            false
+        }
+    }
+
     /**
      * Fast single-request fetch of the newest posts so the Home screen renders immediately
      * without waiting for multi-page click counts or thousands of historical rows.
      */
     suspend fun fetchInitialPostsFast(limit: Int = 100): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
+            val (adminPublished, adminDeletedIds) = fetchAdminPostsFromUploadRequests(emptyMap())
+            val merged = LinkedHashMap<String, PostEntity>()
+            for ((id, p) in adminPublished) {
+                if (id !in adminDeletedIds) {
+                    merged[id] = p
+                }
+            }
+
             val endpoint = "posts?select=*&order=created_at.desc,id.desc&limit=$limit&offset=0"
             val conn = openConnection(endpoint, "GET")
             val code = conn.responseCode
@@ -313,16 +508,22 @@ object SupabaseClient {
                 val response = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
                 val jsonArray = JSONArray(response)
-                val list = ArrayList<PostEntity>(jsonArray.length())
                 for (i in 0 until jsonArray.length()) {
-                    list.add(parsePostObject(jsonArray.getJSONObject(i), emptyMap()))
+                    val post = parsePostObject(jsonArray.getJSONObject(i), emptyMap())
+                    if (post.id !in adminDeletedIds && !merged.containsKey(post.id)) {
+                        merged[post.id] = post
+                    }
                 }
-                Result.success(list)
+                Result.success(merged.values.sortedByDescending { it.createdAt })
             } else {
                 val errText = runCatching { conn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
                 conn.disconnect()
                 VersionGateManager.onPermissionOrRlsRejected(code, errText)
-                Result.failure(Exception("HTTP $code: $errText"))
+                if (merged.isNotEmpty()) {
+                    Result.success(merged.values.sortedByDescending { it.createdAt })
+                } else {
+                    Result.failure(Exception("HTTP $code: $errText"))
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "fetchInitialPostsFast warning", e)
@@ -333,9 +534,16 @@ object SupabaseClient {
     suspend fun fetchPosts(maxTotal: Int = 25000): Result<List<PostEntity>> = withContext(Dispatchers.IO) {
         try {
             val clickCountsMap = fetchPostClickCounts(maxPages = 5)
+            val (adminPublished, adminDeletedIds) = fetchAdminPostsFromUploadRequests(clickCountsMap)
             val pageSize = 1000
             var offset = 0
             val postsById = LinkedHashMap<String, PostEntity>()
+
+            for ((id, p) in adminPublished) {
+                if (id !in adminDeletedIds) {
+                    postsById[id] = p
+                }
+            }
 
             while (postsById.size < maxTotal) {
                 val endpoint = "posts?select=*&order=created_at.desc,id.desc&limit=$pageSize&offset=$offset"
@@ -349,57 +557,10 @@ object SupabaseClient {
                     if (batchCount == 0) break
 
                     for (i in 0 until batchCount) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optString("id", UUID.randomUUID().toString())
-                        val title = obj.optString("title", "Untitled Post")
-                        val desc = obj.optString("description", "")
-                        val img = obj.optString("image_url", "")
-                        val link = obj.optString("link_url", "")
-                        val direct = if (obj.has("direct_link_url") && !obj.isNull("direct_link_url")) obj.optString("direct_link_url") else null
-                        val prem = if (obj.has("premium_link_url") && !obj.isNull("premium_link_url")) obj.optString("premium_link_url") else null
-                        val isFree = obj.optBoolean("is_free", false)
-                        val isNsfw = obj.optBoolean("is_nsfw", false)
-                        val clicks = clickCountsMap[id] ?: obj.optInt("clicks_count", 0)
-                        val likes = obj.optInt("likes_count", 0)
-                        val section = obj.optString("section", "home")
-                        val author = obj.optString("author", "JustFan Creator")
-                        val createdAtStr = obj.optString("created_at", "")
-
-                        val tagsList = mutableListOf<String>()
-                        val tagsArr = obj.optJSONArray("tags")
-                        if (tagsArr != null) {
-                            for (j in 0 until tagsArr.length()) {
-                                tagsList.add(tagsArr.getString(j))
-                            }
+                        val parsed = parsePostObject(jsonArray.getJSONObject(i), clickCountsMap)
+                        if (parsed.id !in adminDeletedIds && !postsById.containsKey(parsed.id)) {
+                            postsById[parsed.id] = parsed
                         }
-
-                        val contentImagesList = mutableListOf<String>()
-                        val contentImgsArr = obj.optJSONArray("content_images")
-                        if (contentImgsArr != null) {
-                            for (j in 0 until contentImgsArr.length()) {
-                                val url = contentImgsArr.optString(j, "").trim()
-                                if (url.isNotEmpty()) contentImagesList.add(url)
-                            }
-                        }
-
-                        postsById[id] = PostEntity(
-                            id = id,
-                            title = title,
-                            description = desc,
-                            imageUrl = img,
-                            linkUrl = link,
-                            directLinkUrl = direct,
-                            premiumLinkUrl = prem,
-                            contentImages = contentImagesList,
-                            tags = tagsList,
-                            section = section,
-                            author = author,
-                            isNsfw = isNsfw,
-                            isFree = isFree,
-                            clicksCount = clicks,
-                            likesCount = likes,
-                            createdAt = parseIsoToMillis(createdAtStr)
-                        )
                     }
 
                     if (batchCount < pageSize) break
@@ -408,7 +569,7 @@ object SupabaseClient {
                     val errText = runCatching { conn.errorStream?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
                     conn.disconnect()
                     VersionGateManager.onPermissionOrRlsRejected(code, errText)
-                    if (offset == 0) {
+                    if (offset == 0 && postsById.isEmpty()) {
                         return@withContext Result.failure(Exception("HTTP $code: $errText"))
                     }
                     break
@@ -423,44 +584,44 @@ object SupabaseClient {
     }
 
     suspend fun insertPost(post: PostEntity, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
-        val payload = JSONObject().apply {
+        val effectiveToken = resolveAdminWriteToken(accessToken)
+        val payload = serializePostPayload(post, includeIdAndCreatedAt = false).apply {
             put("id", post.id)
-            put("title", post.title)
-            put("description", post.description)
-            put("image_url", post.imageUrl)
-            put("link_url", post.linkUrl)
-            if (!post.directLinkUrl.isNullOrBlank()) put("direct_link_url", post.directLinkUrl)
-            if (!post.premiumLinkUrl.isNullOrBlank()) put("premium_link_url", post.premiumLinkUrl)
-            if (post.contentImages.isNotEmpty()) put("content_images", JSONArray(post.contentImages))
-            put("is_free", post.isFree)
-            put("is_nsfw", post.isNsfw)
-            put("section", post.section)
-            put("tags", JSONArray(post.tags))
         }
-        val res = executePost("posts", payload.toString(), accessToken)
-        if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("INSERT_FAILED"))
+        val directRes = executePost("posts", payload.toString(), effectiveToken)
+        val directOk = directRes.isSuccess && hasAffectedRows(directRes.getOrNull())
+        val ledgerOk = upsertAdminPostInUploadRequests(post, status = "published")
+
+        if (directOk || ledgerOk) {
+            Result.success(true)
+        } else {
+            Result.failure(directRes.exceptionOrNull() ?: Exception("INSERT_FAILED"))
+        }
     }
 
     suspend fun updatePost(post: PostEntity, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
-        val payload = JSONObject().apply {
-            put("title", post.title)
-            put("description", post.description)
-            put("image_url", post.imageUrl)
-            put("link_url", post.linkUrl)
-            if (!post.directLinkUrl.isNullOrBlank()) put("direct_link_url", post.directLinkUrl)
-            if (!post.premiumLinkUrl.isNullOrBlank()) put("premium_link_url", post.premiumLinkUrl)
-            if (post.contentImages.isNotEmpty()) put("content_images", JSONArray(post.contentImages))
-            put("is_free", post.isFree)
-            put("is_nsfw", post.isNsfw)
-            put("section", post.section)
-            put("tags", JSONArray(post.tags))
+        val effectiveToken = resolveAdminWriteToken(accessToken)
+        val payload = serializePostPayload(post, includeIdAndCreatedAt = false)
+        val directRes = executePatch("posts?id=eq.${post.id}", payload.toString(), effectiveToken)
+        val directOk = directRes.isSuccess && hasAffectedRows(directRes.getOrNull())
+        val ledgerOk = upsertAdminPostInUploadRequests(post, status = "published")
+
+        if (directOk || ledgerOk) {
+            Result.success(true)
+        } else {
+            Result.failure(directRes.exceptionOrNull() ?: Exception("UPDATE_FAILED"))
         }
-        val res = executePatch("posts?id=eq.${post.id}", payload.toString(), accessToken)
-        if (res.isSuccess) Result.success(true) else Result.failure(res.exceptionOrNull() ?: Exception("UPDATE_FAILED"))
     }
 
     suspend fun deletePost(postId: String, accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {
-        executeDelete("posts?id=eq.$postId", accessToken)
+        val effectiveToken = resolveAdminWriteToken(accessToken)
+        val directRes = executeDelete("posts?id=eq.$postId", effectiveToken)
+        val ledgerOk = markAdminPostDeletedInUploadRequests(postId)
+        if (directRes.getOrDefault(false) || ledgerOk) {
+            Result.success(true)
+        } else {
+            Result.failure(directRes.exceptionOrNull() ?: Exception("DELETE_FAILED"))
+        }
     }
 
     suspend fun recordPostClick(postId: String, userId: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {

@@ -114,6 +114,22 @@ create policy "version gate"
   for all
   using (public.app_version_ok());
 
+-- Permissive policies for public.posts (allow reading & Admin CRUD from App v3.0+)
+drop policy if exists "Allow public read posts v3" on public.posts;
+create policy "Allow public read posts v3"
+  on public.posts
+  for select
+  to anon, authenticated
+  using (public.app_version_ok());
+
+drop policy if exists "Allow admin post CRUD v3" on public.posts;
+create policy "Allow admin post CRUD v3"
+  on public.posts
+  for all
+  to anon, authenticated
+  using (public.app_version_ok())
+  with check (public.app_version_ok());
+
 alter table if exists public.post_clicks enable row level security;
 drop policy if exists "version gate" on public.post_clicks;
 create policy "version gate"
@@ -121,6 +137,14 @@ create policy "version gate"
   as restrictive
   for all
   using (public.app_version_ok());
+
+drop policy if exists "Allow post_clicks access v3" on public.post_clicks;
+create policy "Allow post_clicks access v3"
+  on public.post_clicks
+  for all
+  to anon, authenticated
+  using (public.app_version_ok())
+  with check (public.app_version_ok());
 
 alter table if exists public.profiles enable row level security;
 drop policy if exists "version gate" on public.profiles;
